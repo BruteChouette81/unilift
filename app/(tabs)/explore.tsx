@@ -2,6 +2,7 @@ import { ScrollView, StyleSheet } from 'react-native';
 
 import RideCard from '@/components/ridecard';
 import { ThemedView } from '@/components/themed-view';
+import { Text } from 'react-native';
 
 export default function TabTwoScreen() {
   const mockRides = [
@@ -13,18 +14,14 @@ export default function TabTwoScreen() {
   
   return (
     <ScrollView>
-        <div className="space-y-6 pb-24">
-            <div>
-              <h2 className="text-2xl font-bold text-foreground mb-2">Find Your Ride</h2>
-              <p className="text-muted-foreground">Available rides near you</p>
-            </div>
+        <Text>Find rides near you</Text>
 
             <ThemedView style={styles.rideList}>
                       {mockRides.map((ride, index) => (
                         <RideCard key={index} {...ride} />
                       ))}
                     </ThemedView>
-          </div>
+          
       
     </ScrollView>
   );
