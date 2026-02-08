@@ -1,49 +1,80 @@
-import { useAuth } from '@/context/AuthContext';
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
-import { Stack } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
-import 'react-native-reanimated';
-import { AuthProvider } from "../context/AuthContext";
+import { AuthProvider, useAuth } from "@/context/AuthContext";
+import { useColorScheme } from "@/hooks/use-color-scheme";
+import { DarkTheme, DefaultTheme, ThemeProvider } from "@react-navigation/native";
+import { Stack } from "expo-router";
+import { StatusBar } from "expo-status-bar";
+import { ActivityIndicator, View } from "react-native";
+//pk_test_51STT8xLp2qE85BeryLOWyCzhPYDoRJDXOYpGcuJUG5aQsPfkQ4grzZgtiqxQJuNoxSEHEpaTYjkXJrpCvcHWnzQu00nZkvFDFD
+import { StripeProvider } from '@stripe/stripe-react-native';
+
+/**
+ * 
+ * # If you want a production-like build for TestFlight:
+ * set new build version in package.json
+eas build -p ios --profile production
+
+eas submit -p ios --latest
 
 
-
-import { useColorScheme } from '@/hooks/use-color-scheme';
-import { ActivityIndicator, View } from 'react-native';
-
-export const unstable_settings = {
-  anchor: '(tabs)',
-};
+ */
 
 export default function RootLayout() {
-  const colorScheme = useColorScheme();
-  const { user, loading } = useAuth();
-  
-  //if (loading) return null;
-
-  
-
   return (
+     <StripeProvider
+      publishableKey="pk_test_51STT8xLp2qE85BeryLOWyCzhPYDoRJDXOYpGcuJUG5aQsPfkQ4grzZgtiqxQJuNoxSEHEpaTYjkXJrpCvcHWnzQu00nZkvFDFD"
+      merchantIdentifier="merchant.identifier" // required for Apple Pay
+      urlScheme="your-url-scheme" // required for 3D Secure and bank redirects
+    >
+     
     <AuthProvider>
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack>
-        {loading ? <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-        <ActivityIndicator size="large" />
-      </View> : user ? (
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />) : (
-          <Stack.Screen name="signup" options={{ headerShown: false }} />
-        )}
-        <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
-        
-      </Stack>
-      <StatusBar style="auto" />
-    </ThemeProvider>
+      <LayoutContent />
     </AuthProvider>
+     
+    </StripeProvider>
   );
 }
 
+/*<Stack.Screen
+  name="Ride"
+  component={RideScreen}
+  options={{ headerShown: false }} // hide header so back swipe is disabled
+/>*/
+
+ function LayoutContent() {
+  const { user, loading } = useAuth();
+  const colorScheme = useColorScheme();
+
+  if (loading) {
+    return (
+      <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+        <ActivityIndicator size="large" />
+      </View>
+    );
+  } else {
+    return (
+      <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
+      <Stack>
+       
+          <Stack.Screen name="(tabs)" options={{ headerShown: true, title: "UniLift",  headerTitleStyle: {
+      fontSize: 30,
+      fontWeight: "bold",
+    }, }} />
+          <Stack.Screen name="rideScreen" options={{ headerShown: false }} />
+          <Stack.Screen name="riderScreen" options={{ headerShown: false }} />
 
 
+          
 
+
+       
+      </Stack>
+      <StatusBar style="auto" />
+    </ThemeProvider>
+    )
+  }
+
+  
+}
 
 
 

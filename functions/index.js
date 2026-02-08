@@ -1,32 +1,51 @@
-/**
- * Import function triggers from their respective submodules:
- *
- * const {onCall} = require("firebase-functions/v2/https");
- * const {onDocumentWritten} = require("firebase-functions/v2/firestore");
- *
- * See a full list of supported triggers at https://firebase.google.com/docs/functions
- */
+const functions = require("firebase-functions");
+const express = require("express");
+const stripe = require('stripe')('sk_test_51STT8xLp2qE85Ber5F37hcmYkBOyy3U9ysK3jhFgRDYapZNl35767q4ZErC6cMJeaj7RbLqGqkduk0CURk4RGHZZ00tNN92Gnc');
 
-const {setGlobalOptions} = require("firebase-functions");
-const {onRequest} = require("firebase-functions/https");
-const logger = require("firebase-functions/logger");
+const app = express();
 
-// For cost control, you can set the maximum number of containers that can be
-// running at the same time. This helps mitigate the impact of unexpected
-// traffic spikes by instead downgrading performance. This limit is a
-// per-function limit. You can override the limit for each function using the
-// `maxInstances` option in the function's options, e.g.
-// `onRequest({ maxInstances: 5 }, (req, res) => { ... })`.
-// NOTE: setGlobalOptions does not apply to functions using the v1 API. V1
-// functions should each use functions.runWith({ maxInstances: 10 }) instead.
-// In the v1 API, each function can only serve one request per container, so
-// this will be the maximum concurrent request count.
-setGlobalOptions({ maxInstances: 10 });
+// Your old server.js routes here
+app.get("/hello", (req, res) => {
+  res.send("Hello world!");
+});
 
-// Create and deploy your first functions
-// https://firebase.google.com/docs/functions/get-started
+// This example sets up an endpoint using the Express framework.
 
-// exports.helloWorld = onRequest((request, response) => {
-//   logger.info("Hello logs!", {structuredData: true});
-//   response.send("Hello from Firebase!");
-// });
+app.post('/payment-sheet', async (req, res) => {
+  // Use an existing Customer ID if this is a returning customer.
+  try {
+    // 1. Create or fetch a customer
+    const customer = await stripe.customers.create();
+
+    // 2. Create ephemeral key (required for mobile)
+    const ephemeralKey = await stripe.ephemeralKeys.create(
+      { customer: customer.id },
+      { apiVersion: "2024-06-20" }   // must match stripe-react-native SDK version
+    );
+
+    // 3. Create PaymentIntent
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: 1099,
+      currency: 'cad',
+      customer: customer.id,
+      automatic_payment_methods: { enabled: true },
+    });
+
+    // 4. Send secrets to mobile app
+    res.json({
+      paymentIntent: paymentIntent.client_secret,
+      ephemeralKey: ephemeralKey.secret,
+      customer: customer.id,
+      publishableKey: 'pk_test_51STT8xLp2qE85BeryLOWyCzhPYDoRJDXOYpGcuJUG5aQsPfkQ4grzZgtiqxQJuNoxSEHEpaTYjkXJrpCvcHWnzQu00nZkvFDFD'
+    });
+
+  } catch (err) {
+    console.log(err);
+    res.status(400).json({ error: err.message });
+  }
+ 
+});
+
+// Export as a Firebase Function 
+// firebase deploy --only functions
+exports.api = functions.https.onRequest(app);
