@@ -1,20 +1,3 @@
-// {
-//   "cli": {
-//     "version": ">= 2.0.0"
-//   },
-
-//   "build": {
-
-//     "production": {}
-//   },
-//   "submit": {
-//     "production": {
-//       "ios": {
-//         "ascAppId": "6755918549"
-//       }
-//     }
-//   }
-// }
 {
   "cli": {
     "version": ">= 2.0.0"
