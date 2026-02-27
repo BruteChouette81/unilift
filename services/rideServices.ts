@@ -1,10 +1,107 @@
 import { getAuth } from "firebase/auth";
 import { GeoPoint } from "firebase/firestore";
+import {
+  firestoreCollectionUrl,
+  withFirebaseApiKey,
+} from "@/constants/runtime-config";
+import type { LocationPoint, Ride } from "@/types/models";
 
-const PROJECT_ID = "unilift-6e756"; // your Firebase project id
-const BASE_URL = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/uniliftdefault/documents/rides`;
+const BASE_URL = firestoreCollectionUrl("rides");
+const USERS_BASE_URL = firestoreCollectionUrl("users");
+const RIDES_CACHE_TTL_MS = 3000;
+let ridesInFlight: Promise<Ride[]> | null = null;
+let cachedRides: Ride[] = [];
+let ridesFetchedAt = 0;
 
-const API_KEY = "AIzaSyDQMdY0la_sZuHvumHjFl4ibfCsOe1UW6Q"
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const readString = (value: unknown, fallback = ""): string =>
+  typeof value === "string" ? value : fallback;
+
+const readNumber = (value: unknown, fallback = 0): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const readGeoPoint = (value: unknown): LocationPoint | null => {
+  if (!isRecord(value)) return null;
+  const latitude = readNumber(value.latitude, NaN);
+  const longitude = readNumber(value.longitude, NaN);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  return { latitude, longitude };
+};
+
+const parseRideFromFirestoreDocument = (doc: unknown): Ride | null => {
+  if (!isRecord(doc) || !isRecord(doc.fields)) return null;
+
+  const fields = doc.fields;
+  const name = readString(doc.name, "");
+  const id = name.split("/").pop() || "";
+  const destination = readString(isRecord(fields.destination) ? fields.destination.stringValue : "");
+  const driverId = readString(isRecord(fields.driverId) ? fields.driverId.stringValue : "");
+  const seatsAvailable = readNumber(
+    isRecord(fields.seatsAvailable) ? fields.seatsAvailable.integerValue : 0,
+    0,
+  );
+  const localisation = readGeoPoint(
+    isRecord(fields.localisation) ? fields.localisation.geoPointValue : null,
+  );
+
+  if (!id || !destination || !driverId || !localisation) {
+    return null;
+  }
+
+  const destinationCoords =
+    readGeoPoint(
+      isRecord(fields.destinationCoords) ? fields.destinationCoords.geoPointValue : null,
+    ) ?? { latitude: 0, longitude: 0 };
+
+  const passengerValues =
+    isRecord(fields.passengers) &&
+    isRecord(fields.passengers.arrayValue) &&
+    Array.isArray(fields.passengers.arrayValue.values)
+      ? fields.passengers.arrayValue.values
+      : [];
+
+  return {
+    id,
+    destination,
+    destinationCoords,
+    date: readString(isRecord(fields.date) ? fields.date.timestampValue : "", ""),
+    seatsAvailable,
+    time: readString(doc.createdTime, ""),
+    driverId,
+    passengers: passengerValues
+      .map((v) => (isRecord(v) ? readString(v.stringValue, "") : ""))
+      .filter(Boolean),
+    localisation,
+    started: isRecord(fields.started) ? Boolean(fields.started.booleanValue) : false,
+    status: readString(isRecord(fields.status) ? fields.status.stringValue : "planned", "planned"),
+  };
+};
+
+async function getAuthHeaders(includeJson = false): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {};
+  const user = getAuth().currentUser;
+
+  if (user) {
+    const token = await user.getIdToken();
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  if (includeJson) {
+    headers["Content-Type"] = "application/json";
+  }
+
+  return headers;
+}
+
+async function throwFetchError(res: Response, message: string): Promise<never> {
+  const details = await res.text().catch(() => "");
+  const trimmedDetails = details ? `: ${details.slice(0, 300)}` : "";
+  throw new Error(`${message} (status ${res.status})${trimmedDetails}`);
+}
 
 /** Create a new ride */
 export async function createRide(rideData: {
@@ -40,39 +137,63 @@ export async function createRide(rideData: {
   };
   console.log(doc)
 
-  const res = await fetch(`${BASE_URL}?key=${API_KEY}`, {
+  const res = await fetch(withFirebaseApiKey(BASE_URL), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: await getAuthHeaders(true),
     body: JSON.stringify(doc),
   });
   console.log(res)
 
-  if (!res.ok) throw new Error("Failed to create ride");
+  if (!res.ok) await throwFetchError(res, "Failed to create ride");
+  invalidateRidesCache();
   return await res.json();
 }
 
 /** Fetch all available rides */
-export async function fetchRides() {
-  const res = await fetch(`${BASE_URL}?key=${API_KEY}`);
-  if (!res.ok) throw new Error("Failed to fetch rides");
-  const data = await res.json();
-  console.log(data)
+export async function fetchRides(options?: { force?: boolean }): Promise<Ride[]> {
+  const now = Date.now();
+  if (!options?.force && now - ridesFetchedAt < RIDES_CACHE_TTL_MS) {
+    return cachedRides;
+  }
+  if (ridesInFlight) {
+    return ridesInFlight;
+  }
 
-  return data.documents?.map((doc: any) => ({
-    id: doc.name.split("/").pop(),
-    //origin: doc.fields.origin.stringValue,
-    destination: doc.fields.destination.stringValue,
-    destinationCoords: doc.fields?.destinationCoords?.geoPointValue || {latitude: 0, longitude: 0},
-    date: doc.fields.date?.timestampValue,
-    seatsAvailable: Number(doc.fields.seatsAvailable.integerValue),
-    time: doc.createdTime,
-    
-    driverId: doc.fields.driverId.stringValue,
-    passengers: doc.fields.passengers.arrayValue?.values?.map((v: any) => v.stringValue) || [],
-    localisation: doc.fields.localisation.geoPointValue,
-    started: doc.fields.started?.booleanValue,
-    status:doc.fields.status?.stringValue
-  })) || [];
+  const authUser = getAuth().currentUser;
+  if (!authUser) {
+    // During logout/unmount race, avoid throwing permission errors.
+    return [];
+  }
+
+  ridesInFlight = (async () => {
+    const res = await fetch(withFirebaseApiKey(BASE_URL), {
+      headers: await getAuthHeaders(),
+    });
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) {
+        return [];
+      }
+      await throwFetchError(res, "Failed to fetch rides");
+    }
+    const data = (await res.json()) as { documents?: unknown[] };
+    const rides = (data.documents ?? [])
+      .map((doc) => parseRideFromFirestoreDocument(doc))
+      .filter((ride): ride is Ride => ride !== null);
+
+    cachedRides = rides;
+    ridesFetchedAt = Date.now();
+    return rides;
+  })();
+
+  try {
+    return await ridesInFlight;
+  } finally {
+    ridesInFlight = null;
+  }
+}
+
+export function invalidateRidesCache() {
+  ridesFetchedAt = 0;
 }
 
 /** Accept (join) a ride */
@@ -81,10 +202,15 @@ export async function acceptRide(rideId: string) {
   const user = auth.currentUser;
   if (!user) throw new Error("Not authenticated");
 
-  const rideUrl = `${BASE_URL}/${rideId}?key=${API_KEY}&updateMask.fieldPaths=passengers,seatsAvailable`;
+  const rideUrl = withFirebaseApiKey(
+    `${BASE_URL}/${rideId}?updateMask.fieldPaths=passengers,seatsAvailable`,
+  );
 
   // Get current passengers
-  const rideRes = await fetch(rideUrl);
+  const rideRes = await fetch(rideUrl, {
+    headers: await getAuthHeaders(),
+  });
+  if (!rideRes.ok) await throwFetchError(rideRes, "Failed to fetch ride before accept");
   const rideData = await rideRes.json();
 
   const currentPassengers =
@@ -109,20 +235,23 @@ export async function acceptRide(rideId: string) {
 
   const updateRes = await fetch(rideUrl, { //+ `?key=${API_KEY}`
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: await getAuthHeaders(true),
     body: JSON.stringify(updateDoc),
   });
 
-  if (!updateRes.ok) throw new Error("Failed to accept ride");
+  if (!updateRes.ok) await throwFetchError(updateRes, "Failed to accept ride");
+  invalidateRidesCache();
   return await updateRes.json();
 }
 
 /** Delete ride (if you’re the driver) */
 export async function deleteRide(rideId: string) {
-  const res = await fetch(`${BASE_URL}/${rideId}?key=${API_KEY}`, {
+  const res = await fetch(withFirebaseApiKey(`${BASE_URL}/${rideId}`), {
     method: "DELETE",
+    headers: await getAuthHeaders(),
   });
-  if (!res.ok) throw new Error("Failed to delete ride");
+  if (!res.ok) await throwFetchError(res, "Failed to delete ride");
+  invalidateRidesCache();
 }
 
 export async function geoCode(place:string) {
@@ -168,7 +297,16 @@ export type LocationResult = {
   lon: string;
 };
 
-export async function geoSuggestion(place:string) {
+const parseSuggestionItem = (item: unknown): LocationResult | null => {
+  if (!isRecord(item)) return null;
+  const displayName = readString(item.display_name, "");
+  const lat = readString(item.lat, "");
+  const lon = readString(item.lon, "");
+  if (!displayName || !lat || !lon) return null;
+  return { displayName, lat, lon };
+};
+
+export async function geoSuggestion(place:string): Promise<LocationResult[] | null> {
    //if (!place.trim()) return [];
    console.log(place)
 
@@ -189,14 +327,12 @@ export async function geoSuggestion(place:string) {
       throw new Error("Network response was not ok");
     }
 
-   const data = await response.json();
-   
+   const data = (await response.json()) as unknown;
+   if (!Array.isArray(data)) return [];
 
-  return data.map((item: any) => ({
-    displayName: item.display_name,
-    lat: item.lat,
-    lon: item.lon,
-  }));
+  return data
+    .map((item) => parseSuggestionItem(item))
+    .filter((item): item is LocationResult => item !== null);
   } catch (error) {
     console.error("Error fetching coordinates:", error);
     return null;
@@ -205,15 +341,20 @@ export async function geoSuggestion(place:string) {
 
 export async function updateRatings(rideId: string, rating: number) {
   //get driver id from rideId
-   const res = await fetch(`${BASE_URL}/${rideId}?key=${API_KEY}`);
-  if (!res.ok) throw new Error("Failed to fetch rides");
+   const res = await fetch(withFirebaseApiKey(`${BASE_URL}/${rideId}`), {
+    headers: await getAuthHeaders(),
+  });
+  if (!res.ok) await throwFetchError(res, "Failed to fetch ride for rating");
   const data = await res.json();
   console.log(data)
 
   const driverId = data.fields.driverId.stringValue;
   //update driver's ratings in users collection
-  const userUrl = `https://firestore.googleapis.com/v1/projects/unilift-6e756/databases/uniliftdefault/documents/users/${driverId}?key=${API_KEY}`;
-  const userRes = await fetch(userUrl);
+  const userUrl = withFirebaseApiKey(`${USERS_BASE_URL}/${driverId}`);
+  const userRes = await fetch(userUrl, {
+    headers: await getAuthHeaders(),
+  });
+  if (!userRes.ok) await throwFetchError(userRes, "Failed to fetch user for rating");
   const userData = await userRes.json();
   let currentRatings = userData.fields.ratings?.integerValue || 0;
   let numberOfRatings = userData.fields.ratingWeigth?.integerValue || 0;
@@ -224,20 +365,23 @@ export async function updateRatings(rideId: string, rating: number) {
       ratingWeigth: {integerValue: Number(numberOfRatings) + 1}
     },
   };
-  const updateRes = await fetch(`${userUrl}&?updateMask.fieldPaths=ratings,ratingWeigth`, { //+ `?key=${API_KEY}`
+  const updateRes = await fetch(`${userUrl}&updateMask.fieldPaths=ratings,ratingWeigth`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: await getAuthHeaders(true),
     body: JSON.stringify(updateDoc),
   });
-  if (!updateRes.ok) throw new Error("Failed to update ratings");
+  if (!updateRes.ok) await throwFetchError(updateRes, "Failed to update ratings");
   return driverId;
 
 }
 
 export async function updateXP(userId: string, driverId: string, xpToAdd: number) {
   //update user's XP in users collection
-  const userUrl = `https://firestore.googleapis.com/v1/projects/unilift-6e756/databases/uniliftdefault/documents/users/${userId}?key=${API_KEY}`;
-  const userRes = await fetch(userUrl);
+  const userUrl = withFirebaseApiKey(`${USERS_BASE_URL}/${userId}`);
+  const userRes = await fetch(userUrl, {
+    headers: await getAuthHeaders(),
+  });
+  if (!userRes.ok) await throwFetchError(userRes, "Failed to fetch user for XP");
   const userData = await userRes.json();
   let currentXP = userData.fields.xp?.integerValue || 0;
   const newXP = Number(currentXP) +  Math.floor(xpToAdd / 2);;
@@ -246,15 +390,18 @@ export async function updateXP(userId: string, driverId: string, xpToAdd: number
       xp: {integerValue: newXP}
     },
   };
-  const updateRes = await fetch(`${userUrl}&updateMask.fieldPaths=xp`, { //+ `?key=${API_KEY}`
+  const updateRes = await fetch(`${userUrl}&updateMask.fieldPaths=xp`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: await getAuthHeaders(true),
     body: JSON.stringify(updateDoc),
   });
-  if (!updateRes.ok) throw new Error("Failed to update XP");
+  if (!updateRes.ok) await throwFetchError(updateRes, "Failed to update XP");
 
-  const driverUrl = `https://firestore.googleapis.com/v1/projects/unilift-6e756/databases/uniliftdefault/documents/users/${driverId}?key=${API_KEY}`;
-  const driverRes = await fetch(driverUrl);
+  const driverUrl = withFirebaseApiKey(`${USERS_BASE_URL}/${driverId}`);
+  const driverRes = await fetch(driverUrl, {
+    headers: await getAuthHeaders(),
+  });
+  if (!driverRes.ok) await throwFetchError(driverRes, "Failed to fetch driver for XP");
   const driverData = await driverRes.json();
   let driverXP = driverData.fields.xp?.integerValue || 0;
   const newDriverXP = Number(driverXP) + xpToAdd
@@ -264,12 +411,11 @@ export async function updateXP(userId: string, driverId: string, xpToAdd: number
       xp: {integerValue: newDriverXP}
     },
   };
-  const updateDriverRes = await fetch(`${driverUrl}&updateMask.fieldPaths=xp`, { //+ `?key=${API_KEY}`
+  const updateDriverRes = await fetch(`${driverUrl}&updateMask.fieldPaths=xp`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: await getAuthHeaders(true),
     body: JSON.stringify(updateDriverDoc),
   });
-  if (!updateDriverRes.ok) throw new Error("Failed to update driver XP");
+  if (!updateDriverRes.ok) await throwFetchError(updateDriverRes, "Failed to update driver XP");
   return;
 }
-

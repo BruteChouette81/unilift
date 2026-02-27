@@ -6,18 +6,16 @@
  */
 
 
-import { useKeepAwake } from "expo-keep-awake";
-import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useEffect, useState } from "react";
-import { Alert, Button, Linking, StyleSheet, Text, TouchableOpacity, View } from "react-native";
-
-// Your map component (already made)
 import { DriverRideMapView } from "@/components/mapview";
-
- const projectId = "unilift-6e756";
-
-        const apiKey = "AIzaSyDQMdY0la_sZuHvumHjFl4ibfCsOe1UW6Q"; // from Firebase console
-
+import { useKeepAwake } from "expo-keep-awake";
+import { useAdaptivePolling } from "@/hooks/use-adaptive-polling";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import React, { useRef, useState } from "react";
+import { Alert, Button, Linking, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import {
+  firestoreDocumentUrl,
+  withFirebaseApiKey,
+} from "@/constants/runtime-config";
 
 /*
 * Map with markers for origin, passengers, and destination
@@ -41,34 +39,15 @@ type RideParams = {
   DestinationLng:string;
 };
 
-const allRides = [
-  "Quebec",
-  "St Antoine de Tilly",
-  "St Jean",
-  "St redempteur",
-  "St Nicolas",
-  "Cegep Limoilou",
-  "Cegep Ste Foy",
-  "Cegep Garneau",
-  "Cegep Champlain St Lawrence",
-];
-
-const allCoords = [
-  { lat: 46.8139, lon: -71.2080 }, // Quebec
-  { lat: 46.6833, lon: -71.3333 }, // St Antoine de Tilly   
-  { lat: 46.8167, lon: -71.2333 }, // St Jean
-  { lat: 46.7833, lon: -71.2500 }, // St redempteur
-  { lat: 46.7833, lon: -71.1833 }, // St Nicolas
-  { lat: 46.7833, lon: -71.2333 }, // Cegep Limoilou
-  { lat: 46.7833, lon: -71.2667 }, // Cegep Ste Foy
-  { lat: 46.8000, lon: -71.2333 }, // Cegep Garneau
-  { lat: 46.8167, lon: -71.2500 }, // Cegep Champlain St Lawrence
-];
+const toSafeNumber = (value: string, fallback = 0): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
 
 export default function RideModeDriver() {
   useKeepAwake();
   const router = useRouter();
-  const { rideId, maxSeat, Originlat, OriginLng, DestinationLat, DestinationLng } = useLocalSearchParams<RideParams>();
+  const { rideId, Originlat, OriginLng, DestinationLat, DestinationLng } = useLocalSearchParams<RideParams>();
   //const [destinationCoords, setDestinationCoords] = useState<{latitude: number, longitude: number} | null>(null);
 
   const [passengerJoined, setPassengerJoined] = useState<string[]>();
@@ -78,98 +57,52 @@ export default function RideModeDriver() {
   
   //const [countdown, setCountdown] = useState(20); // 20-second countdown example
   //const [rideCancelled, setRideCancelled] = useState(false);
-        const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/uniliftdefault/documents/rides/${rideId}?key=${apiKey}`;
-
-   /*const normalizedDest = Destination
-  ?.toLowerCase()
-  .normalize("NFD")
-  .replace(/[\u0300-\u036f]/g, "")
-  .trim();
-
-const matchedRide = allRides.find(
-  ride =>
-    ride
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .trim() === normalizedDest
-);
-
-const rideIndex = matchedRide ? allRides.indexOf(matchedRide) : 0;*/
+        const url = withFirebaseApiKey(firestoreDocumentUrl("rides", rideId));
 
 const originCoords = {
-  latitude: parseFloat(Originlat),
-  longitude: parseFloat(OriginLng)
+  latitude: toSafeNumber(Originlat),
+  longitude: toSafeNumber(OriginLng)
 };
 
 
 const destCoords = {
-latitude: parseFloat(DestinationLat),
-longitude: parseFloat(DestinationLng)
+latitude: toSafeNumber(DestinationLat),
+longitude: toSafeNumber(DestinationLng)
 };
 
-
-
-
-  // 🔒 Disable hardware back button
-  /*useFocusEffect(
-    useCallback(() => {
-      const onBack = () => true;
-      BackHandler.addEventListener("hardwareBackPress", onBack);
-      return () => BackHandler.removeEventListener("hardwareBackPress", onBack);
-    }, [])
-  );*/
-
-  // 🕒 Countdown until ride starts
-  /*useEffect(() => {
-    if (countdown <= 0) return;
-
-    const timer = setInterval(() => {
-      setCountdown((c) => c - 1);
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [countdown]);*/
-
-  // 👤 Listen for passenger entering/canceling the ride
-  useEffect(() => {
-    if (!rideId) return;
-
-    const checkRide = async () => {
+  const passengerCountRef = useRef(0);
+  useAdaptivePolling(
+    async () => {
       try {
         const res = await fetch(url);
-        if (!res.ok) return;
+        if (!res.ok) return false;
 
         const data = await res.json();
+        const ids =
+          data?.fields?.passengers?.arrayValue?.values?.map((v: any) => v.stringValue) ?? [];
 
-        // Passenger added
-        if (data.fields.passengers.arrayValue.values && !passengerJoined) {
-          //setPassengerJoined(true);
-          setPassengerJoined(data.fields.passengers.arrayValue.values.map((v: any) => v.stringValue));
-          
-          Alert.alert("Passenger Joined", `A new passenger joined your ride.`);
+        if (ids.length > passengerCountRef.current) {
+          Alert.alert("Passenger Joined", "A new passenger joined your ride.");
         }
-
-        
-        
+        passengerCountRef.current = ids.length;
+        setPassengerJoined((prev) => {
+          const prevKey = (prev ?? []).join(",");
+          const nextKey = ids.join(",");
+          return prevKey === nextKey ? prev : ids;
+        });
+        return ids.length > 0;
       } catch (e) {
         console.log("Error polling ride:", e);
-      } finally {
-        if (passengerJoined?.length.toString() === maxSeat) {
-          //Alert.alert("Ride Full", "All seats are filled. The ride will start now.");
-          //startRideManually()
-        }
+        return false;
       }
-    };
-
-    // run immediately
-    checkRide();
-
-    // run every 60 seconds
-    const interval = setInterval(checkRide, 1000);
-
-    return () => clearInterval(interval);
-  }, [rideId, passengerJoined]);
+    },
+    {
+      enabled: Boolean(rideId),
+      initialDelayMs: 1500,
+      maxDelayMs: 20000,
+      backoffFactor: 1.6,
+    },
+  );
 
 
   // ❌ CANCEL RIDE (via Fetch DELETE)
@@ -192,7 +125,9 @@ longitude: parseFloat(DestinationLng)
 
   const endRide = async () => {
   //change status to completed
-    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/rides/${rideId}?key=${apiKey}&updateMask.fieldPaths=status`;
+    const url = withFirebaseApiKey(
+      `${firestoreDocumentUrl("rides", rideId)}?updateMask.fieldPaths=status`,
+    );
 
   const body = {
     fields: {
@@ -222,8 +157,7 @@ longitude: parseFloat(DestinationLng)
   const onPassengerKicked = async (passengerId: string) => {
     Alert.alert("Passenger Kicked", `Passenger ${passengerId} has been removed from the ride.`);
     
-    //const docPath = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/uniliftdefault/documents/rides/${rideId}?updateMask.fieldPaths=passengers`;
-     const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/rides/${rideId}?key=${apiKey}`;
+     const url = withFirebaseApiKey(firestoreDocumentUrl("rides", rideId));
 
   const body = {
     fields: {

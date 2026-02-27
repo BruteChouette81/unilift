@@ -1,4 +1,5 @@
 import { geoSuggestion } from "@/services/rideServices";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import React, { useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 
@@ -39,6 +40,7 @@ export default function FavoriteRouteForm({
     
   const [endSuggestions, setEndSuggestions] = useState<any[]>([]);
   const [showEndSuggestions, setShowEndSuggestions] = useState(false);
+  const debouncedEndAddress = useDebouncedValue(endAddress, 450);
  
 
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
@@ -70,27 +72,25 @@ export default function FavoriteRouteForm({
   };
 
   useEffect(() => {
-    
-    const timeout = setTimeout(async () => {
-       if (endAddress.length < 2) {
+    let cancelled = false;
+
+    const run = async () => {
+      if (debouncedEndAddress.length < 2) {
         setShowEndSuggestions(false);
-        //setSuggestions([]); 
-      } else {
-
-      //setLoading(true);
-      const results = await geoSuggestion(endAddress
-      );
-      //console.log(results)
-      setEndSuggestions(results);
-      setShowEndSuggestions(true);
+        return;
       }
-      //setLoading(false);
-    }, 1000); // debounce
 
-    return () => clearTimeout(timeout);
-    
-    
-  }, [endAddress]);
+      const results = await geoSuggestion(debouncedEndAddress.trim());
+      if (cancelled) return;
+      setEndSuggestions(results ?? []);
+      setShowEndSuggestions((results?.length ?? 0) > 0);
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedEndAddress]);
 
 
 
@@ -159,7 +159,13 @@ export default function FavoriteRouteForm({
 
 
 {initialData?.id !== undefined &&
-          <Pressable style={styles.deleteButton} onPress={() => {onDelete(initialData.id)}}>
+          <Pressable
+            style={styles.deleteButton}
+            onPress={() => {
+              if (initialData.id === undefined) return;
+              onDelete(initialData.id);
+            }}
+          >
             <Text style={styles.btnText}>Delete</Text>
           </Pressable>}
       </View>

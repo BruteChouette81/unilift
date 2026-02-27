@@ -1,18 +1,19 @@
 import { Ionicons } from "@expo/vector-icons";
-import React, { useEffect, useState } from "react";
+import React, { memo, useEffect, useState } from "react";
 import { Image, Pressable, StyleSheet, Text, TouchableOpacity, View } from "react-native";
-
-const projectId = "unilift-6e756";
-
-const apiKey = "AIzaSyDQMdY0la_sZuHvumHjFl4ibfCsOe1UW6Q"; // from Firebase console
+import {
+  extractDriverSummary,
+  fetchUserDocument,
+} from "@/services/userService";
 
 interface Driver {
   name?: string;
-  avatar?: string;
+  avatar?: string | null;
+  level?: number;
 }
 
 interface RideCardProps {
- driverId:string
+  driverId: string;
   rating: number;
   destination: string;
   seatsAvailable: number;
@@ -22,41 +23,34 @@ interface RideCardProps {
   onPress: () => void;
 }
 
+const DEFAULT_AVATAR =
+  "https://www.macfcu.org/wp-content/uploads/2024/02/Windows_10_Default_Profile_Picture.svg.png";
+const driverSummaryCache = new Map<string, Driver>();
 
+function RideCardComponent(props: RideCardProps) {
+  const [driver, setDriver] = useState<Driver | null>(null);
 
-export default function RideCard(props: RideCardProps) {
-  const [driver, setDriver] = useState<any>()
-
-  const getDriver = async (id:string) => {
-    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/uniliftdefault/documents/users/${id}?key=${apiKey}`;
-  try {
-    const res = await fetch(url);
-    if (!res.ok) {
-      console.log(res)
-    } else {
-       const data = await res.json();
-    console.log("Firestore user data:", data);
-    setDriver({name: data.fields.email.stringValue, level:data.fields.xp.integerValue, avatar:data.fields.avatar.stringValue}) //setup name and picture
-    //return data
+  const getDriver = async (id: string) => {
+    if (driverSummaryCache.has(id)) {
+      setDriver(driverSummaryCache.get(id) ?? null);
+      return;
     }
-   
-  } catch (err) {
-    console.error(err);
-  }
-
-}
-
+    const data = await fetchUserDocument(id);
+    const summary = extractDriverSummary(data);
+    driverSummaryCache.set(id, summary);
+    setDriver(summary);
+  };
 
   useEffect(() => {
-    getDriver(props.driverId)
-  }, [setDriver])
+    void getDriver(props.driverId);
+  }, [props.driverId]);
 
   return (
     <TouchableOpacity style={styles.card} activeOpacity={0.9} onPress={props.onPress}>
       <View style={styles.row}>
         {/* Driver avatar (placeholder) */}
         <Image
-          source={{ uri: driver?.avatar || "https://www.macfcu.org/wp-content/uploads/2024/02/Windows_10_Default_Profile_Picture.svg.png" }}
+          source={{ uri: driver?.avatar || DEFAULT_AVATAR }}
           style={styles.avatar}
         />
 
@@ -88,9 +82,10 @@ export default function RideCard(props: RideCardProps) {
     </TouchableOpacity>
   );
 }
+export default memo(RideCardComponent);
 
 interface RideCardSelectedProps {
- driverId:string
+  driverId: string;
   rating: number;
   destination: string;
   seatsAvailable: number;
@@ -102,38 +97,29 @@ interface RideCardSelectedProps {
 }
 
 export function RideCardSlected(props: RideCardSelectedProps) {
-  const [driver, setDriver] = useState<any>()
+  const [driver, setDriver] = useState<Driver | null>(null);
 
-  const getDriver = async (id:string) => {
-    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/uniliftdefault/documents/users/${id}?key=${apiKey}`;
-  try {
-    const res = await fetch(url);
-    if (!res.ok) {
-      console.log(res)
-    } else {
-       const data = await res.json();
-    console.log("Firestore user data:", data);
-    setDriver({name: data.fields.email.stringValue, level:data.fields.xp.integerValue, avatar:data.fields.avatar.stringValue})  //setup name and picture
-    //return data
+  const getDriver = async (id: string) => {
+    if (driverSummaryCache.has(id)) {
+      setDriver(driverSummaryCache.get(id) ?? null);
+      return;
     }
-   
-  } catch (err) {
-    console.error(err);
-  }
-
-}
-
+    const data = await fetchUserDocument(id);
+    const summary = extractDriverSummary(data);
+    driverSummaryCache.set(id, summary);
+    setDriver(summary);
+  };
 
   useEffect(() => {
-    getDriver(props.driverId)
-  }, [setDriver])
-//onPress={props.onPress}
+    void getDriver(props.driverId);
+  }, [props.driverId]);
+
   return (
     <View style={styles.card} > 
       <View style={styles.row}>
         {/* Driver avatar (placeholder) */}
         <Image
-          source={{ uri: driver?.avatar || "https://www.macfcu.org/wp-content/uploads/2024/02/Windows_10_Default_Profile_Picture.svg.png" }}
+          source={{ uri: driver?.avatar || DEFAULT_AVATAR }}
           style={styles.avatar}
         />
 

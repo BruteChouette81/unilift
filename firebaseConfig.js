@@ -9,24 +9,17 @@ import {
 import {
   getFirestore
 } from "firebase/firestore"; //getFirestore
+import { runtimeConfig } from "@/constants/runtime-config";
 
 
 const firebaseConfig = {
-
-  apiKey: "AIzaSyDQMdY0la_sZuHvumHjFl4ibfCsOe1UW6Q",
-
-  authDomain: "unilift-6e756.firebaseapp.com",
-
-  projectId: "unilift-6e756",
-
-  storageBucket: "unilift-6e756.firebasestorage.app",
-
-  messagingSenderId: "682863404857",
-
-  appId: "1:682863404857:web:a3a8c9a0436ccec5232ae8",
-
-  measurementId: "G-WWHVR2KVMX"
-
+  apiKey: runtimeConfig.firebaseApiKey,
+  authDomain: runtimeConfig.firebaseAuthDomain,
+  projectId: runtimeConfig.firebaseProjectId,
+  storageBucket: runtimeConfig.firebaseStorageBucket,
+  messagingSenderId: runtimeConfig.firebaseMessagingSenderId,
+  appId: runtimeConfig.firebaseAppId,
+  measurementId: runtimeConfig.firebaseMeasurementId,
 };
 
 //
@@ -50,4 +43,3 @@ const db = getFirestore(app);
 
 
 export { auth, db };
-

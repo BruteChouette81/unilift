@@ -4,17 +4,63 @@ This is an [Expo](https://expo.dev) project created with [`create-expo-app`](htt
 
 ## Get started
 
-1. Install dependencies
+1. Create environment file
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   Fill all `EXPO_PUBLIC_*` values in `.env`.
+
+2. Install dependencies
 
    ```bash
    npm install
    ```
 
-2. Start the app
+3. Start the app
 
    ```bash
    npx expo start
    ```
+
+## Security notes
+
+- Do not commit `.env` files.
+- Stripe keys are now read from env:
+  - Mobile app: `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY`
+  - Firebase functions: `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`
+
+## Code structure
+
+- `app/`
+  - `app/(auth)/login.tsx`: Login screen (route-level).
+  - `app/(auth)/signup.tsx`: Signup screen (route-level).
+  - `app/(tabs)/index.tsx`: Home/map + ride selection.
+  - `app/(tabs)/profile.tsx`: Profile UI wired to modular hooks.
+- `hooks/`
+  - `use-profile-data.ts`: profile user/ride fetch + refresh.
+  - `use-profile-avatar.ts`: avatar picking/upload flow.
+  - `use-profile-rides.ts`: start/cancel planned ride logic.
+  - `use-profile-favorites.ts`: favorite routes + home address updates.
+- `services/`
+  - `authService.ts`: auth actions, normalization, session validity checks.
+  - `userService.ts`: Firestore user document helpers/parsers.
+  - `rideServices.ts`: ride API operations.
+- `context/`
+  - `AuthContext.tsx`: auth state, guarded auth actions, session restore checks.
+- `constants/`
+  - `runtime-config.ts`: runtime env validation.
+  - `auth-theme.ts`: shared auth screen theme tokens/styles.
+
+## Cleanup status (Phase 3)
+
+- Removed dead/legacy components:
+  - `components/login-screen.tsx`
+  - `components/profile2.tsx`
+  - `components/home-screen.tsx`
+  - `components/signup-screen.tsx` (moved to route-level `app/(auth)/signup.tsx`)
+- Removed stale commented code paths from core screens.
 
 In the output, you'll find options to open the app in a
 

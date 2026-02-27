@@ -1,22 +1,20 @@
 
 import * as Location from "expo-location";
+import {
+  firestoreDocumentUrl,
+  runtimeConfig,
+  withFirebaseApiKey,
+} from "@/constants/runtime-config";
 import React, { useEffect, useState } from "react";
 import { Dimensions, StyleSheet, Text, View } from "react-native";
 import MapView, { Marker, Polyline } from "react-native-maps";
 
 //import { PolyUtil } from "leaflet";
 //import polyline from "@mapbox/polyline";
-//AIzaSyDZ-9oMg0-amcR0rvlgxDrIXh6S0bB8IEU
 //import PolylineDirection from "@react-native-maps/polyline-direction";
 
 //<Text style={styles.text}>🗺️ Map preview not available on web</Text>
 //style={styles.placeholder}
-
-const projectId = "unilift-6e756";
-
-const apiKey = "AIzaSyDQMdY0la_sZuHvumHjFl4ibfCsOe1UW6Q"; // from Firebase console
-
-
 
 function decodePolyline(encoded: string): number[][] {
   let index = 0;
@@ -82,7 +80,7 @@ interface UserRideMapViewProps {
   destination: { latitude: number; longitude: number };
 }
 async function fetchUser(uid:string) {
-  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/uniliftdefault/documents/users/${uid}?key=${apiKey}`;
+  const url = withFirebaseApiKey(firestoreDocumentUrl("users", uid));
   try {
     const res = await fetch(url);
     if (!res.ok) {
@@ -99,7 +97,6 @@ async function fetchUser(uid:string) {
 }
 
     async function getPathForRide(origin: number[], destination: number[]) {
-      const ors_apikep = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6Ijk3YWZhNDcxNWRkZjQxZDliNjUxOGVlZDg4NmYxOTk2IiwiaCI6Im11cm11cjY0In0="
        const url = "https://api.openrouteservice.org/v2/directions/driving-car/json";
   
     const body = {
@@ -110,7 +107,7 @@ async function fetchUser(uid:string) {
       const res = await fetch(url, {
         method: "POST",
         headers: {
-          "Authorization": ors_apikep,
+          "Authorization": runtimeConfig.orsApiKey,
           "Content-Type": "application/json"
         },
         body: JSON.stringify(body)

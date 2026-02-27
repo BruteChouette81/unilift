@@ -1,6 +1,16 @@
 const functions = require("firebase-functions");
 const express = require("express");
-const stripe = require('stripe')('sk_test_51STT8xLp2qE85Ber5F37hcmYkBOyy3U9ysK3jhFgRDYapZNl35767q4ZErC6cMJeaj7RbLqGqkduk0CURk4RGHZZ00tNN92Gnc');
+
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
+const STRIPE_PUBLISHABLE_KEY = process.env.STRIPE_PUBLISHABLE_KEY;
+
+if (!STRIPE_SECRET_KEY || !STRIPE_PUBLISHABLE_KEY) {
+  throw new Error(
+    "Missing Stripe function env vars: STRIPE_SECRET_KEY and STRIPE_PUBLISHABLE_KEY",
+  );
+}
+
+const stripe = require("stripe")(STRIPE_SECRET_KEY);
 
 const app = express();
 
@@ -26,7 +36,7 @@ app.post('/payment-sheet', async (req, res) => {
     // 3. Create PaymentIntent
     const paymentIntent = await stripe.paymentIntents.create({
       amount: 1099,
-      currency: 'cad',
+      currency: "cad",
       customer: customer.id,
       automatic_payment_methods: { enabled: true },
     });
@@ -36,7 +46,7 @@ app.post('/payment-sheet', async (req, res) => {
       paymentIntent: paymentIntent.client_secret,
       ephemeralKey: ephemeralKey.secret,
       customer: customer.id,
-      publishableKey: 'pk_test_51STT8xLp2qE85BeryLOWyCzhPYDoRJDXOYpGcuJUG5aQsPfkQ4grzZgtiqxQJuNoxSEHEpaTYjkXJrpCvcHWnzQu00nZkvFDFD'
+      publishableKey: STRIPE_PUBLISHABLE_KEY,
     });
 
   } catch (err) {

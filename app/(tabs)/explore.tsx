@@ -1,30 +1,30 @@
-import { RefreshControl, ScrollView, StyleSheet, TouchableOpacity } from 'react-native';
+import { RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import DropdownSection from '@/components/dropdowns-sections';
 import FavoriteRouteCard from '@/components/favorite-rides';
 import RideCard from '@/components/ridecard';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/context/AuthContext';
-import { acceptRide, fetchRides, geoSuggestion } from '@/services/rideServices';
+import { useDebouncedValue } from '@/hooks/use-debounced-value';
+import { fetchRides, geoSuggestion, type LocationResult } from '@/services/rideServices';
+import { extractFavoriteRoutes } from '@/services/userService';
 import { Ionicons } from "@expo/vector-icons";
-import { useEffect, useState } from 'react';
-import { Text, TextInput, View } from 'react-native';
-
-const projectId = "unilift-6e756";
-
-const apiKey = "AIzaSyDQMdY0la_sZuHvumHjFl4ibfCsOe1UW6Q"; // from Firebase console
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { FavoriteRoute, Ride } from '@/types/models';
+import {
+  firestoreDocumentUrl,
+  runtimeConfig,
+  withFirebaseApiKey,
+} from "@/constants/runtime-config";
 
 export async function geocodePlace(
   place: string,
-  apiKey: string
 ): Promise<{ lat: number; lon: number } | null> {
   try {
-      const ors_apikep = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6Ijk3YWZhNDcxNWRkZjQxZDliNjUxOGVlZDg4NmYxOTk2IiwiaCI6Im11cm11cjY0In0="
-   
     const url = `https://api.openrouteservice.org/geocode/search`;
 
     const response = await fetch(
-      `${url}?api_key=${ors_apikep}&text=${encodeURIComponent(place)}&size=1`
+      `${url}?api_key=${runtimeConfig.orsApiKey}&text=${encodeURIComponent(place)}&size=1`
     );
 
     if (!response.ok) {
@@ -54,56 +54,22 @@ export async function geocodePlace(
 
 export default function TabTwoScreen() {
    const [search, setSearch] = useState("");
-    const {user, loading} = useAuth()
-  const [selectedRide, setSelectedRide] = useState<any>({
-      driver: { name: "John D.", avatar: "https://via.placeholder.com/80" },
-      destination: "Central Park",
-      seats: 2,
-      time: "10:15 AM",
-    });
-  
-    const [createNewRide, setCreateNewRide] = useState(false)
-  
-   
-  
-    const [rides, setRides] = useState<any[]>([])
-    const [favoriteRoutes, setFavoriteRoutes] = useState<any[]>([])
+    const {user} = useAuth()
+    const [rides, setRides] = useState<Ride[]>([])
+    const [favoriteRoutes, setFavoriteRoutes] = useState<FavoriteRoute[]>([])
+    const debouncedSearch = useDebouncedValue(search, 400);
     
-    const acceptARide = (id: string) => {
-      acceptRide(id)
-      alert("Ride accepted")
-    }
-
-    const [suggestions, setSuggestions] = useState<any[]>([]);
+    const [suggestions, setSuggestions] = useState<LocationResult[]>([]);
 const [showSuggestions, setShowSuggestions] = useState(false);
 
   const [refreshing, setRefreshing] = useState(false);
-  const [filter, setFilter] = useState<any>(null);
+  const [filter, setFilter] = useState<{
+    minLat: number;
+    maxLat: number;
+    minLng: number;
+    maxLng: number;
+  } | null>(null);
 
-
-const allRides = [
-  "Quebec",
-  "St Antoine de Tilly",
-  "St Jean",
-  "St redempteur",
-  "St Nicolas",
-  "Cegep Limoilou",
-  "Cegep Ste Foy",
-  "Cegep Garneau",
-  "Cegep Champlain St Lawrence",
-];
-
-const allCoords = [
-  { lat: 46.8139, lon: -71.2080 }, // Quebec
-  { lat: 46.6833, lon: -71.3333 }, // St Antoine de Tilly   
-  { lat: 46.8167, lon: -71.2333 }, // St Jean
-  { lat: 46.7833, lon: -71.2500 }, // St redempteur
-  { lat: 46.7833, lon: -71.1833 }, // St Nicolas
-  { lat: 46.7833, lon: -71.2333 }, // Cegep Limoilou
-  { lat: 46.7833, lon: -71.2667 }, // Cegep Ste Foy
-  { lat: 46.8000, lon: -71.2333 }, // Cegep Garneau
-  { lat: 46.8167, lon: -71.2500 }, // Cegep Champlain St Lawrence
-];
 
 const radius = 10
 
@@ -123,28 +89,12 @@ function getBoundingBox(lat:number, lng:number) {
 }
 
 // Trigger suggestions
-const handleSearch = async (text: string) => {
+const handleSearch = (text: string) => {
   setSearch(text);
-
-  /*if (text.trim().length === 0) {
-    setSuggestions([]);
-    setShowSuggestions(false);
-    return;
-  }
-
-  const results = await geoSuggestion(text.toLowerCase().trim())
-  console.log(results)
-
-  const filtered = allRides.filter((r) =>
-    r.toLowerCase().includes(text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim())
-  );
-
-  setSuggestions(filtered);
-  setShowSuggestions(true);*/
 };
 
 // When user taps a suggestion
-const onSelectSuggestion = (value:any) => {
+const onSelectSuggestion = (value: LocationResult) => {
   
   setSearch(value.displayName);
   setShowSuggestions(false);
@@ -153,83 +103,121 @@ const onSelectSuggestion = (value:any) => {
 
 
   const box = getBoundingBox(parseFloat(value.lat), parseFloat(value.lon));
-  console.log(box);
   setFilter(box);
 
 };
 
-    async function fetchUser(uid:string) {
-  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/uniliftdefault/documents/users/${uid}?key=${apiKey}`;
+    const createDefaultUserProfile = useCallback(async (uid: string, token: string, email?: string | null) => {
+  const url = withFirebaseApiKey(firestoreDocumentUrl("users", uid));
+  const payload = {
+    fields: {
+      email: { stringValue: email ?? "" },
+      xp: { integerValue: 0 },
+      ratings: { integerValue: 0 },
+      ratingWeigth: { integerValue: 0 },
+      favorite: { arrayValue: { values: [] } },
+      createdAt: { timestampValue: new Date().toISOString() },
+    },
+  };
+
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const details = await res.text().catch(() => "");
+    throw new Error(`Failed creating user profile (${res.status}): ${details}`);
+  }
+
+  return await res.json();
+}, []);
+
+    const fetchUser = useCallback(async (uid:string, token?: string, email?: string | null) => {
+  const url = withFirebaseApiKey(firestoreDocumentUrl("users", uid));
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    });
     if (!res.ok) {
-      console.log(res)
+      if (res.status === 404 && token) {
+        return await createDefaultUserProfile(uid, token, email);
+      }
+      console.log("Failed to fetch user profile in explore:", res.status);
+      return null;
     } else {
        const data = await res.json();
-    console.log("Firestore user data:", JSON.stringify(data.fields.favorite));
+    console.log("Firestore user data:", JSON.stringify(data?.fields?.favorite));
     return data
     }
    
   } catch (err) {
     console.error(err);
+    return null;
   }
-}
+}, [createDefaultUserProfile]);
 
+const reloadData = useCallback(async (forceRidesFetch = false) => {
+  const rideData = await fetchRides({ force: forceRidesFetch }).catch(() => []);
+  setRides(rideData);
+  if(!user) return;
 
-
-async function whattodoonrefresh() {
-  fetchRides().then(setRides).catch(console.error);
-      if(!user) return;
-      fetchUser(user.uid).then((data) => {
-        if (data.fields.favorite?.arrayValue?.values?.length > 0) {
-          const favs = data.fields.favorite.arrayValue.values.map((item: any) => ({
-            destinationGeo: { lat: parseFloat(item.mapValue.fields.destinationGeolocation?.geoPointValue?.latitude),
-                            lon: parseFloat(item.mapValue.fields.destinationGeolocation?.geoPointValue?.longitude) },
-            destination: item.mapValue.fields.destination.stringValue,
-          }));
-          setFavoriteRoutes(favs);
-        }}).catch(console.error);
-}
+  const token = await user.getIdToken().catch(() => null);
+  const data = await fetchUser(user.uid, token ?? undefined, user.email).catch(() => null);
+  const favs = extractFavoriteRoutes(data);
+  setFavoriteRoutes(favs);
+}, [fetchUser, user]);
 
   
    useEffect(() => {
-      fetchRides().then(setRides).catch(console.error);
-      if(!user) return;
-      fetchUser(user.uid).then((data) => {
-        if (data.fields.favorite?.arrayValue?.values?.length > 0) {
-          const favs = data.fields.favorite.arrayValue.values.map((item: any) => ({
-            destinationGeo: { lat: parseFloat(item.mapValue.fields.destinationGeolocation?.geoPointValue?.latitude),
-                            lon: parseFloat(item.mapValue.fields.destinationGeolocation?.geoPointValue?.longitude) },
-            destination: item.mapValue.fields.destination.stringValue,
-          }));
-          setFavoriteRoutes(favs);
-        }}).catch(console.error);
-    }, []);
+      void reloadData();
+    }, [reloadData]);
 
     useEffect(() => {
-    const timeout = setTimeout(async () => {
-      if (search?.length < 2) {
+    let cancelled = false;
+    const run = async () => {
+      if (debouncedSearch?.length < 2) {
         setShowSuggestions(false);
-        //setSuggestions([]);
+        setSuggestions([]);
         return;
       }
 
-      //setLoading(true);
-      const results = await geoSuggestion(search);
-      //console.log(results)
-      setSuggestions(results);
-      setShowSuggestions(true);
-      //setLoading(false);
-    }, 1000); // debounce
+      const results = await geoSuggestion(debouncedSearch.trim());
+      if (cancelled) return;
+      setSuggestions(results ?? []);
+      setShowSuggestions((results?.length ?? 0) > 0);
+    };
 
-    return () => clearTimeout(timeout);
-  }, [search]);
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedSearch]);
 
-     const onRefresh = async () => {
+     const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await whattodoonrefresh(); // refetch your data or do other reloading logic
+    await reloadData(true);
     setRefreshing(false);
-  };
+  }, [reloadData]);
+
+  const filteredRides = useMemo(
+    () =>
+      filter
+        ? rides.filter(
+            (ride) =>
+              ride.destinationCoords.latitude >= filter.minLat &&
+              ride.destinationCoords.latitude <= filter.maxLat &&
+              ride.destinationCoords.longitude >= filter.minLng &&
+              ride.destinationCoords.longitude <= filter.maxLng &&
+              ride.status === "planned",
+          )
+        : [],
+    [filter, rides],
+  );
    {/*<Text>Find rides near you</Text>*/}
          {/* Search Bar */}
   
@@ -266,7 +254,7 @@ async function whattodoonrefresh() {
        <DropdownSection title="⭐ Favorite Routes">
         <ThemedView style={styles.rideList}>
                       {favoriteRoutes ? 
-                                favoriteRoutes.map((route: any, index: number) => (
+                                favoriteRoutes.map((route: FavoriteRoute, index: number) => (
                                    <FavoriteRouteCard
                                    key={index}
                              
@@ -283,15 +271,17 @@ async function whattodoonrefresh() {
       </DropdownSection>
 
             {filter ? <ThemedView style={styles.rideList}>
-                      {rides.map((ride, index) => {
-                       if (ride.destinationCoords.latitude >= filter.minLat && ride.destinationCoords.latitude <= filter.maxLat &&
-                             ride.destinationCoords.longitude >= filter.minLng && ride.destinationCoords.longitude <= filter.maxLng ) {
-                               return (
-                                 ride.status=="planned" && <RideCard key={index} {...ride} />
-                               )
-                              }
-                                 
-                       })}
+                      {filteredRides.map((ride) => (
+                        <RideCard
+                          key={ride.id}
+                          {...ride}
+                          rating={0}
+                          level={0}
+                          time={ride.time ?? ""}
+                          origin={`${ride.localisation.latitude.toFixed(3)}, ${ride.localisation.longitude.toFixed(3)}`}
+                          onPress={() => {}}
+                        />
+                      ))}
                     </ThemedView> :  <View style={styles.containerNoride}>
       <Text style={styles.title}>Where do you want to go ?</Text>
       <Text style={styles.subtitle}>

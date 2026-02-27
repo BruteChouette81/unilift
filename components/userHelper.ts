@@ -1,70 +1,66 @@
+import { firestoreDocumentUrl } from "@/constants/runtime-config";
+import { extractFavoriteRoutes, fetchUserDocument } from "@/services/userService";
+import type { LocationPoint, UserProfile } from "@/types/models";
+import type { User } from "firebase/auth";
 
+// function to deal with the firebase database for the users
 
-//function to deal with the firebase database for the users
-
-const projectId = "unilift-6e756";
-
-const apiKey = "AIzaSyDQMdY0la_sZuHvumHjFl4ibfCsOe1UW6Q"; 
-
-type FirestoreUser = any;
-
-type Location = {
-  latitude: number;
-  longitude: number;
-};
+type FirestoreUser = { fields?: Record<string, unknown> } | null;
+type Location = LocationPoint;
 
 async function fetchUser(uid:string) {
-  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/uniliftdefault/documents/users/${uid}?key=${apiKey}`;
-  try {
-    const res = await fetch(url);
-    if (!res.ok) {
-      console.log(res)
-    } else {
-       const data = await res.json();
-    console.log("Firestore user data:", JSON.stringify(data.fields.avatar?.stringValue));
-    return data
-    }
-   
-  } catch (err) {
-    console.error(err);
+  const data = await fetchUserDocument(uid);
+  if (data) {
+    console.log(
+      "Firestore user data:",
+      JSON.stringify(data.fields?.avatar),
+    );
   }
+  return data;
 }
+
+const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+  typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+
+const fieldString = (fields: Record<string, unknown>, key: string, fallback = "") => {
+  const field = asRecord(fields[key]);
+  return typeof field?.stringValue === "string" ? field.stringValue : fallback;
+};
+
+const fieldInt = (fields: Record<string, unknown>, key: string, fallback = 0) => {
+  const field = asRecord(fields[key]);
+  const parsed = Number(field?.integerValue);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
 
 export const normalizeUserData = (
   data: FirestoreUser,
   fallbackLoc?: Location
-) => {
-  const fields = data?.fields || {};
-
-  const localisation = fields.localisation?.geoPointValue;
+): UserProfile => {
+  const fields = asRecord(data?.fields) ?? {};
+  const localisationField = asRecord(fields.localisation);
+  const localisation = asRecord(localisationField?.geoPointValue);
 
   return {
-    email: fields.email?.stringValue ?? "",
-    xp: Number(fields.xp?.integerValue ?? 0),
-    rating: Number(fields.rating?.integerValue ?? 0),
-    avatar: fields.avatar?.stringValue ?? null,
-    homeAddress: fields.homeAddress?.stringValue ?? null,
+    email: fieldString(fields, "email", ""),
+    xp: fieldInt(fields, "xp", 0),
+    rating: fieldInt(fields, "rating", 0),
+    avatar: fieldString(fields, "avatar", "") || null,
+    homeAddress: fieldString(fields, "homeAddress", "") || null,
 
     localisation: {
       latitude:
-        localisation?.latitude ?? fallbackLoc?.latitude ?? null,
+        (typeof localisation?.latitude === "number" ? localisation.latitude : null) ??
+        fallbackLoc?.latitude ??
+        null,
       longitude:
-        localisation?.longitude ?? fallbackLoc?.longitude ?? null,
+        (typeof localisation?.longitude === "number" ? localisation.longitude : null) ??
+        fallbackLoc?.longitude ??
+        null,
     },
 
-    ridesCompleted: Number(fields.ridesCompleted?.integerValue ?? 0),
-
-    favorite:
-      fields.favorite?.arrayValue?.values?.map((item: any) => {
-        const f = item.mapValue?.fields || {};
-        return {
-          destination: f.destination?.stringValue ?? "",
-          destinationGeo: {
-            lat: f.destinationGeolocation?.geoPointValue?.latitude ?? null,
-            lon: f.destinationGeolocation?.geoPointValue?.longitude ?? null,
-          },
-        };
-      }) ?? [],
+    ridesCompleted: fieldInt(fields, "ridesCompleted", 0),
+    favorite: extractFavoriteRoutes(data),
   };
 };
 
@@ -87,44 +83,70 @@ export const fetchAndSyncUserData = async ({
   updateLoc,
   setUserData,
 }: {
-  user: any;
+  user: User;
   getUserLocation: () => Promise<Location>;
   updateLoc: (token: string, uid: string, loc: Location) => Promise<void>;
-  setUserData: (data: any) => void;
+  setUserData: (data: UserProfile) => void;
 }) => {
   if (!user) return;
 
   try {
-    const [loc, firestoreData] = await Promise.all([
-      getUserLocation(),
-      fetchUser(user.uid),
-    ]);
+    const firestoreData = await fetchUser(user.uid);
+    let loc: Location | undefined;
+
+    try {
+      loc = await getUserLocation();
+    } catch (locationErr) {
+      console.warn("Location unavailable, continuing without live location:", locationErr);
+    }
 
     const normalized = normalizeUserData(firestoreData, loc);
 
-    const needsUpdate = shouldUpdateLocation(
-      loc,
-      firestoreData?.fields?.localisation?.geoPointValue
-    );
+    const needsUpdate = loc
+      ? shouldUpdateLocation(
+          loc,
+          asRecord(asRecord(firestoreData?.fields)?.localisation)?.geoPointValue as
+            | { latitude?: number; longitude?: number }
+            | undefined,
+        )
+      : false;
 
-    if (needsUpdate) {
-      await updateLoc(await user.getIdToken(), user.uid, loc);
-      normalized.localisation = loc;
+    if (needsUpdate && loc) {
+      try {
+        await updateLoc(await user.getIdToken(), user.uid, loc);
+        normalized.localisation = loc;
+      } catch (updateErr) {
+        console.warn("Failed to sync location to Firestore:", updateErr);
+      }
+    }
+
+    if (!normalized.email && user?.email) {
+      normalized.email = user.email;
     }
 
     setUserData(normalized);
   } catch (err) {
     console.error("fetchAndSyncUserData error:", err);
+    setUserData({
+      email: user?.email ?? "",
+      xp: 0,
+      rating: 0,
+      avatar: null,
+      homeAddress: null,
+      localisation: { latitude: null, longitude: null },
+      ridesCompleted: 0,
+      favorite: [],
+    });
   }
 };
 
 export async function patchUserField(
   token: string,
   uid: string,
-  fields: Record<string, any>
+  fields: Record<string, unknown>
 ) {
   const res = await fetch(
-    `https://firestore.googleapis.com/v1/projects/${projectId}/databases/uniliftdefault/documents/users/${uid}`,
+    firestoreDocumentUrl("users", uid),
     {
       method: "PATCH",
       headers: {

@@ -18,6 +18,7 @@ const MAPPING = {
   'paperplane.fill': 'car-rental',
   'chevron.left.forwardslash.chevron.right': 'code',
   'chevron.right': 'chevron-right',
+  'person.crop.circle.fill': 'account-circle',
   
 } as IconMapping;
 

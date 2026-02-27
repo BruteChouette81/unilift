@@ -2,11 +2,16 @@
 import { UserRideMapView } from '@/components/mapview';
 import RatingScreen from '@/components/ratings';
 import { useAuth } from '@/context/AuthContext';
+import { useAdaptivePolling } from '@/hooks/use-adaptive-polling';
 import { NavigationProp } from '@react-navigation/native';
 import { useKeepAwake } from 'expo-keep-awake';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import {
+  firestoreDocumentUrl,
+  withFirebaseApiKey,
+} from "@/constants/runtime-config";
 // Define type for navigation prop (replace RootStackParamList with your stack types)
 type RootStackParamList = {
   Home: undefined;
@@ -27,34 +32,10 @@ type RideParams = {
   DestinationLng:string;
 };
 
-const allRides = [
-  "Quebec",
-  "St Antoine de Tilly",
-  "St Jean",
-  "St redempteur",
-  "St Nicolas",
-  "Cegep Limoilou",
-  "Cegep Ste Foy",
-  "Cegep Garneau",
-  "Cegep Champlain St Lawrence",
-];
-
-const allCoords = [
-  { lat: 46.8139, lon: -71.2080 }, // Quebec
-  { lat: 46.6833, lon: -71.3333 }, // St Antoine de Tilly   
-  { lat: 46.8167, lon: -71.2333 }, // St Jean
-  { lat: 46.7833, lon: -71.2500 }, // St redempteur
-  { lat: 46.7833, lon: -71.1833 }, // St Nicolas
-  { lat: 46.7833, lon: -71.2333 }, // Cegep Limoilou
-  { lat: 46.7833, lon: -71.2667 }, // Cegep Ste Foy
-  { lat: 46.8000, lon: -71.2333 }, // Cegep Garneau
-  { lat: 46.8167, lon: -71.2500 }, // Cegep Champlain St Lawrence
-];
-
- const projectId = "unilift-6e756";
-        const apiKey = "AIzaSyDQMdY0la_sZuHvumHjFl4ibfCsOe1UW6Q"; // from Firebase console
-
-
+const toSafeNumber = (value: string, fallback = 0): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
 
 /**
  * ride joined loc (marker)
@@ -72,7 +53,7 @@ export default function RideScreen({ navigation }: RideScreenProps) {
   useKeepAwake();
     const router = useRouter();
 
-      const {user, loading} = useAuth()
+      const {user} = useAuth()
     
   
 
@@ -86,8 +67,11 @@ export default function RideScreen({ navigation }: RideScreenProps) {
   );*/
 
   const quitRide = async () => {
+    if (!user) return;
     //make a full api call to cancel ride
-     const rideUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/uniliftdefault/documents/rides/${rideId}?key=${apiKey}?updateMask.fieldPaths=passengers,seatsAvailable`;
+     const rideUrl = withFirebaseApiKey(
+      `${firestoreDocumentUrl("rides", rideId)}?updateMask.fieldPaths=passengers,seatsAvailable`,
+    );
 
   // Get current passengers
   const rideRes = await fetch(rideUrl);
@@ -151,38 +135,49 @@ const matchedRide = allRides.find(
 const rideIndex = matchedRide ? allRides.indexOf(matchedRide) : 0;*/
 
 const originCoords = {
-  latitude: parseFloat(Originlat),
-  longitude: parseFloat(OriginLng)
+  latitude: toSafeNumber(Originlat),
+  longitude: toSafeNumber(OriginLng)
 };
 setOriginCoords(originCoords);
 
 const destCoords = {
-  latitude: parseFloat(DestinationLat),
-  longitude: parseFloat(DestinationLng)
+  latitude: toSafeNumber(DestinationLat),
+  longitude: toSafeNumber(DestinationLng)
 };
 
 setDestinationCoords(destCoords)}, [DestinationLat, DestinationLng, Originlat, OriginLng, setDestinationCoords, setOriginCoords]);
-//check if kicked out of ride every 5 seconds
-  useEffect(() => {
-    const checkRide = async () => {
+  const hasNavigatedAwayRef = useRef(false);
+  useAdaptivePolling(
+    async () => {
       try {
-        const rideUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/uniliftdefault/documents/rides/${rideId}?key=${apiKey}`;
+        const rideUrl = withFirebaseApiKey(
+          firestoreDocumentUrl("rides", rideId),
+        );
         const rideRes = await fetch(rideUrl);
+        if (!rideRes.ok) return false;
         const rideData = await rideRes.json();
         let currentPassengers =
           rideData.fields.passengers.arrayValue?.values?.map((v: any) => v.stringValue) || [];
-        if (!currentPassengers.includes(user?.uid)) {
+        const removed = !currentPassengers.includes(user?.uid);
+        if (removed && !hasNavigatedAwayRef.current) {
           // User has been removed from the ride
+          hasNavigatedAwayRef.current = true;
           alert("You have been removed from the ride.");
           router.push('/(tabs)');
         }
+        return !removed;
       } catch (error) {
         console.error("Error checking ride status:", error);
+        return false;
       }
-    };
-    const interval = setInterval(checkRide, 5000);
-    return () => clearInterval(interval);
-  }, [rideId, user?.uid, router]);
+    },
+    {
+      enabled: Boolean(rideId && user?.uid),
+      initialDelayMs: 2500,
+      maxDelayMs: 30000,
+      backoffFactor: 1.8,
+    },
+  );
 
   return (
     rideEnded ? <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>

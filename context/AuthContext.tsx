@@ -1,30 +1,166 @@
 // context/AuthContext.tsx
 import { auth } from "@/firebaseConfig";
-import { onAuthStateChanged, User } from "firebase/auth";
-import { createContext, useContext, useEffect, useState } from "react";
+import { onAuthStateChanged, type Auth, User, type UserCredential } from "firebase/auth";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { AppState } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { type AuthState, type AuthStatus } from "@/types/models";
+import {
+  ensureSessionIsValid,
+  signInWithEmail,
+  signOutUser as signOutService,
+  signUpWithEmail,
+} from "@/services/authService";
 
-const AuthContext = createContext({
-  user: null as User | null,
-  loading: true,
-});
+type AuthContextValue = AuthState & {
+  signIn: (email: string, password: string) => Promise<UserCredential>;
+  signUp: (
+    name: string,
+    email: string,
+    password: string,
+  ) => Promise<UserCredential>;
+  signOutUser: () => Promise<void>;
+};
+
+const AuthContext = createContext<AuthContextValue | undefined>(undefined);
+const firebaseAuth: Auth = auth;
+const INSTALL_MARKER_KEY = "unilift.install.marker.v1";
+const createRequestInProgressError = () => {
+  const error = new Error("An authentication request is already in progress.");
+  (error as Error & { code: string }).code = "auth/request-in-progress";
+  return error;
+};
 
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState<AuthStatus>("initializing");
+  const [authActionLoading, setAuthActionLoading] = useState(false);
+  const [installCheckDone, setInstallCheckDone] = useState(false);
+  const sessionCheckInFlightRef = useRef(false);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+    let mounted = true;
+
+    const ensureFreshInstallState = async () => {
+      try {
+        const marker = await AsyncStorage.getItem(INSTALL_MARKER_KEY);
+        if (!marker) {
+          if (firebaseAuth.currentUser) {
+            await signOutService().catch(() => {});
+            if (mounted) {
+              setUser(null);
+              setStatus("unauthenticated");
+            }
+          }
+          await AsyncStorage.setItem(INSTALL_MARKER_KEY, "1");
+        }
+      } finally {
+        if (mounted) {
+          setInstallCheckDone(true);
+        }
+      }
+    };
+
+    void ensureFreshInstallState();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(firebaseAuth, (firebaseUser) => {
       setUser(firebaseUser);
-      setLoading(false);
+      setStatus(firebaseUser ? "authenticated" : "unauthenticated");
+      setAuthActionLoading(false);
     });
     return unsubscribe;
   }, []);
 
-  return (
-    <AuthContext.Provider value={{ user, loading }}>
-      {children}
-    </AuthContext.Provider>
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", async (state) => {
+      if (
+        state !== "active" ||
+        !firebaseAuth.currentUser ||
+        authActionLoading ||
+        sessionCheckInFlightRef.current
+      ) {
+        return;
+      }
+
+      sessionCheckInFlightRef.current = true;
+
+      try {
+        const isValid = await ensureSessionIsValid();
+        if (isValid) return;
+
+        await signOutService();
+        setUser(null);
+        setStatus("unauthenticated");
+      } finally {
+        sessionCheckInFlightRef.current = false;
+      }
+    });
+
+    return () => subscription.remove();
+  }, [authActionLoading]);
+
+  const value = useMemo<AuthContextValue>(
+    () => ({
+      user,
+      status,
+      loading: status === "initializing" || !installCheckDone,
+      authActionLoading,
+      signIn: async (email: string, password: string) => {
+        if (authActionLoading) {
+          throw createRequestInProgressError();
+        }
+
+        setAuthActionLoading(true);
+        try {
+          return await signInWithEmail(email, password);
+        } finally {
+          setAuthActionLoading(false);
+        }
+      },
+      signUp: async (name: string, email: string, password: string) => {
+        if (authActionLoading) {
+          throw createRequestInProgressError();
+        }
+
+        setAuthActionLoading(true);
+        try {
+          return await signUpWithEmail(name, email, password);
+        } finally {
+          setAuthActionLoading(false);
+        }
+      },
+      signOutUser: async () => {
+        if (authActionLoading) {
+          throw createRequestInProgressError();
+        }
+
+        setAuthActionLoading(true);
+        try {
+          await signOutService();
+          // Keep navigation state deterministic even if auth listener is delayed.
+          setUser(null);
+          setStatus("unauthenticated");
+        } finally {
+          setAuthActionLoading(false);
+        }
+      },
+    }),
+    [authActionLoading, installCheckDone, status, user],
   );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
 
-export const useAuth = () => useContext(AuthContext);
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error("useAuth must be used within AuthProvider");
+  }
+  return context;
+};

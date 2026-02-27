@@ -1,4 +1,5 @@
 import DateTimePicker from "@react-native-community/datetimepicker";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import * as Location from "expo-location";
 import { GeoPoint } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
@@ -18,21 +19,20 @@ import { router } from "expo-router";
 import { createRide, geoSuggestion } from "../services/rideServices";
 
 export default function CreateRideScreen(props: {cancelCreate: ()=> void}) {
-  const [origin, setOrigin] = useState("");
   const [destination, setDestination] = useState("");
 
   const [date, setDate] = useState(new Date());
   const [showPicker, setShowPicker] = useState(false);
   const [seats, setSeats] = useState("1");
-  const [price, setPrice] = useState("0");
   const [suggestions, setSuggestions] = useState<any[]>([]);
 const [showSuggestions, setShowSuggestions] = useState(false);
- const [foundSuggest, setFoundSuggest] = useState(false)
  const [liveRide, setLiveRide] = useState(true);
  const [destinationCoords, setDestinationCoords] = useState<{lat:number, lng:number}>()
+ const debouncedDestination = useDebouncedValue(destination, 450);
 
  const onDestinationChange = (text:string) => {
   setDestination(text)
+  setShowSuggestions(false);
 
   /*if (text.trim().length === 0) {
     setSuggestions([]);
@@ -47,18 +47,6 @@ const [showSuggestions, setShowSuggestions] = useState(false);
   setSuggestions(filtered);
   setShowSuggestions(true);*/
  }
-
-  const allRides = [
-  "Quebec",
-  "St Antoine de Tilly",
-  "St Jean",
-  "St redempteur",
-  "St Nicolas",
-  "Cegep Limoilou",
-  "Cegep Ste Foy",
-  "Cegep Garneau",
-  "Cegep Champlain St Lawrence",
-];
 
     async function getUserLocation() {
         // Ask permission
@@ -132,29 +120,27 @@ const [showSuggestions, setShowSuggestions] = useState(false);
   setDestination(destString);
   setDestinationCoords({lat, lng})
   setShowSuggestions(false);
-  setFoundSuggest(true)
 };
 
     useEffect(() => {
-    const timeout = setTimeout(async () => {
-      if(!foundSuggest) {
-      if (destination.length < 2) {
+    let cancelled = false;
+    const run = async () => {
+      if (debouncedDestination.length < 2) {
         setShowSuggestions(false);
-        //setSuggestions([]);
         return;
       }
 
-      //setLoading(true);
-      const results = await geoSuggestion(destination);
-      //console.log(results)
-      setSuggestions(results);
-      setShowSuggestions(true);
-      //setLoading(false);
-    }
-    }, 1000); // debounce
+      const results = await geoSuggestion(debouncedDestination.trim());
+      if (cancelled) return;
+      setSuggestions(results ?? []);
+      setShowSuggestions((results?.length ?? 0) > 0);
+    };
 
-    return () => clearTimeout(timeout);
-  }, [destination]);
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedDestination]);
 
   
 
