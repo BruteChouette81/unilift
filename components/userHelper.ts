@@ -8,15 +8,8 @@ import type { User } from "firebase/auth";
 type FirestoreUser = { fields?: Record<string, unknown> } | null;
 type Location = LocationPoint;
 
-async function fetchUser(uid:string) {
-  const data = await fetchUserDocument(uid);
-  if (data) {
-    console.log(
-      "Firestore user data:",
-      JSON.stringify(data.fields?.avatar),
-    );
-  }
-  return data;
+async function fetchUser(uid: string, token?: string) {
+  return await fetchUserDocument(uid, token);
 }
 
 const asRecord = (value: unknown): Record<string, unknown> | undefined =>
@@ -91,7 +84,8 @@ export const fetchAndSyncUserData = async ({
   if (!user) return;
 
   try {
-    const firestoreData = await fetchUser(user.uid);
+    const token = await user.getIdToken().catch(() => undefined);
+    const firestoreData = await fetchUser(user.uid, token);
     let loc: Location | undefined;
 
     try {

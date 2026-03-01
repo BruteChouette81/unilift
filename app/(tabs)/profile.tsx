@@ -281,10 +281,7 @@ const ProfileScreen = () => {
       </View>
 
       <View style={styles.topRow}>
-        <Pressable
-          onPress={handleLogout}
-          style={styles.logoutButton}
-        >
+        <Pressable onPress={handleLogout} style={styles.logoutButton}>
           <Text style={styles.logoutText}>Log out</Text>
         </Pressable>
       </View>
@@ -399,6 +396,7 @@ const styles = StyleSheet.create({
     color: "white",
     fontSize: 22,
     fontWeight: "700",
+    marginVertical: 8,
   },
   levelSubtitle: {
     color: "#888",

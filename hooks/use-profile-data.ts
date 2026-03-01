@@ -82,11 +82,15 @@ export function useProfileData(user: User | null) {
   }, [getUserLocation, updateLoc, user]);
 
   useEffect(() => {
-    if (user && !userData) {
-      setUserData(buildFallbackProfile(user.email ?? ""));
+    if (!user) {
+      setUserData(null);
+      setRides(null);
+      return;
     }
+
+    setUserData((prev) => prev ?? buildFallbackProfile(user.email ?? ""));
     void reloadData();
-  }, [reloadData, user, userData]);
+  }, [reloadData, user]);
 
   const onRefresh = useCallback(async () => {
     if (!user) return;

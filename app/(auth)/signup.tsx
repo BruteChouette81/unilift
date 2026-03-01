@@ -1,9 +1,11 @@
 import { doc, setDoc } from "firebase/firestore";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
+import * as AppleAuthentication from "expo-apple-authentication";
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   Pressable,
   Text,
   TextInput,
@@ -16,7 +18,7 @@ import { normalizeAuthError } from "@/services/authService";
 
 export default function SignupScreen() {
   const router = useRouter();
-  const { signUp, authActionLoading } = useAuth();
+  const { signUp, signInWithApple, authActionLoading } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
@@ -59,6 +61,32 @@ export default function SignupScreen() {
         ]);
         return;
       }
+      Alert.alert(authError.title, authError.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleAppleSignup = async () => {
+    if (isSubmitting) return;
+
+    try {
+      setSubmitting(true);
+      const cred = await signInWithApple();
+
+      void setDoc(
+        doc(db, "users", cred.user.uid),
+        {
+          name: cred.user.displayName ?? "",
+          email: cred.user.email ?? "",
+          createdAt: new Date().toISOString(),
+        },
+        { merge: true },
+      );
+
+      router.replace("/(tabs)");
+    } catch (err) {
+      const authError = normalizeAuthError(err, "Apple signup failed");
       Alert.alert(authError.title, authError.message);
     } finally {
       setSubmitting(false);
@@ -115,6 +143,16 @@ export default function SignupScreen() {
             <Text style={authStyles.buttonText}>Sign Up</Text>
           )}
         </Pressable>
+
+        {Platform.OS === "ios" && (
+          <AppleAuthentication.AppleAuthenticationButton
+            buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_UP}
+            buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+            cornerRadius={10}
+            style={{ width: "100%", height: 48, marginTop: 12 }}
+            onPress={handleAppleSignup}
+          />
+        )}
 
         <Text
           onPress={() => !isSubmitting && router.replace("/login")}

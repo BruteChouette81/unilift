@@ -1,8 +1,11 @@
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
+import * as AppleAuthentication from "expo-apple-authentication";
+import { doc, setDoc } from "firebase/firestore";
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   Pressable,
   Text,
   TextInput,
@@ -10,11 +13,12 @@ import {
 } from "react-native";
 import { authColors, authStyles } from "@/constants/auth-theme";
 import { useAuth } from "@/context/AuthContext";
+import { db } from "@/firebaseConfig";
 import { normalizeAuthError } from "@/services/authService";
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { signIn, authActionLoading } = useAuth();
+  const { signIn, signInWithApple, authActionLoading } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -42,6 +46,32 @@ export default function LoginScreen() {
         ]);
         return;
       }
+      Alert.alert(authError.title, authError.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleAppleLogin = async () => {
+    if (isSubmitting) return;
+
+    try {
+      setSubmitting(true);
+      const cred = await signInWithApple();
+
+      void setDoc(
+        doc(db, "users", cred.user.uid),
+        {
+          name: cred.user.displayName ?? "",
+          email: cred.user.email ?? "",
+          createdAt: new Date().toISOString(),
+        },
+        { merge: true },
+      );
+
+      router.replace("/(tabs)");
+    } catch (err) {
+      const authError = normalizeAuthError(err, "Apple login failed");
       Alert.alert(authError.title, authError.message);
     } finally {
       setSubmitting(false);
@@ -89,6 +119,17 @@ export default function LoginScreen() {
             <Text style={authStyles.buttonText}>Log In</Text>
           )}
         </Pressable>
+
+        {Platform.OS === "ios" && (
+          <AppleAuthentication.AppleAuthenticationButton
+            buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
+            buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+            cornerRadius={10}
+            style={{ width: "100%", height: 48, marginTop: 12 }}
+            onPress={handleAppleLogin}
+          />
+        )}
+
         <Text
           onPress={() => !isSubmitting && router.replace("/signup")}
           style={authStyles.link}

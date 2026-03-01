@@ -1,11 +1,14 @@
 import {
   type Auth,
   createUserWithEmailAndPassword,
+  OAuthProvider,
   signInWithEmailAndPassword,
+  signInWithCredential,
   signOut,
   updateProfile,
   type UserCredential,
 } from "firebase/auth";
+import * as AppleAuthentication from "expo-apple-authentication";
 import { auth } from "@/firebaseConfig";
 const firebaseAuth: Auth = auth;
 
@@ -60,6 +63,12 @@ export const normalizeAuthError = (
   }
 
   switch (code) {
+    case "ERR_REQUEST_CANCELED":
+      return {
+        title: fallbackTitle,
+        message: "Apple Sign-In was cancelled.",
+        retryable: false,
+      };
     case "auth/request-in-progress":
       return {
         title: "Please wait",
@@ -145,6 +154,43 @@ export const signInWithEmail = async (
 
   return await withTimeout(
     signInWithEmailAndPassword(firebaseAuth, trimmedEmail, password),
+    "login",
+  );
+};
+
+export const signInWithApple = async (): Promise<UserCredential> => {
+  const isAvailable = await AppleAuthentication.isAvailableAsync();
+  if (!isAvailable) {
+    throw createAuthError(
+      "auth/operation-not-allowed",
+      "Apple Sign-In is not available on this device.",
+    );
+  }
+
+  const appleCredential = await withTimeout(
+    AppleAuthentication.signInAsync({
+      requestedScopes: [
+        AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+        AppleAuthentication.AppleAuthenticationScope.EMAIL,
+      ],
+    }),
+    "login",
+  );
+
+  if (!appleCredential.identityToken) {
+    throw createAuthError(
+      "auth/invalid-credential",
+      "Apple Sign-In did not return an identity token.",
+    );
+  }
+
+  const provider = new OAuthProvider("apple.com");
+  const firebaseCredential = provider.credential({
+    idToken: appleCredential.identityToken,
+  });
+
+  return await withTimeout(
+    signInWithCredential(firebaseAuth, firebaseCredential),
     "login",
   );
 };

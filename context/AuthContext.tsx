@@ -7,6 +7,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { type AuthState, type AuthStatus } from "@/types/models";
 import {
   ensureSessionIsValid,
+  signInWithApple as signInWithAppleService,
   signInWithEmail,
   signOutUser as signOutService,
   signUpWithEmail,
@@ -14,6 +15,7 @@ import {
 
 type AuthContextValue = AuthState & {
   signIn: (email: string, password: string) => Promise<UserCredential>;
+  signInWithApple: () => Promise<UserCredential>;
   signUp: (
     name: string,
     email: string,
@@ -119,6 +121,18 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         setAuthActionLoading(true);
         try {
           return await signInWithEmail(email, password);
+        } finally {
+          setAuthActionLoading(false);
+        }
+      },
+      signInWithApple: async () => {
+        if (authActionLoading) {
+          throw createRequestInProgressError();
+        }
+
+        setAuthActionLoading(true);
+        try {
+          return await signInWithAppleService();
         } finally {
           setAuthActionLoading(false);
         }
