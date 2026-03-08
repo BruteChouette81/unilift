@@ -38,10 +38,12 @@ export function useProfileAvatar({ user, onUploaded }: UseProfileAvatarParams) {
       },
     );
 
+    console.log("Resumable upload start response:", startRes);
+
     const uploadUrl = await startRes.headers.get("X-Goog-Upload-URL");
     if (!uploadUrl) return;
 
-    const res = await fetch(uploadUrl, {
+    const uploadRes = await fetch(uploadUrl, {
       method: "PUT",
       headers: {
         "Content-Type": "image/jpeg",
@@ -50,9 +52,18 @@ export function useProfileAvatar({ user, onUploaded }: UseProfileAvatarParams) {
       },
       body: blob,
     });
-    const data = await res.json();
+    if (!uploadRes.ok) throw new Error(`Upload failed: ${uploadRes.status}`);
 
-    const downloadURL = `${firebaseStorageBaseUrl}/profiles%2F${user.uid}.jpg?alt=media&token=${data.downloadTokens}`;
+    // The resumable upload finalize response uses the GCS format and does not
+    // include downloadTokens. Fetch the Firebase Storage object metadata to get it.
+    const metaRes = await fetch(
+      `${firebaseStorageBaseUrl}/profiles%2F${user.uid}.jpg`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    if (!metaRes.ok) throw new Error(`Failed to fetch storage metadata: ${metaRes.status}`);
+    const meta = await metaRes.json() as { downloadTokens?: string };
+
+    const downloadURL = `${firebaseStorageBaseUrl}/profiles%2F${user.uid}.jpg?alt=media&token=${meta.downloadTokens}`;
 
     await fetch(firestoreDocumentUrl("users", user.uid) + "?updateMask.fieldPaths=avatar", {
       method: "PATCH",

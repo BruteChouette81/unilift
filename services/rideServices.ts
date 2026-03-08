@@ -306,36 +306,31 @@ const parseSuggestionItem = (item: unknown): LocationResult | null => {
   return { displayName, lat, lon };
 };
 
-export async function geoSuggestion(place:string): Promise<LocationResult[] | null> {
-   //if (!place.trim()) return [];
-   console.log(place)
-
+export async function geoSuggestion(
+  place: string,
+  signal?: AbortSignal,
+): Promise<LocationResult[]> {
   try {
-    // Encode the place name so it can safely be used in a URL
-    const encodedPlace = encodeURIComponent(place);
-
-    // Nominatim (OpenStreetMap) geocoding endpoint
-    const url = `https://nominatim.openstreetmap.org/search?q=${encodedPlace}&format=json&addressdetails=1&limit=5&viewbox=-79.7624,62.5854,-57.1056,44.9917&bounded=1`;
-
+    const encoded = encodeURIComponent(place);
+    const url =
+      `https://nominatim.openstreetmap.org/search` +
+      `?q=${encoded}&format=json&addressdetails=1&limit=5` +
+      `&countrycodes=ca,us` +
+      `&viewbox=-141.0,83.0,-52.0,24.0`;
     const response = await fetch(url, {
-      headers: {
-        "User-Agent": "UniLift/1.0"  // Nominatim requires a user-agent
-      }
+      headers: { "User-Agent": "UniLift/1.0" },
+      signal,
     });
-
-    if (!response.ok) {
-      throw new Error("Network response was not ok");
-    }
-
-   const data = (await response.json()) as unknown;
-   if (!Array.isArray(data)) return [];
-
-  return data
-    .map((item) => parseSuggestionItem(item))
-    .filter((item): item is LocationResult => item !== null);
-  } catch (error) {
-    console.error("Error fetching coordinates:", error);
-    return null;
+    if (!response.ok) throw new Error("Network response was not ok");
+    const data = (await response.json()) as unknown;
+    if (!Array.isArray(data)) return [];
+    return data
+      .map((item) => parseSuggestionItem(item))
+      .filter((item): item is LocationResult => item !== null);
+  } catch (error: unknown) {
+    if (error instanceof Error && error.name === "AbortError") return [];
+    console.error("geoSuggestion error:", error);
+    return [];
   }
 }
 

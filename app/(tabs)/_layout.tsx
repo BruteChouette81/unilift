@@ -1,15 +1,22 @@
 import { Redirect, Tabs } from "expo-router";
 import React from "react";
+import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { HapticTab } from "@/components/haptic-tab";
-import { IconSymbol } from "@/components/ui/icon-symbol";
-import { Colors } from "@/constants/theme";
 import { useAuth } from "@/context/AuthContext";
-import { useColorScheme } from "@/hooks/use-color-scheme";
+import { Ionicons } from "@expo/vector-icons";
+
+const C = {
+  bg:          "#080810",
+  surface:     "#0f0f1e",
+  border:      "rgba(124, 58, 237, 0.22)",
+  purple:      "#7C3AED",
+  purpleLight: "#a78bfa",
+  dim:         "#4b5563",
+};
 
 export default function TabLayout() {
-  const colorScheme = useColorScheme();
   const insets = useSafeAreaInsets();
   const { status } = useAuth();
 
@@ -20,21 +27,22 @@ export default function TabLayout() {
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: Colors[colorScheme ?? "light"].tint,
-        tabBarInactiveTintColor: colorScheme === "dark" ? "#8E98A8" : "#687076",
+        tabBarActiveTintColor: C.purpleLight,
+        tabBarInactiveTintColor: C.dim,
         tabBarStyle: {
-          backgroundColor: "#101010",
-          borderTopColor: "#252A2F",
+          backgroundColor: C.surface,
+          borderTopWidth: 1,
+          borderTopColor: C.border,
           paddingBottom: Math.max(insets.bottom, 8),
-          height: 56 + Math.max(insets.bottom, 8),
+          height: 60 + Math.max(insets.bottom, 8),
         },
         tabBarLabelStyle: {
-          fontSize: 12,
+          fontSize: 11,
           fontWeight: "600",
+          marginTop: 2,
         },
         sceneStyle: {
-          paddingTop: insets.top,
-          backgroundColor: "#101010",
+          backgroundColor: C.bg,
         },
         headerShown: false,
         tabBarButton: HapticTab,
@@ -44,8 +52,15 @@ export default function TabLayout() {
         name="index"
         options={{
           title: "Home",
-          tabBarIcon: ({ color }) => (
-            <IconSymbol size={28} name="house.fill" color={color} />
+          headerShown: false,
+          tabBarIcon: ({ color, focused }) => (
+            <View style={focused ? {
+              backgroundColor: "rgba(124,58,237,0.15)",
+              borderRadius: 10,
+              padding: 5,
+            } : { padding: 5 }}>
+              <Ionicons name={focused ? "home" : "home-outline"} size={22} color={color} />
+            </View>
           ),
         }}
       />
@@ -53,8 +68,31 @@ export default function TabLayout() {
         name="explore"
         options={{
           title: "Rides",
-          tabBarIcon: ({ color }) => (
-            <IconSymbol size={28} name="paperplane.fill" color={color} />
+          headerShown: false,
+          tabBarIcon: ({ color, focused }) => (
+            <View style={focused ? {
+              backgroundColor: "rgba(124,58,237,0.15)",
+              borderRadius: 10,
+              padding: 5,
+            } : { padding: 5 }}>
+              <Ionicons name={focused ? "car" : "car-outline"} size={22} color={color} />
+            </View>
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="wallet"
+        options={{
+          title: "Wallet",
+          headerShown: false,
+          tabBarIcon: ({ color, focused }) => (
+            <View style={focused ? {
+              backgroundColor: "rgba(124,58,237,0.15)",
+              borderRadius: 10,
+              padding: 5,
+            } : { padding: 5 }}>
+              <Ionicons name={focused ? "wallet" : "wallet-outline"} size={22} color={color} />
+            </View>
           ),
         }}
       />
@@ -62,12 +100,15 @@ export default function TabLayout() {
         name="profile"
         options={{
           title: "Profile",
-          tabBarIcon: ({ color }) => (
-            <IconSymbol
-              size={28}
-              name="person.crop.circle.fill"
-              color={color}
-            />
+          headerShown: false,
+          tabBarIcon: ({ color, focused }) => (
+            <View style={focused ? {
+              backgroundColor: "rgba(124,58,237,0.15)",
+              borderRadius: 10,
+              padding: 5,
+            } : { padding: 5 }}>
+              <Ionicons name={focused ? "person" : "person-outline"} size={22} color={color} />
+            </View>
           ),
         }}
       />

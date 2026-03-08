@@ -1,25 +1,28 @@
 import { StyleSheet } from "react-native";
 
 export const authColors = {
-  screenBackground: "#101010",
-  cardBackground: "#161A1D",
-  cardBorder: "#252A2F",
-  inputBorder: "#2F3542",
-  inputBackground: "#1E2328",
-  inputText: "#FFFFFF",
-  placeholder: "#7F8C8D",
-  title: "#FFFFFF",
-  subtitle: "#A4B0BE",
-  buttonBackground: "#007AFF",
+  screenBackground: "#080810",
+  cardBackground: "#0f0f1e",
+  cardBorder: "rgba(124, 58, 237, 0.22)",
+  inputBorder: "rgba(124, 58, 237, 0.2)",
+  inputBackground: "rgba(255, 255, 255, 0.05)",
+  inputText: "#f3f4f6",
+  placeholder: "#9ca3af",
+  title: "#f3f4f6",
+  subtitle: "#9ca3af",
+  buttonBackground: "#7C3AED",
   buttonText: "#FFFFFF",
-  link: "#79B8FF",
+  link: "#a78bfa",
+  purple: "#7C3AED",
+  purpleLight: "#a78bfa",
+  muted: "#9ca3af",
+  dim: "#4b5563",
+  gradient: ["#3b0764", "#1e3a8a"] as [string, string],
 } as const;
 
 export const authStyles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: "center",
-    padding: 20,
     backgroundColor: authColors.screenBackground,
   },
   card: {
@@ -30,7 +33,7 @@ export const authStyles = StyleSheet.create({
     borderColor: authColors.cardBorder,
   },
   title: {
-    fontSize: 30,
+    fontSize: 28,
     fontWeight: "700",
     color: authColors.title,
     marginBottom: 6,
@@ -46,16 +49,18 @@ export const authStyles = StyleSheet.create({
     borderColor: authColors.inputBorder,
     backgroundColor: authColors.inputBackground,
     color: authColors.inputText,
-    padding: 12,
-    marginBottom: 15,
-    borderRadius: 10,
+    padding: 14,
+    marginBottom: 14,
+    borderRadius: 12,
   },
   button: {
     backgroundColor: authColors.buttonBackground,
     paddingVertical: 14,
-    borderRadius: 10,
+    borderRadius: 13,
     alignItems: "center",
     marginTop: 4,
+    height: 52,
+    justifyContent: "center",
   },
   buttonDisabled: {
     opacity: 0.7,
@@ -67,6 +72,7 @@ export const authStyles = StyleSheet.create({
   buttonText: {
     color: authColors.buttonText,
     fontWeight: "700",
+    fontSize: 16,
   },
   loadingText: {
     marginLeft: 8,

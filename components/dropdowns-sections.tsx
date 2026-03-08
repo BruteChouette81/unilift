@@ -2,6 +2,15 @@ import { Ionicons } from "@expo/vector-icons";
 import React, { useRef, useState } from "react";
 import { Animated, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
+const C = {
+  surface:     "#0f0f1e",
+  surfaceAlt:  "#13132a",
+  border:      "rgba(124, 58, 237, 0.22)",
+  purpleLight: "#a78bfa",
+  text:        "#f3f4f6",
+  dim:         "#4b5563",
+};
+
 interface Props {
   title: string;
   children: React.ReactNode;
@@ -33,7 +42,7 @@ export default function DropdownSection({ title, children }: Props) {
       <TouchableOpacity style={styles.header} onPress={toggle}>
         <Text style={styles.title}>{title}</Text>
         <Animated.View style={{ transform: [{ rotate }] }}>
-          <Ionicons name="chevron-forward" size={22} color="#fff" />
+          <Ionicons name="chevron-forward" size={18} color={C.purpleLight} />
         </Animated.View>
       </TouchableOpacity>
 
@@ -45,25 +54,28 @@ export default function DropdownSection({ title, children }: Props) {
 
 const styles = StyleSheet.create({
   section: {
-    backgroundColor: "#1a1a1a",
-    borderRadius: 10,
+    backgroundColor: C.surface,
+    borderRadius: 14,
     marginBottom: 12,
     overflow: "hidden",
+    borderWidth: 1,
+    borderColor: C.border,
   },
   header: {
-    padding: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    backgroundColor: "#222",
+    backgroundColor: C.surfaceAlt,
   },
   title: {
-    color: "white",
-    fontSize: 16,
+    color: C.text,
+    fontSize: 15,
     fontWeight: "600",
   },
   content: {
-    padding: 16,
+    padding: 12,
     gap: 8,
   },
 });

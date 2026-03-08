@@ -23,6 +23,7 @@ export type FavoriteRoute = {
 };
 
 export type UserProfile = {
+  name?: string;
   email: string;
   xp: number;
   rating: number;
@@ -34,6 +35,21 @@ export type UserProfile = {
   };
   ridesCompleted: number;
   favorite: FavoriteRoute[];
+  age?: number;
+  school?: string;
+  preferences?: string[];
+  walletBalance?: number;      // in cents
+  stripeCustomerId?: string;
+};
+
+export type WalletTransaction = {
+  id: string;
+  type: "topup" | "cashout";
+  amount: number;              // in cents
+  status: "completed" | "pending" | "failed";
+  description: string;
+  createdAt: string;           // ISO string
+  stripePaymentIntentId?: string;
 };
 
 export type RideStatus = "planned" | "started" | "arrived" | "completed";
@@ -50,6 +66,19 @@ export type Ride = {
   localisation: LocationPoint;
   started?: boolean;
   status: RideStatus | string;
+};
+
+export type ScoreBreakdown = {
+  distance:   number;  // 0–1
+  time:       number;  // 0–1
+  direction:  number;  // 0–1
+  preference: number;  // 0–1
+  composite:  number;  // weighted sum
+};
+
+export type ScoredRide = Ride & {
+  score: number;
+  scoreBreakdown: ScoreBreakdown;
 };
 
 export type StartRidePayload = {

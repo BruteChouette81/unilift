@@ -60,3 +60,5 @@ export const withFirebaseApiKey = (url: string) => {
 };
 
 export const firebaseStorageBaseUrl = `https://firebasestorage.googleapis.com/v0/b/${runtimeConfig.firebaseStorageBucket}/o`;
+
+export const apiBaseUrl = "https://api-qsxtpust2a-uc.a.run.app";

@@ -116,15 +116,22 @@
 import { runtimeConfig } from "@/constants/runtime-config";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { useColorScheme } from "@/hooks/use-color-scheme";
+import { Ionicons } from "@expo/vector-icons";
 import { DarkTheme, DefaultTheme, ThemeProvider } from "@react-navigation/native";
 import { StripeProvider } from "@stripe/stripe-react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import React, { useMemo } from "react";
-import { ActivityIndicator, StyleSheet, View } from "react-native";
+import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const BG = "#101010";
 const STATUS_BAR_STYLE = "light";
+
+const BANNER_GRADIENT  = ["#3b0764", "#1e3a8a"] as const;
+const BANNER_BORDER    = "rgba(124, 58, 237, 0.22)";
+const PURPLE_LIGHT     = "#a78bfa";
 
 export default function RootLayout() {
   return (
@@ -143,16 +150,13 @@ export default function RootLayout() {
 function LayoutContent() {
   const { status } = useAuth();
   const colorScheme = useColorScheme() ?? "dark";
+  const { top: safeTop } = useSafeAreaInsets();
 
   const theme = useMemo(() => {
     const baseTheme = colorScheme === "dark" ? DarkTheme : DefaultTheme;
     return {
       ...baseTheme,
-      colors: {
-        ...baseTheme.colors,
-        background: BG,
-        card: BG,
-      },
+      colors: { ...baseTheme.colors, background: BG, card: BG },
     };
   }, [colorScheme]);
 
@@ -163,6 +167,23 @@ function LayoutContent() {
       contentStyle: { backgroundColor: BG },
     }),
     [],
+  );
+
+  const tabsHeader = useMemo(
+    () => () => (
+      <LinearGradient
+        colors={BANNER_GRADIENT}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 0 }}
+        style={[styles.banner, { paddingTop: safeTop + 8 }]}
+      >
+        <View style={styles.bannerRow}>
+          <Ionicons name="flash" size={20} color={PURPLE_LIGHT} />
+          <Text style={styles.bannerText}>UniLift</Text>
+        </View>
+      </LinearGradient>
+    ),
+    [safeTop],
   );
 
   if (status === "initializing") {
@@ -181,9 +202,18 @@ function LayoutContent() {
         </Stack>
       ) : (
         <Stack screenOptions={commonStackOptions}>
-          <Stack.Screen name="(tabs)" />
+          <Stack.Screen
+            name="(tabs)"
+            options={{
+              headerShown: true,
+              header: tabsHeader,
+              animation: "none",
+              contentStyle: { backgroundColor: BG },
+            }}
+          />
           <Stack.Screen name="rideScreen" options={{ headerShown: false }} />
           <Stack.Screen name="riderScreen" options={{ headerShown: false }} />
+          <Stack.Screen name="profileSettings" options={{ headerShown: false }} />
         </Stack>
       )}
       <StatusBar
@@ -196,5 +226,8 @@ function LayoutContent() {
 }
 
 const styles = StyleSheet.create({
-  loader: { flex: 1, justifyContent: "center", alignItems: "center" },
+  loader:     { flex: 1, justifyContent: "center", alignItems: "center" },
+  banner:     { paddingHorizontal: 16, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: BANNER_BORDER },
+  bannerRow:  { flexDirection: "row", alignItems: "center", gap: 8 },
+  bannerText: { color: "#f3f4f6", fontSize: 22, fontWeight: "800", letterSpacing: 0.3 },
 });

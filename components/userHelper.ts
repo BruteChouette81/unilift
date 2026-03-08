@@ -26,6 +26,15 @@ const fieldInt = (fields: Record<string, unknown>, key: string, fallback = 0) =>
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const fieldStringArray = (fields: Record<string, unknown>, key: string): string[] => {
+  const field = asRecord(fields[key]);
+  const arrayValue = asRecord(field?.arrayValue);
+  if (!Array.isArray(arrayValue?.values)) return [];
+  return (arrayValue.values as unknown[])
+    .map((v) => asRecord(v)?.stringValue)
+    .filter((s): s is string => typeof s === "string");
+};
+
 export const normalizeUserData = (
   data: FirestoreUser,
   fallbackLoc?: Location
@@ -34,7 +43,13 @@ export const normalizeUserData = (
   const localisationField = asRecord(fields.localisation);
   const localisation = asRecord(localisationField?.geoPointValue);
 
+  const name = fieldString(fields, "name", "");
+  const age = fieldInt(fields, "age", 0);
+  const school = fieldString(fields, "school", "");
+  const preferences = fieldStringArray(fields, "preferences");
+
   return {
+    ...(name ? { name } : {}),
     email: fieldString(fields, "email", ""),
     xp: fieldInt(fields, "xp", 0),
     rating: fieldInt(fields, "rating", 0),
@@ -53,7 +68,12 @@ export const normalizeUserData = (
     },
 
     ridesCompleted: fieldInt(fields, "ridesCompleted", 0),
+    walletBalance: fieldInt(fields, "walletBalance", 0),
+    stripeCustomerId: fieldString(fields, "stripeCustomerId", "") || undefined,
     favorite: extractFavoriteRoutes(data),
+    ...(age ? { age } : {}),
+    ...(school ? { school } : {}),
+    ...(preferences.length ? { preferences } : {}),
   };
 };
 
