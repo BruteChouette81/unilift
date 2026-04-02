@@ -1,5 +1,6 @@
+import type { Language } from "@/constants/translations";
 import { useAuth } from "@/context/AuthContext";
-import { Ionicons } from "@expo/vector-icons";
+import { useLanguage } from "@/context/LanguageContext";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
@@ -8,6 +9,7 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -19,8 +21,8 @@ import {
 } from "react-native";
 
 import FavoriteRouteCard from "@/components/favorite-rides";
-import FavoriteRouteForm from "@/components/favoriteForm";
 import { PlannedRidesList } from "@/components/profile/planned-rides-list";
+import { PassengerRidesList } from "@/components/profile/passenger-rides-list";
 
 import { normalizeAuthError } from "@/services/authService";
 
@@ -37,12 +39,12 @@ const C = {
   bg:          "#080810",
   surface:     "#0f0f1e",
   surfaceAlt:  "#13132a",
-  border:      "rgba(124, 58, 237, 0.22)",
+  border:      "rgba(137, 56, 213, 0.22)",
   borderFaint: "rgba(255, 255, 255, 0.06)",
-  purple:      "#7C3AED",
-  purpleLight: "#a78bfa",
-  blue:        "#1D4ED8",
-  blueLight:   "#60a5fa",
+  purple:      "#8938D5",
+  purpleLight: "#e09af7",
+  blue:        "#FD165A",
+  blueLight:   "#ff6b9d",
   text:        "#f3f4f6",
   muted:       "#9ca3af",
   dim:         "#4b5563",
@@ -51,10 +53,10 @@ const C = {
   success:     "#34d399",
 };
 
-const BANNER_GRADIENT  = ["#3b0764", "#1e3a8a"] as const;
-const CARD_GRADIENT    = ["#1e1b4b", "#0d1224"] as const;
-const XP_BAR_GRADIENT  = ["#7C3AED", "#2563eb"] as const;
-const STAT_BG_GRADIENT = ["#1a1040", "#0f1730"] as const;
+const BANNER_GRADIENT  = ["#2d0015", "#1c0038"] as const;
+const CARD_GRADIENT    = ["#1c0b2a", "#0d0518"] as const;
+const XP_BAR_GRADIENT  = ["#FD165A", "#8938D5"] as const;
+const STAT_BG_GRADIENT = ["#18082e", "#0c0514"] as const;
 
 const MAX_XP = 600;
 
@@ -74,7 +76,7 @@ function SectionHeader({
     <View style={sh.row}>
       <View style={sh.left}>
         <View style={sh.iconDot}>
-          <Ionicons name={icon as any} size={14} color={C.purpleLight} />
+          <Text style={{fontSize: 12}}>{icon}</Text>
         </View>
         <Text style={sh.title}>{title}</Text>
       </View>
@@ -90,9 +92,9 @@ function SectionHeader({
 const sh = StyleSheet.create({
   row:       { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10, marginTop: 24 },
   left:      { flexDirection: "row", alignItems: "center", gap: 8 },
-  iconDot:   { width: 26, height: 26, borderRadius: 7, backgroundColor: "rgba(167,139,250,0.12)", alignItems: "center", justifyContent: "center" },
+  iconDot:   { width: 26, height: 26, borderRadius: 7, backgroundColor: "rgba(224,154,247,0.12)", alignItems: "center", justifyContent: "center" },
   title:     { color: C.text, fontSize: 15, fontWeight: "700", letterSpacing: 0.2 },
-  actionBtn: { backgroundColor: "rgba(124,58,237,0.18)", borderRadius: 10, paddingHorizontal: 10, paddingVertical: 4, borderWidth: 1, borderColor: C.border },
+  actionBtn: { backgroundColor: "rgba(137,56,213,0.18)", borderRadius: 10, paddingHorizontal: 10, paddingVertical: 4, borderWidth: 1, borderColor: C.border },
   actionText:{ color: C.purpleLight, fontSize: 12, fontWeight: "600" },
 });
 
@@ -105,6 +107,7 @@ function SettingsRow({
   danger,
   disabled,
   rightElement,
+  soonLabel,
 }: {
   icon: string;
   label: string;
@@ -113,6 +116,7 @@ function SettingsRow({
   danger?: boolean;
   disabled?: boolean;
   rightElement?: React.ReactNode;
+  soonLabel?: string;
 }) {
   return (
     <TouchableOpacity
@@ -121,7 +125,7 @@ function SettingsRow({
       activeOpacity={disabled ? 1 : 0.7}
     >
       <View style={[sr.iconWrap, danger && sr.dangerIcon, disabled && sr.disabledIcon]}>
-        <Ionicons name={icon as any} size={17} color={disabled ? C.dim : danger ? C.danger : C.purpleLight} />
+        <Text style={{fontSize: 15}}>{icon}</Text>
       </View>
       <Text style={[sr.label, danger && sr.dangerLabel, disabled && sr.disabledLabel]}>{label}</Text>
       <View style={sr.right}>
@@ -129,8 +133,8 @@ function SettingsRow({
           <>
             {value && !disabled && <Text style={sr.value}>{value}</Text>}
             {disabled
-              ? <Text style={sr.comingSoon}>Soon</Text>
-              : <Ionicons name="chevron-forward" size={15} color={danger ? C.danger : C.dim} />
+              ? <Text style={sr.comingSoon}>{soonLabel}</Text>
+              : <Text style={{fontSize: 13}}>›</Text>
             }
           </>
         )}
@@ -143,7 +147,7 @@ const sr = StyleSheet.create({
   row:          { flexDirection: "row", alignItems: "center", paddingVertical: 13, paddingHorizontal: 14, backgroundColor: C.surface, borderRadius: 12, marginBottom: 7, borderWidth: 1, borderColor: C.borderFaint },
   dangerRow:    { backgroundColor: "#130808", borderColor: "rgba(248,113,113,0.18)" },
   disabledRow:  { opacity: 0.45 },
-  iconWrap:     { width: 32, height: 32, borderRadius: 8, backgroundColor: "rgba(167,139,250,0.1)", alignItems: "center", justifyContent: "center", marginRight: 12 },
+  iconWrap:     { width: 32, height: 32, borderRadius: 8, backgroundColor: "rgba(224,154,247,0.1)", alignItems: "center", justifyContent: "center", marginRight: 12 },
   dangerIcon:   { backgroundColor: "rgba(248,113,113,0.1)" },
   disabledIcon: { backgroundColor: "rgba(255,255,255,0.04)" },
   label:        { flex: 1, color: C.text, fontSize: 14, fontWeight: "500" },
@@ -159,7 +163,7 @@ function QuickAction({ icon, label, onPress }: { icon: string; label: string; on
   return (
     <TouchableOpacity style={qa.wrap} onPress={onPress} activeOpacity={0.7}>
       <LinearGradient colors={CARD_GRADIENT} style={qa.icon}>
-        <Ionicons name={icon as any} size={20} color={C.purpleLight} />
+        <Text style={{fontSize: 18}}>{icon}</Text>
       </LinearGradient>
       <Text style={qa.label}>{label}</Text>
     </TouchableOpacity>
@@ -175,11 +179,12 @@ const qa = StyleSheet.create({
 // ─── Main Screen ───────────────────────────────────────────────────────────────
 const ProfileScreen = () => {
   const { user, loading, signOutUser } = useAuth();
+  const { t, language, changeLanguage } = useLanguage();
   const { userData, rides, refreshing, onRefresh } = useProfileData(user);
-  const { pickImage } = useProfileAvatar({
+  const { pickImage, uploading } = useProfileAvatar({
     user,
     onUploaded: async () => {
-      alert("Profile picture updated!");
+      alert(t("profile.avatarUpdated"));
       await onRefresh();
     },
   });
@@ -191,11 +196,11 @@ const ProfileScreen = () => {
       await signOutUser();
       router.replace("/(auth)/login");
     } catch (err) {
-      const authError = normalizeAuthError(err, "Logout failed");
+      const authError = normalizeAuthError(err, t("profile.account.logoutFailed"));
       if (authError.retryable) {
         Alert.alert(authError.title, authError.message, [
-          { text: "Cancel", style: "cancel" },
-          { text: "Retry", onPress: handleLogout },
+          { text: t("common.cancel"), style: "cancel" },
+          { text: t("common.retry"), onPress: handleLogout },
         ]);
         return;
       }
@@ -206,41 +211,35 @@ const ProfileScreen = () => {
   const { startRide, cancelRide } = useProfileRides({
     user,
     onRefresh,
-    onRideStarted: ({ rideId, originLat, originLng, destination }) => {
+    onRideStarted: ({ rideId, originLat, originLng, destination, destinationLat, destinationLng }) => {
       router.push(
-        `/rideScreen?rideId=${rideId}&Originlat=${originLat}&OriginLng=${originLng}&Destination=${destination}`,
+        `/riderScreen?rideId=${rideId}&Originlat=${originLat}&OriginLng=${originLng}&Destination=${encodeURIComponent(destination)}&DestinationLat=${destinationLat}&DestinationLng=${destinationLng}`,
       );
     },
   });
 
   const {
-    modifyFavorite,
-    setModifyFavorite,
-    initialData,
-    setInitialData,
     homeAddress,
     setHomeAddress,
     errors,
     handleNewHomeAddress,
-    handleFavoriteSubmit,
-    handleFavoriteDelete,
   } = useProfileFavorites({ user, userData, onRefresh });
 
   // ── Placeholder handlers for upcoming features ────────────────────────────
-  const handleEditProfile    = () => Alert.alert("Coming Soon", "Edit profile is under development.");
-  const handleShareProfile   = () => Alert.alert("Coming Soon", "Share profile is under development.");
-  const handleNotifications  = () => Alert.alert("Coming Soon", "Notification settings are under development.");
-  const handlePrivacy        = () => Alert.alert("Coming Soon", "Privacy settings are under development.");
-  const handleLinkedAccounts = () => Alert.alert("Coming Soon", "Linked accounts are under development.");
-  const handleHelp           = () => Alert.alert("Coming Soon", "Help & Support is under development.");
-  const handleRateApp        = () => Alert.alert("Coming Soon", "Rate app feature is under development.");
+  const handleEditProfile    = () => Alert.alert(t("profile.comingSoon"), t("profile.comingSoonEditProfile"));
+  const handleShareProfile   = () => Alert.alert(t("profile.comingSoon"), t("profile.comingSoonShare"));
+  const handleNotifications  = () => Alert.alert(t("profile.comingSoon"), t("profile.comingSoonNotifications"));
+  const handlePrivacy        = () => Alert.alert(t("profile.comingSoon"), t("profile.comingSoonPrivacy"));
+  const handleLinkedAccounts = () => Alert.alert(t("profile.comingSoon"), t("profile.comingSoonLinkedAccounts"));
+  const handleHelp           = () => Alert.alert(t("profile.comingSoon"), t("profile.comingSoonHelp"));
+  const handleRateApp        = () => Alert.alert(t("profile.comingSoon"), t("profile.comingSoonRate"));
   // ─────────────────────────────────────────────────────────────────────────
 
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color={C.purpleLight} />
-        <Text style={styles.loadingText}>Loading profile…</Text>
+        <Text style={styles.loadingText}>{t("profile.loading")}</Text>
       </View>
     );
   }
@@ -262,18 +261,16 @@ const ProfileScreen = () => {
   const progress    = Math.min((levelXp / 100) * 100, 100);
   const displayName = name || email?.split("@")[0];
 
-  if (modifyFavorite) {
-    return (
-      <FavoriteRouteForm
-        initialData={initialData}
-        onSubmit={handleFavoriteSubmit}
-        onCancel={() => setModifyFavorite(false)}
-        onDelete={handleFavoriteDelete}
-      />
-    );
-  }
-
   return (
+    <View style={{ flex: 1 }}>
+    <Modal transparent visible={uploading} animationType="fade">
+      <View style={styles.uploadingOverlay}>
+        <View style={styles.uploadingCard}>
+          <ActivityIndicator size="large" color={C.purpleLight} />
+          <Text style={styles.uploadingText}>{t("profile.uploadingAvatar")}</Text>
+        </View>
+      </View>
+    </Modal>
     <ScrollView
       style={styles.container}
       showsVerticalScrollIndicator={false}
@@ -298,20 +295,20 @@ const ProfileScreen = () => {
               style={styles.avatar}
             />
             <View style={styles.avatarCamera}>
-              <Ionicons name="camera" size={11} color="#fff" />
+              <Text style={{fontSize: 9}}>📷</Text>
             </View>
           </TouchableOpacity>
 
           <View style={styles.levelPill}>
-            <Ionicons name="flash" size={12} color={C.gold} />
-            <Text style={styles.levelPillText}>Level {level}</Text>
+            <Text style={{fontSize: 10}}>⚡</Text>
+            <Text style={styles.levelPillText}>{t("profile.level", { level })}</Text>
           </View>
         </View>
 
         <View style={styles.nameRow}>
           <Text style={styles.displayName}>{displayName}</Text>
           <View style={styles.verifiedBadge}>
-            <Ionicons name="checkmark-circle" size={16} color={C.purpleLight} />
+            <Text style={{fontSize: 14}}></Text>
           </View>
         </View>
         <Text style={styles.emailText}>{email}</Text>
@@ -320,19 +317,19 @@ const ProfileScreen = () => {
         <LinearGradient colors={STAT_BG_GRADIENT} style={styles.statsCard}>
           <View style={styles.statItem}>
             <Text style={styles.statValue}>{ridesCompleted}</Text>
-            <Text style={styles.statLabel}>Rides</Text>
+            <Text style={styles.statLabel}>{t("profile.stats.rides")}</Text>
           </View>
           <View style={styles.statDivider} />
           <View style={styles.statItem}>
             <Text style={[styles.statValue, { color: C.gold }]}>
               {typeof rating === "number" ? rating.toFixed(1) : rating}
             </Text>
-            <Text style={styles.statLabel}>Rating</Text>
+            <Text style={styles.statLabel}>{t("profile.stats.rating")}</Text>
           </View>
           <View style={styles.statDivider} />
           <View style={styles.statItem}>
             <Text style={[styles.statValue, { color: C.purpleLight }]}>{xp}</Text>
-            <Text style={styles.statLabel}>Total XP</Text>
+            <Text style={styles.statLabel}>{t("profile.stats.totalXp")}</Text>
           </View>
         </LinearGradient>
       </View>
@@ -342,11 +339,11 @@ const ProfileScreen = () => {
         <LinearGradient colors={CARD_GRADIENT} style={styles.xpCard}>
           <View style={styles.xpTop}>
             <View>
-              <Text style={styles.xpTitle}>Level {level}</Text>
-              <Text style={styles.xpSub}>{100 - levelXp} XP to Level {level + 1}</Text>
+              <Text style={styles.xpTitle}>{t("profile.level", { level })}</Text>
+              <Text style={styles.xpSub}>{t("profile.xpToNext", { xp: 100 - levelXp, next: level + 1 })}</Text>
             </View>
             <View style={styles.xpBadge}>
-              <Ionicons name="trophy-outline" size={14} color={C.gold} />
+              <Text style={{fontSize: 12}}>🏆</Text>
               <Text style={styles.xpBadgeText}>{xp} XP</Text>
             </View>
           </View>
@@ -359,16 +356,40 @@ const ProfileScreen = () => {
             />
           </View>
           <View style={styles.xpFooter}>
-            <Text style={styles.xpFooterText}>Lv. {level}</Text>
-            <Text style={styles.xpFooterText}>{levelXp} / 100 XP</Text>
-            <Text style={styles.xpFooterText}>Lv. {level + 1}</Text>
+            <Text style={styles.xpFooterText}>{t("profile.levelShort", { level })}</Text>
+            <Text style={styles.xpFooterText}>{t("profile.xpProgress", { current: levelXp })}</Text>
+            <Text style={styles.xpFooterText}>{t("profile.levelShort", { level: level + 1 })}</Text>
           </View>
         </LinearGradient>
 
-        {/* ── Upcoming Rides ───────────────────────────────────────────────── */}
-        {rides && (
+        {/* ── Rewards Banner ───────────────────────────────────────────────── */}
+        <Pressable
+          style={styles.rewardsBanner}
+          onPress={() => router.push("/rewardsScreen")}
+        >
+          <LinearGradient
+            colors={["#1c0b2a", "#0d0518"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={styles.rewardsBannerGrad}
+          >
+            <View style={styles.rewardsBannerLeft}>
+              <View style={styles.rewardsTrophyWrap}>
+                <Text style={{ fontSize: 20 }}>🏆</Text>
+              </View>
+              <View>
+                <Text style={styles.rewardsBannerTitle}>{t("rewards.bannerTitle")}</Text>
+                <Text style={styles.rewardsBannerSub}>{t("rewards.bannerSub")}</Text>
+              </View>
+            </View>
+            <Text style={{ fontSize: 18, color: C.purpleLight }}>›</Text>
+          </LinearGradient>
+        </Pressable>
+
+        {/* ── My Drives (as driver) — only shown when the user has planned rides ── */}
+        {rides && rides.some((r) => r.driverId === user?.uid && r.status === "planned") && (
           <>
-            <SectionHeader icon="car-outline" title="Upcoming Rides" />
+            <SectionHeader icon="🚗" title={t("rides.myDrives")} />
             <PlannedRidesList
               rides={rides}
               onStartRide={startRide}
@@ -378,14 +399,30 @@ const ProfileScreen = () => {
           </>
         )}
 
+        {/* ── My Rides (as passenger) ──────────────────────────────────────── */}
+        {rides && user && (
+          <>
+            <SectionHeader icon="🎒" title={t("rides.myRides")} />
+            <PassengerRidesList
+              rides={rides}
+              userId={user.uid}
+              onEnterRide={(ride) =>
+                router.push(
+                  `/rideScreen?rideId=${ride.id}&Originlat=${ride.localisation.latitude}&OriginLng=${ride.localisation.longitude}&DestinationLat=${ride.destinationCoords.latitude}&DestinationLng=${ride.destinationCoords.longitude}&pending=false`,
+                )
+              }
+            />
+          </>
+        )}
+
         {/* ── Home Address ─────────────────────────────────────────────────── */}
-        <SectionHeader icon="home-outline" title="Home Address" />
+        <SectionHeader icon="🏠" title={t("profile.sections.homeAddress")} />
         <View style={styles.card}>
           <View style={styles.inputWrapper}>
-            <Ionicons name="location-outline" size={17} color={C.dim} style={styles.inputIcon} />
+            <Text style={[{fontSize: 15}, styles.inputIcon]}>📍</Text>
             <TextInput
               style={styles.input}
-              placeholder={safeUserData.homeAddress ?? "Add your home address…"}
+              placeholder={safeUserData.homeAddress ?? t("profile.homeAddress.placeholder")}
               placeholderTextColor={C.dim}
               value={homeAddress}
               onChangeText={setHomeAddress}
@@ -397,13 +434,13 @@ const ProfileScreen = () => {
           {homeAddress ? (
             <Pressable style={styles.primaryBtn} onPress={handleNewHomeAddress}>
               <LinearGradient
-                colors={["#7C3AED", "#2563eb"]}
+                colors={["#FD165A", "#8938D5"]}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 0 }}
                 style={styles.primaryBtnGrad}
               >
                 <Text style={styles.primaryBtnText}>
-                  {safeUserData.homeAddress ? "Update Address" : "Save Address"}
+                  {safeUserData.homeAddress ? t("profile.homeAddress.updateBtn") : t("profile.homeAddress.saveBtn")}
                 </Text>
               </LinearGradient>
             </Pressable>
@@ -412,13 +449,10 @@ const ProfileScreen = () => {
 
         {/* ── Favorites ────────────────────────────────────────────────────── */}
         <SectionHeader
-          icon="star-outline"
-          title="Favorites"
-          action="+ New"
-          onAction={() => {
-            setModifyFavorite(true);
-            setInitialData(undefined);
-          }}
+          icon="⭐"
+          title={t("profile.sections.favorites")}
+          action={t("profile.favorites.new")}
+          onAction={() => router.push("/favoriteScreen")}
         />
 
         {safeUserData.favorite && safeUserData.favorite.length > 0 ? (
@@ -426,65 +460,88 @@ const ProfileScreen = () => {
             <FavoriteRouteCard
               key={index}
               destination={route.destination}
-              onPress={() => {
-                setModifyFavorite(true);
-                setInitialData({
-                  endGeolocation: {
-                    lat: route.destinationGeo.lat,
-                    lon: route.destinationGeo.lon,
-                  },
-                  endAddress: route.destination,
-                  id: index,
-                });
-              }}
+              onPress={() =>
+                router.push(
+                  `/favoriteScreen?id=${index}&endAddress=${encodeURIComponent(route.destination)}&endLat=${route.destinationGeo.lat}&endLon=${route.destinationGeo.lon}`,
+                )
+              }
             />
           ))
         ) : (
           <View style={styles.emptyState}>
             <View style={styles.emptyIconWrap}>
-              <Ionicons name="star-outline" size={26} color={C.purple} />
+              <Text style={{fontSize: 24}}>⭐</Text>
             </View>
-            <Text style={styles.emptyTitle}>No favorites yet</Text>
-            <Text style={styles.emptySubtext}>
-              Save your go-to destinations for quick access
-            </Text>
+            <Text style={styles.emptyTitle}>{t("profile.favorites.empty")}</Text>
+            <Text style={styles.emptySubtext}>{t("profile.favorites.emptySub")}</Text>
             <Pressable
               style={styles.emptyAction}
-              onPress={() => {
-                setModifyFavorite(true);
-                setInitialData(undefined);
-              }}
+              onPress={() => router.push("/favoriteScreen")}
             >
-              <Text style={styles.emptyActionText}>Add your first favorite</Text>
+              <Text style={styles.emptyActionText}>{t("profile.favorites.addFirst")}</Text>
             </Pressable>
           </View>
         )}
 
         {/* ── Settings ─────────────────────────────────────────────────────── */}
-        <SectionHeader icon="settings-outline" title="Settings" />
+        <SectionHeader icon="⚙️" title={t("profile.sections.settings")} />
         <SettingsRow
-          icon="person-outline"
-          label="My Profile"
+          icon="👤"
+          label={t("profile.settings.myProfile")}
           value={name || undefined}
           onPress={() =>
             router.push(
-              `/profileSettings?name=${encodeURIComponent(name ?? "")}&age=${safeUserData.age ?? ""}&school=${encodeURIComponent(safeUserData.school ?? "")}&prefs=${encodeURIComponent((safeUserData.preferences ?? []).join(","))}`,
+              `/profileSettings?name=${encodeURIComponent(name ?? "")}&age=${safeUserData.age ?? ""}&school=${encodeURIComponent(safeUserData.school ?? "")}`,
+              // TODO v2: &prefs=${encodeURIComponent((safeUserData.preferences ?? []).join(","))}
             )
           }
         />
-        <SettingsRow icon="notifications-outline"     label="Notifications"    disabled />
-        <SettingsRow icon="lock-closed-outline"       label="Privacy"          disabled />
-        <SettingsRow icon="link-outline"              label="Linked Accounts"  disabled />
-        <SettingsRow icon="help-circle-outline"       label="Help & Support"   disabled />
-        <SettingsRow icon="star-half-outline"         label="Rate Unilift"     disabled />
+        <SettingsRow icon="🔔" label={t("profile.settings.notifications")} disabled soonLabel={t("profile.soonBadge")} />
+        <SettingsRow icon="🔒" label={t("profile.settings.privacy")}       disabled soonLabel={t("profile.soonBadge")} />
+        <SettingsRow icon="🔗" label={t("profile.settings.linkedAccounts")} disabled soonLabel={t("profile.soonBadge")} />
+        <SettingsRow icon="❓" label={t("profile.settings.helpSupport")}   disabled soonLabel={t("profile.soonBadge")} />
+        <SettingsRow icon="⭐" label={t("profile.settings.rateApp")}       disabled soonLabel={t("profile.soonBadge")} />
+        <SettingsRow
+          icon="🌐"
+          label={t("profile.settings.language")}
+          rightElement={
+            <View style={{ flexDirection: "row", gap: 6 }}>
+              {(["fr", "en"] as Language[]).map((lang) => (
+                <TouchableOpacity
+                  key={lang}
+                  onPress={() => void changeLanguage(lang)}
+                  style={{
+                    paddingHorizontal: 10,
+                    paddingVertical: 4,
+                    borderRadius: 8,
+                    backgroundColor: language === lang
+                      ? "rgba(137,56,213,0.35)"
+                      : "rgba(255,255,255,0.06)",
+                    borderWidth: 1,
+                    borderColor: language === lang ? C.border : C.borderFaint,
+                  }}
+                >
+                  <Text style={{
+                    color: language === lang ? C.purpleLight : C.muted,
+                    fontSize: 12,
+                    fontWeight: "600",
+                  }}>
+                    {lang === "fr" ? "FR" : "EN"}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          }
+        />
 
         {/* ── Account / Logout ─────────────────────────────────────────────── */}
-        <SectionHeader icon="person-circle-outline" title="Account" />
-        <SettingsRow icon="log-out-outline" label="Log Out" onPress={handleLogout} danger />
+        <SectionHeader icon="👤" title={t("profile.sections.account")} />
+        <SettingsRow icon="🚪" label={t("profile.account.logout")} onPress={handleLogout} danger />
 
         <View style={{ height: 32 }} />
       </View>
     </ScrollView>
+    </View>
   );
 };
 
@@ -698,7 +755,7 @@ const styles = StyleSheet.create({
     width: 52,
     height: 52,
     borderRadius: 14,
-    backgroundColor: "rgba(124,58,237,0.1)",
+    backgroundColor: "rgba(137,56,213,0.1)",
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 4,
@@ -709,7 +766,7 @@ const styles = StyleSheet.create({
   emptySubtext: { color: C.dim, fontSize: 12, textAlign: "center", paddingHorizontal: 32 },
   emptyAction: {
     marginTop: 8,
-    backgroundColor: "rgba(124,58,237,0.18)",
+    backgroundColor: "rgba(137,56,213,0.18)",
     borderRadius: 10,
     paddingHorizontal: 18,
     paddingVertical: 8,
@@ -717,6 +774,69 @@ const styles = StyleSheet.create({
     borderColor: C.border,
   },
   emptyActionText: { color: C.purpleLight, fontSize: 13, fontWeight: "600" },
+
+  // ── Rewards Banner ────────────────────────────────────────────────────────
+  rewardsBanner: {
+    marginTop: 12,
+    borderRadius: 14,
+    overflow: "hidden",
+  },
+  rewardsBannerGrad: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+    borderColor: "rgba(251,191,36,0.2)",
+    borderRadius: 14,
+  },
+  rewardsBannerLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    flex: 1,
+  },
+  rewardsTrophyWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: "rgba(251,191,36,0.1)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(251,191,36,0.2)",
+  },
+  rewardsBannerTitle: {
+    color: "#f3f4f6",
+    fontSize: 14,
+    fontWeight: "700",
+    marginBottom: 2,
+  },
+  rewardsBannerSub: {
+    color: "#9ca3af",
+    fontSize: 11,
+    lineHeight: 15,
+  },
+
+  // ── Upload Overlay ────────────────────────────────────────────────────────
+  uploadingOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  uploadingCard: {
+    backgroundColor: C.surface,
+    borderRadius: 18,
+    padding: 28,
+    alignItems: "center",
+    gap: 14,
+    borderWidth: 1,
+    borderColor: C.border,
+    minWidth: 180,
+  },
+  uploadingText: { color: C.text, fontSize: 14, fontWeight: "600" },
 });
 
 export default ProfileScreen;

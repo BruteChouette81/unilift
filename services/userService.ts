@@ -3,6 +3,7 @@ import {
   withFirebaseApiKey,
 } from "@/constants/runtime-config";
 import type { FavoriteRoute } from "@/types/models";
+import type { Language } from "@/constants/translations";
 
 export type FirestoreDocument = {
   fields?: Record<string, unknown>;
@@ -75,13 +76,38 @@ export const extractFavoriteRoutes = (data: FirestoreDocument | null) => {
     .filter((route): route is FavoriteRoute => route !== null);
 };
 
+export const updateUserLanguage = async (
+  uid: string,
+  token: string,
+  language: Language,
+): Promise<void> => {
+  const url =
+    firestoreDocumentUrl("users", uid) + "?updateMask.fieldPaths=language";
+  await fetch(url, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      fields: { language: { stringValue: language } },
+    }),
+  });
+};
+
 export const extractDriverSummary = (data: FirestoreDocument | null) => {
   const fields = data?.fields ?? {};
   const emailField = isRecord(fields.email) ? fields.email : {};
+  const nameField = isRecord(fields.name) ? fields.name : {};
   const xpField = isRecord(fields.xp) ? fields.xp : {};
   const avatarField = isRecord(fields.avatar) ? fields.avatar : {};
+  const email = readString(emailField.stringValue, "");
+  // Prefer an explicit name field; fall back to the part before "@" in the email
+  const displayName =
+    readString(nameField.stringValue, "") ||
+    (email ? email.split("@")[0] : "Unknown Driver");
   return {
-    name: readString(emailField.stringValue, "Unknown Driver"),
+    name: displayName,
     level: readNumber(xpField.integerValue, 0),
     avatar: readString(avatarField.stringValue, "") || null,
   };

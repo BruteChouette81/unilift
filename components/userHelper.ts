@@ -1,4 +1,5 @@
 import { firestoreDocumentUrl } from "@/constants/runtime-config";
+import { type Language, SUPPORTED_LANGUAGES } from "@/constants/translations";
 import { extractFavoriteRoutes, fetchUserDocument } from "@/services/userService";
 import type { LocationPoint, UserProfile } from "@/types/models";
 import type { User } from "firebase/auth";
@@ -47,12 +48,14 @@ export const normalizeUserData = (
   const age = fieldInt(fields, "age", 0);
   const school = fieldString(fields, "school", "");
   const preferences = fieldStringArray(fields, "preferences");
+  const langRaw = fieldString(fields, "language", "");
+  const language = SUPPORTED_LANGUAGES.includes(langRaw as Language) ? (langRaw as Language) : undefined;
 
   return {
     ...(name ? { name } : {}),
     email: fieldString(fields, "email", ""),
     xp: fieldInt(fields, "xp", 0),
-    rating: fieldInt(fields, "rating", 0),
+    rating: fieldInt(fields, "ratings", 0),
     avatar: fieldString(fields, "avatar", "") || null,
     homeAddress: fieldString(fields, "homeAddress", "") || null,
 
@@ -74,6 +77,7 @@ export const normalizeUserData = (
     ...(age ? { age } : {}),
     ...(school ? { school } : {}),
     ...(preferences.length ? { preferences } : {}),
+    ...(language ? { language } : {}),
   };
 };
 
@@ -159,8 +163,11 @@ export async function patchUserField(
   uid: string,
   fields: Record<string, unknown>
 ) {
+  const mask = Object.keys(fields)
+    .map((k) => `updateMask.fieldPaths=${encodeURIComponent(k)}`)
+    .join("&");
   const res = await fetch(
-    firestoreDocumentUrl("users", uid),
+    `${firestoreDocumentUrl("users", uid)}?${mask}`,
     {
       method: "PATCH",
       headers: {

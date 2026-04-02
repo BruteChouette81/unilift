@@ -1,4 +1,5 @@
 import type { User } from "firebase/auth";
+import type { Language } from "@/constants/translations";
 
 export type AuthStatus = "initializing" | "authenticated" | "unauthenticated";
 
@@ -40,19 +41,40 @@ export type UserProfile = {
   preferences?: string[];
   walletBalance?: number;      // in cents
   stripeCustomerId?: string;
+  language?: Language;
+  expoPushToken?: string;
 };
 
 export type WalletTransaction = {
   id: string;
-  type: "topup" | "cashout";
+  type: "topup" | "cashout" | "ride_charge" | "ride_earning";
   amount: number;              // in cents
   status: "completed" | "pending" | "failed";
   description: string;
   createdAt: string;           // ISO string
   stripePaymentIntentId?: string;
+  rideId?: string;
+  distanceKm?: number;
 };
 
-export type RideStatus = "planned" | "started" | "arrived" | "completed";
+export type QrBoardingToken = {
+  rideId: string;
+  driverUid: string;
+  issuedAt: number;
+  expiresAt: number;
+  nonce: string;
+};
+
+export type JoinRequestStatus = "pending" | "accepted" | "rejected";
+
+export type JoinRequest = {
+  passengerId: string;
+  location: LocationPoint;
+  status: JoinRequestStatus;
+  requestedAt: string;
+};
+
+export type RideStatus = "planned" | "started" | "completed";
 
 export type Ride = {
   id: string;
@@ -62,10 +84,21 @@ export type Ride = {
   seatsAvailable: number;
   time?: string;
   driverId: string;
+  driverName?: string;
+  driverAvatar?: string;
   passengers: string[];
   localisation: LocationPoint;
   started?: boolean;
   status: RideStatus | string;
+  boardedPassengers?: string[];
+  joinRequests?: Record<string, JoinRequest>;
+  driverLocation?: LocationPoint;
+  pendingRatings?: string[];
+  ratingsSubmitted?: string[];
+  qrToken?: string;
+  qrTokenExpiresAt?: string;
+  paymentStatus?: "pending" | "processing" | "completed" | "failed";
+  distanceKm?: number;
 };
 
 export type ScoreBreakdown = {
@@ -85,4 +118,6 @@ export type StartRidePayload = {
   originLat: number;
   originLng: number;
   destination: string;
+  destinationLat: number;
+  destinationLng: number;
 };

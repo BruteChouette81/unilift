@@ -1,13 +1,14 @@
 import { firestoreDocumentUrl } from "@/constants/runtime-config";
 import type { FavoriteRoute as FavoriteRouteFormData } from "@/components/favoriteForm";
-import type { UserProfile } from "@/types/models";
+import { useUserProfile } from "@/context/UserProfileContext";
+import type { FavoriteRoute, UserProfile } from "@/types/models";
 import type { User } from "firebase/auth";
 import { useState } from "react";
 
 type Params = {
   user: User | null;
   userData: UserProfile | null;
-  onRefresh: () => Promise<void> | void;
+  onRefresh?: () => Promise<void> | void; // kept for API compatibility, no longer used internally
 };
 
 type FavoriteGeoKey = "destinationGeo" | "destinationGeolocation";
@@ -17,11 +18,21 @@ type FavoriteGeoRecord = {
   destinationGeolocation?: { lat?: number; lon?: number };
 };
 
-export function useProfileFavorites({ user, userData, onRefresh }: Params) {
+export function useProfileFavorites({ user, userData }: Params) {
+  const { updateUserData } = useUserProfile();
   const [modifyFavorite, setModifyFavorite] = useState(false);
   const [initialData, setInitialData] = useState<FavoriteRouteFormData | undefined>(undefined);
   const [homeAddress, setHomeAddress] = useState("");
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
+
+  const toFavoriteRoutes = (records: FavoriteGeoRecord[]): FavoriteRoute[] =>
+    records.map((r) => ({
+      destination: r.destination,
+      destinationGeo: {
+        lat: (r.destinationGeo ?? r.destinationGeolocation)?.lat ?? 0,
+        lon: (r.destinationGeo ?? r.destinationGeolocation)?.lon ?? 0,
+      },
+    }));
 
   const updateFavoriteRoutes = async (
     token: string,
@@ -93,7 +104,7 @@ export function useProfileFavorites({ user, userData, onRefresh }: Params) {
       const fields = buildFavoriteFields(updated, "destinationGeolocation");
       await updateFavoriteRoutes(await user.getIdToken(), user.uid, fields);
       setModifyFavorite(false);
-      await onRefresh();
+      updateUserData({ favorite: toFavoriteRoutes(updated) });
       return;
     }
 
@@ -109,7 +120,7 @@ export function useProfileFavorites({ user, userData, onRefresh }: Params) {
     const fields = buildFavoriteFields(updated, "destinationGeo");
     await updateFavoriteRoutes(await user.getIdToken(), user.uid, fields);
     setModifyFavorite(false);
-    await onRefresh();
+    updateUserData({ favorite: toFavoriteRoutes(updated) });
   };
 
   const handleFavoriteDelete = async (index: number) => {
@@ -119,7 +130,7 @@ export function useProfileFavorites({ user, userData, onRefresh }: Params) {
     const fields = buildFavoriteFields(updated, "destinationGeo");
     await updateFavoriteRoutes(await user.getIdToken(), user.uid, fields);
     setModifyFavorite(false);
-    await onRefresh();
+    updateUserData({ favorite: toFavoriteRoutes(updated) });
   };
 
   const handleNewHomeAddress = async () => {
@@ -150,7 +161,7 @@ export function useProfileFavorites({ user, userData, onRefresh }: Params) {
 
       alert("Updated your home address!");
       setHomeAddress("");
-      await onRefresh();
+      updateUserData({ homeAddress });
     } catch (error: unknown) {
       console.error("❌ Error uploading user data:", error);
       setErrors({

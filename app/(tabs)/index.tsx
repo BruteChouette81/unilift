@@ -1,56 +1,66 @@
-import CreateRideScreen from "@/components/create-ride";
 import RideMapView from "@/components/mapview";
 import RideCard, { RideCardSlected } from "@/components/ridecard";
-import { Ionicons } from "@expo/vector-icons";
+import { PROMOTED_EVENTS } from "@/constants/events";
+import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import * as Location from "expo-location";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
-  RefreshControl,
+  Keyboard,
+  Modal,
+  PanResponder,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
-import { acceptRide, fetchRides, geoCode } from "../../services/rideServices";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  acceptRide,
+  fetchRides,
+  geoCode,
+  geoSuggestion,
+  requestToJoinRide,
+  type LocationResult,
+} from "../../services/rideServices";
 
 import { useAuth } from "@/context/AuthContext";
-import {
-  extractFavoriteRoutes,
-  fetchUserDocument,
-} from "@/services/userService";
-import { recommendRides } from "@/hooks/use-ride-recommendations";
-import type { FavoriteRoute, LocationPoint, Ride, ScoredRide, UserProfile } from "@/types/models";
+import { useLanguage } from "@/context/LanguageContext";
+import { useUserProfile } from "@/context/UserProfileContext";
+import Slider from "@react-native-community/slider";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
+import { recommendRides, type RecommendOptions } from "@/hooks/use-ride-recommendations";
+import type { FavoriteRoute, LocationPoint, Ride, ScoredRide } from "@/types/models";
+import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+
+type SuggestionKind = "geo" | "home" | "favorite" | "event";
+type Suggestion = LocationResult & { kind: SuggestionKind };
 
 // ─── Design Tokens ─────────────────────────────────────────────────────────────
 const C = {
   bg:          "#080810",
   surface:     "#0f0f1e",
   surfaceAlt:  "#13132a",
-  border:      "rgba(124, 58, 237, 0.22)",
+  border:      "rgba(137, 56, 213, 0.22)",
   borderFaint: "rgba(255, 255, 255, 0.06)",
-  purple:      "#7C3AED",
-  purpleLight: "#a78bfa",
-  blue:        "#1D4ED8",
+  purple:      "#8938D5",
+  purpleLight: "#e09af7",
+  blue:        "#FD165A",
   text:        "#f3f4f6",
   muted:       "#9ca3af",
   dim:         "#4b5563",
   gold:        "#fbbf24",
 };
 
-const CARD_GRADIENT   = ["#1e1b4b", "#0d1224"] as const;
-const BUTTON_GRADIENT = ["#7C3AED", "#2563eb"] as const;
+const BUTTON_GRADIENT = ["#FD165A", "#8938D5"] as const;
 
-const placesLocation = [
-  { name: "Shaker St-Foy", lat: 46.7869189, lng: -71.2822901 },
-  { name: "Place Laurier", lat: 46.77146578, lng: -71.28316956 },
-];
-
-const radius = 10;
-
-function getBoundingBox(lat: number, lng: number) {
+function getBoundingBox(lat: number, lng: number, radius: number) {
   const earthRadius = 6371;
   const latDelta = (radius / earthRadius) * (180 / Math.PI);
   const lngDelta =
@@ -63,31 +73,9 @@ function getBoundingBox(lat: number, lng: number) {
   };
 }
 
-// ─── Section Header ────────────────────────────────────────────────────────────
-function SectionHeader({ icon, title }: { icon: string; title: string }) {
-  return (
-    <View style={sh.row}>
-      <View style={sh.left}>
-        <View style={sh.iconDot}>
-          <Ionicons name={icon as any} size={14} color={C.purpleLight} />
-        </View>
-        <Text style={sh.title}>{title}</Text>
-      </View>
-    </View>
-  );
-}
-
-const sh = StyleSheet.create({
-  row:     { flexDirection: "row", alignItems: "center", marginBottom: 10, marginTop: 20 },
-  left:    { flexDirection: "row", alignItems: "center", gap: 8 },
-  iconDot: { width: 26, height: 26, borderRadius: 7, backgroundColor: "rgba(167,139,250,0.12)", alignItems: "center", justifyContent: "center" },
-  title:   { color: C.text, fontSize: 15, fontWeight: "700", letterSpacing: 0.2 },
-});
-
 // ─── Main Screen ───────────────────────────────────────────────────────────────
 export default function HomeScreen() {
   const [selectedRide, setSelectedRide] = useState<any>();
-  const [createNewRide, setCreateNewRide] = useState(false);
   const [homeLoc, setHomeLoc] = useState<{ lat: number; lng: number } | undefined>();
   const [filter, setFilter] = useState<{
     minLat: number;
@@ -98,66 +86,183 @@ export default function HomeScreen() {
   const [favoriteRoutes, setFavoriteRoutes] = useState<FavoriteRoute[]>([]);
   const [userLocation, setUserLocation] = useState<LocationPoint | null>(null);
   const { user } = useAuth();
+  const { t } = useLanguage();
+  const { userData } = useUserProfile();
   const router = useRouter();
   const [rides, setRides] = useState<Ride[]>([]);
-  const [refreshing, setRefreshing] = useState(false);
 
-  const asRecord = (value: unknown): Record<string, unknown> | undefined =>
-    typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+  // Search + suggestions
+  const [searchText, setSearchText] = useState("");
+  const suppressSuggestionsRef = useRef(false);
+  const debouncedSearch = useDebouncedValue(searchText, 400);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
+
+  // Search settings (session-only, not persisted)
+  const [showSettings, setShowSettings] = useState(false);
+  const [searchRadius, setSearchRadius] = useState(10);
+  const [minSeats, setMinSeats] = useState(1);
+  const [maxBudget, setMaxBudget] = useState(50);
+  // Recommendation weights (kept as state for the algorithm, not shown in UI)
+  const [wDistance] = useState(35);
+  const [wTime] = useState(30);
+  const [wDirection] = useState(25);
+
+  // Modal
+  const [modalVisible, setModalVisible] = useState(false);
+  const [selectedPlace, setSelectedPlace] = useState("");
+  const [modalSelectedRide, setModalSelectedRide] = useState<ScoredRide | null>(null);
 
   const acceptARide = (id: string, started: boolean) => {
     acceptRide(id).then(() => {
       if (started) {
-        Alert.alert("Ride accepted", "The ride will start now");
+        Alert.alert(t("home.rideAccepted"), t("home.rideStartNow"));
         router.push(
-          `/rideScreen?rideId=${id}&Originlat=${selectedRide?.origin?.latitude}&OriginLng=${selectedRide?.origin?.longitude}&Destination=${selectedRide.destination}`,
+          `/rideScreen?rideId=${id}&Originlat=${selectedRide?.localisation?.latitude}&OriginLng=${selectedRide?.localisation?.longitude}&DestinationLat=${selectedRide?.destinationCoords?.latitude}&DestinationLng=${selectedRide?.destinationCoords?.longitude}`,
         );
       } else {
-        Alert.alert(
-          "Ride accepted",
-          "The driver will start the ride when he/she is ready.",
-        );
+        Alert.alert(t("home.rideAccepted"), t("home.rideDriverReady"));
       }
     });
   };
 
-  const getHomeLoc = useCallback(async () => {
-    try {
-      const data = await fetchUserDocument(user?.uid || "");
-      if (!data) return;
-      const fields = asRecord(data.fields) ?? {};
-      const homeAddressField = asRecord(fields.homeAddress);
-      const homeAddress =
-        typeof homeAddressField?.stringValue === "string"
-          ? homeAddressField.stringValue
-          : "";
-      if (!homeAddress) {
-        setHomeLoc({ lat: 0, lng: 0 });
-      } else {
-        const geoHomeloc = await geoCode(JSON.stringify(homeAddress));
-        setHomeLoc({
-          lat: geoHomeloc?.latitude ?? 0,
-          lng: geoHomeloc?.longitude ?? 0,
-        });
-      }
-      const favs = extractFavoriteRoutes(data);
-      setFavoriteRoutes(favs.length > 0 ? favs : []);
+  // Sync home location + favorites from session cache (no Firestore fetch)
+  useEffect(() => {
+    if (!userData) return;
+    setFavoriteRoutes(userData.favorite ?? []);
+    const geocodeHome = async () => {
+      if (!userData.homeAddress) { setHomeLoc({ lat: 0, lng: 0 }); return; }
       try {
-        const Location = await import("expo-location");
+        const geo = await geoCode(JSON.stringify(userData.homeAddress));
+        setHomeLoc({ lat: geo?.latitude ?? 0, lng: geo?.longitude ?? 0 });
+      } catch { setHomeLoc({ lat: 0, lng: 0 }); }
+    };
+    void geocodeHome();
+  }, [userData?.homeAddress, userData?.favorite]);
+
+  // Fetch GPS location once on mount
+  useEffect(() => {
+    const getLoc = async () => {
+      try {
         const pos = await Location.getCurrentPositionAsync({});
         setUserLocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
-      } catch {
-        // GPS unavailable — leave userLocation null for neutral fallback scores
-      }
-      return data;
-    } catch (err) {
-      console.error(err);
-    }
-  }, [user?.uid]);
+      } catch { /* GPS unavailable */ }
+    };
+    void getLoc();
+  }, []);
 
-  const rideSelect = (_name: string, lat: number, lng: number) => {
-    const box = getBoundingBox(lat, lng);
+  const rideSelect = (name: string, lat: number, lng: number) => {
+    setModalSelectedRide(null);
+    setSelectedPlace(name);
+    setFilter(getBoundingBox(lat, lng, searchRadius));
+    setModalVisible(true);
+  };
+
+  // ── Debounced geo-suggestion effect ──────────────────────────────────────
+  useEffect(() => {
+    if (suppressSuggestionsRef.current) {
+      suppressSuggestionsRef.current = false;
+      return;
+    }
+    const q = debouncedSearch.trim().toLowerCase();
+    if (q.length < 1) {
+      setShowSuggestions(false);
+      setSuggestions([]);
+      setIsLoadingSuggestions(false);
+      return;
+    }
+
+    // ── Local suggestions (home / favorites / events) ──────────────────────
+    const local: Suggestion[] = [];
+
+    // Home
+    if (("home".startsWith(q) || "maison".startsWith(q)) && userData?.homeAddress) {
+      local.push({
+        displayName: userData.homeAddress,
+        lat: String(userData.localisation?.latitude ?? 0),
+        lon: String(userData.localisation?.longitude ?? 0),
+        kind: "home",
+      });
+    }
+
+    // Favorites
+    for (const fav of favoriteRoutes) {
+      if (fav.destination.toLowerCase().includes(q)) {
+        local.push({
+          displayName: fav.destination,
+          lat: String(fav.destinationGeo.lat),
+          lon: String(fav.destinationGeo.lon),
+          kind: "favorite",
+        });
+      }
+    }
+
+    // Events
+    for (const ev of PROMOTED_EVENTS) {
+      if (ev.name.toLowerCase().includes(q) || ev.nameFr.toLowerCase().includes(q) || ev.venue.toLowerCase().includes(q)) {
+        local.push({
+          displayName: `${ev.name} — ${ev.venue}`,
+          lat: String(ev.lat),
+          lon: String(ev.lng),
+          kind: "event",
+        });
+      }
+    }
+
+    // Show local-only results immediately (no spinner)
+    if (local.length > 0 && q.length < 3) {
+      setSuggestions(local);
+      setShowSuggestions(true);
+      setIsLoadingSuggestions(false);
+      return;
+    }
+
+    // ── Geo suggestions ────────────────────────────────────────────────────
+    if (q.length < 3) {
+      setSuggestions(local);
+      setShowSuggestions(local.length > 0);
+      setIsLoadingSuggestions(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    setIsLoadingSuggestions(true);
+    geoSuggestion(debouncedSearch.trim(), controller.signal).then((results) => {
+      const geo: Suggestion[] = results.map((r) => ({ ...r, kind: "geo" as const }));
+      setSuggestions([...local, ...geo]);
+      setShowSuggestions(local.length + geo.length > 0);
+      setIsLoadingSuggestions(false);
+    });
+    return () => controller.abort();
+  }, [debouncedSearch, favoriteRoutes, userData]);
+
+  // ── Search handlers ──────────────────────────────────────────────────────
+  const handleSearchInput = (text: string) => {
+    suppressSuggestionsRef.current = false;
+    if (text.length > 0) setShowSettings(false);
+    setSearchText(text);
+  };
+
+  const onSelectSuggestion = (item: Suggestion) => {
+    Keyboard.dismiss();
+    suppressSuggestionsRef.current = true;
+    setSearchText(item.displayName);
+    setShowSuggestions(false);
+    setSelectedPlace(item.displayName);
+    setModalSelectedRide(null);
+    const box = getBoundingBox(parseFloat(item.lat), parseFloat(item.lon), searchRadius);
     setFilter(box);
+    setModalVisible(true);
+  };
+
+  const clearSearch = () => {
+    setSearchText("");
+    setShowSuggestions(false);
+    setSuggestions([]);
+    setFilter(undefined);
+    setModalVisible(false);
+    setModalSelectedRide(null);
   };
 
   useEffect(() => {
@@ -171,22 +276,14 @@ export default function HomeScreen() {
             ride.status === "planned"
           ) {
             router.push(
-              `/rideScreen?rideId=${ride.id}&Originlat=${ride.localisation.latitude}&OriginLng=${ride.localisation.longitude}&Destination=${ride.destination}`,
+              `/rideScreen?rideId=${ride.id}&Originlat=${ride.localisation.latitude}&OriginLng=${ride.localisation.longitude}&DestinationLat=${ride.destinationCoords.latitude}&DestinationLng=${ride.destinationCoords.longitude}`,
             );
           }
         });
         setRides(ridelist);
       })
       .catch(console.error);
-    getHomeLoc();
-  }, [getHomeLoc, router, user?.uid]);
-
-  const onRefresh = async () => {
-    setRefreshing(true);
-    await fetchRides({ force: true }).then(setRides).catch(console.error);
-    await getHomeLoc();
-    setRefreshing(false);
-  };
+  }, [router, user?.uid]);
 
   const filteredRides = useMemo(() => {
     if (!filter) return [];
@@ -196,105 +293,241 @@ export default function HomeScreen() {
         ride.destinationCoords.latitude  <= filter.maxLat &&
         ride.destinationCoords.longitude >= filter.minLng &&
         ride.destinationCoords.longitude <= filter.maxLng &&
-        ride.status === "planned",
+        ride.status === "planned" &&
+        ride.seatsAvailable >= minSeats,
     );
   }, [filter, rides]);
 
+  const normalizedWeights = useMemo((): RecommendOptions["weights"] => {
+    const preference = Math.max(0, 100 - wDistance - wTime - wDirection);
+    const sum = wDistance + wTime + wDirection + preference;
+    return {
+      distance:   wDistance   / sum,
+      time:       wTime       / sum,
+      direction:  wDirection  / sum,
+      preference: preference  / sum,
+    };
+  }, [wDistance, wTime, wDirection]);
+
   const scoredRides = useMemo((): ScoredRide[] => {
-    const profile: UserProfile = {
-      email: "", xp: 0, rating: 0, avatar: null, homeAddress: null,
+    const profile = {
+      email: "", xp: 0, rating: 0, avatar: null as null, homeAddress: null as null,
       localisation: userLocation ?? { latitude: null, longitude: null },
       ridesCompleted: 0,
       favorite: favoriteRoutes,
     };
-    return recommendRides(filteredRides, profile);
-  }, [filteredRides, favoriteRoutes, userLocation]);
+    return recommendRides(filteredRides, profile, { weights: normalizedWeights });
+  }, [filteredRides, favoriteRoutes, userLocation, normalizedWeights]);
 
-  if (createNewRide) {
-    return <CreateRideScreen cancelCreate={() => setCreateNewRide(false)} />;
-  }
+  const insets = useSafeAreaInsets();
+
+  const swipePanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderRelease: (_, gs) => {
+        if (gs.dy > 40 || gs.vy > 0.3) setModalVisible(false);
+      },
+    }),
+  ).current;
 
   return (
     <View style={styles.shell}>
-      <ScrollView
-        style={styles.container}
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            tintColor={C.purpleLight}
-          />
-        }
-      >
-        {/* ── Map ─────────────────────────────────────────────────────────── */}
-        <LinearGradient colors={CARD_GRADIENT} style={styles.mapCard}>
-          <RideMapView
-            onPlaceSelect={rideSelect}
-            placeLocalisations={placesLocation}
-            favorites={favoriteRoutes}
-            homeLocalisation={homeLoc ?? { lat: 0, lng: 0 }}
-          />
-        </LinearGradient>
+      {/* ── Full-screen Map ─────────────────────────────────────────────── */}
+      <RideMapView
+        onPlaceSelect={rideSelect}
+        favorites={favoriteRoutes}
+        homeLocalisation={homeLoc ?? { lat: 0, lng: 0 }}
+        promotedEvents={PROMOTED_EVENTS}
+      />
 
-        {/* ── Selected Ride ────────────────────────────────────────────────── */}
-        {selectedRide && (
-          <>
-            <SectionHeader icon="car-outline" title="Selected Ride" />
-            <View style={styles.rideContainer}>
-              <RideCardSlected
-                driverId={selectedRide.driverId}
-                rating={selectedRide.rating}
-                destination={selectedRide.destination}
-                seatsAvailable={selectedRide.seatsAvailable}
-                time={selectedRide.time}
-                origin={selectedRide.origin}
-                level={selectedRide.xp}
-                onPress={() => acceptARide(selectedRide.id, selectedRide.started)}
-                onCancel={() => setSelectedRide("")}
-              />
-            </View>
-          </>
-        )}
-
-        {/* ── Nearby Rides / Empty State ───────────────────────────────────── */}
-        {filter ? (
-          !selectedRide && (
-            <>
-              <SectionHeader icon="navigate-outline" title="Select your ride" />
-              <View style={styles.rideList}>
-                {scoredRides.map((ride) => {
-                  const onRideSelected = {
-                    ...ride,
-                    rating: 0,
-                    level: 0,
-                    time: ride.time ?? "",
-                    origin: `${ride.localisation.latitude.toFixed(3)}, ${ride.localisation.longitude.toFixed(3)}`,
-                    onPress: () => setSelectedRide(onRideSelected),
-                  };
-                  return <RideCard key={ride.id} {...onRideSelected} />;
-                })}
-              </View>
-            </>
-          )
-        ) : (
-          <View style={styles.emptyState}>
-            <View style={styles.emptyIconWrap}>
-              <Ionicons name="map-outline" size={26} color={C.purple} />
-            </View>
-            <Text style={styles.emptyTitle}>No ride selected</Text>
-            <Text style={styles.emptySubtext}>
-              Select a place on the map to view available rides.
-            </Text>
+      {/* ── Floating Search Bar ─────────────────────────────────────────── */}
+      <View style={[styles.searchBarWrapper, { top: insets.top - 38 }]}>
+        <BlurView
+          intensity={60}
+          tint="dark"
+          experimentalBlurMethod="dimezisBlurView"
+          style={styles.searchBarBlur}
+        >
+          <View style={styles.searchBarInner}>
+            <Ionicons name="search" size={20} color={C.purpleLight} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder={t("home.searchPlaceholder") || "Where are you going?"}
+              placeholderTextColor={C.muted}
+              cursorColor={C.purpleLight}
+              value={searchText}
+              onChangeText={handleSearchInput}
+            />
+            {searchText.length > 0 ? (
+              <TouchableOpacity style={styles.searchFilterBtn} activeOpacity={0.7} onPress={clearSearch}>
+                <Ionicons name="close" size={18} color={C.text} />
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={[
+                  styles.searchFilterBtn,
+                  (showSettings || searchRadius !== 10 || minSeats !== 1 || maxBudget !== 50)
+                    && { backgroundColor: "rgba(137, 56, 213, 0.45)" },
+                ]}
+                activeOpacity={0.7}
+                onPress={() => setShowSettings((v) => !v)}
+              >
+                <Ionicons name="options-outline" size={18} color={showSettings ? C.purpleLight : C.text} />
+              </TouchableOpacity>
+            )}
           </View>
-        )}
-      </ScrollView>
+        </BlurView>
+      </View>
 
-      {/* ── Floating Action Button ───────────────────────────────────────────── */}
+      {/* ── Search Settings Panel ─────────────────────────────────────────── */}
+      {showSettings && (
+        <View style={[styles.settingsPanel, { top: insets.top - 38 + 58 }]}>
+          <BlurView intensity={80} tint="dark" experimentalBlurMethod="dimezisBlurView" style={styles.settingsBlur}>
+            <View style={styles.settingsInner}>
+              {/* Title row */}
+              <View style={styles.settingsTitleRow}>
+                <Text style={styles.settingsTitleText}>{t("searchSettings.title")}</Text>
+                <TouchableOpacity
+                  onPress={() => { setSearchRadius(10); setMinSeats(1); setMaxBudget(50); }}
+                  style={styles.settingsResetBtn}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.settingsResetText}>{t("searchSettings.reset")}</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.settingsDivider} />
+
+              {/* Search radius */}
+              <View style={styles.settingsSection}>
+                <View style={styles.settingsLabelRow}>
+                  <Text style={styles.settingsLabel}>{t("searchSettings.radius")}</Text>
+                  <Text style={styles.settingsValue}>{searchRadius} km</Text>
+                </View>
+                <Slider
+                  style={styles.settingsSlider}
+                  minimumValue={1}
+                  maximumValue={50}
+                  step={1}
+                  value={searchRadius}
+                  onValueChange={setSearchRadius}
+                  minimumTrackTintColor={C.purple}
+                  maximumTrackTintColor={C.dim}
+                  thumbTintColor={C.purpleLight}
+                />
+              </View>
+
+              <View style={styles.settingsDivider} />
+
+              {/* Number of people stepper */}
+              <View style={styles.settingsSection}>
+                <View style={styles.settingsLabelRow}>
+                  <Text style={styles.settingsLabel}>{t("searchSettings.people")}</Text>
+                  <View style={styles.stepperRow}>
+                    <TouchableOpacity
+                      style={styles.stepperBtn}
+                      onPress={() => setMinSeats((v) => Math.max(1, v - 1))}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.stepperBtnText}>−</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.stepperValue}>{minSeats}</Text>
+                    <TouchableOpacity
+                      style={styles.stepperBtn}
+                      onPress={() => setMinSeats((v) => Math.min(6, v + 1))}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.stepperBtnText}>+</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+
+              <View style={styles.settingsDivider} />
+
+              {/* Max budget slider */}
+              <View style={styles.settingsSection}>
+                <View style={styles.settingsLabelRow}>
+                  <Text style={styles.settingsLabel}>{t("searchSettings.budget")}</Text>
+                  <Text style={styles.settingsValue}>
+                    {maxBudget >= 100 ? t("searchSettings.anyBudget") : `$${maxBudget}`}
+                  </Text>
+                </View>
+                <Slider
+                  style={styles.settingsSlider}
+                  minimumValue={5}
+                  maximumValue={100}
+                  step={5}
+                  value={maxBudget}
+                  onValueChange={setMaxBudget}
+                  minimumTrackTintColor={C.purple}
+                  maximumTrackTintColor={C.dim}
+                  thumbTintColor={C.purpleLight}
+                />
+              </View>
+            </View>
+          </BlurView>
+        </View>
+      )}
+
+      {/* ── Suggestions Dropdown ───────────────────────────────────────────── */}
+      {showSuggestions && (
+        <View style={[styles.suggestionsDropdown, { top: insets.top - 38 + 58 }]}>
+          <BlurView intensity={80} tint="dark" experimentalBlurMethod="dimezisBlurView" style={styles.suggestionsBlur}>
+            {isLoadingSuggestions ? (
+              <View style={styles.suggestionRow}>
+                <ActivityIndicator size="small" color={C.purpleLight} />
+                <Text style={styles.suggestionLoadingText}>
+                  {t("explore.searching") || "Searching..."}
+                </Text>
+              </View>
+            ) : suggestions.length === 0 ? (
+              <View style={styles.suggestionRow}>
+                <Ionicons name="location-outline" size={14} color={C.muted} />
+                <Text style={styles.suggestionNoResultText}>
+                  {t("explore.noLocations") || "No locations found"}
+                </Text>
+              </View>
+            ) : (
+              suggestions.map((item, index) => {
+                const isEvent    = item.kind === "event";
+                const isFavorite = item.kind === "favorite";
+                const isHome     = item.kind === "home";
+                const icon = isHome     ? "home"
+                           : isFavorite ? "star"
+                           : isEvent    ? "flame"
+                           : "location";
+                const iconColor = isHome     ? "#60a5fa"
+                                : isFavorite ? C.gold
+                                : isEvent    ? "#f97316"
+                                : C.purpleLight;
+                const rowStyle = isEvent
+                  ? [styles.suggestionItem, { backgroundColor: "rgba(249,115,22,0.08)" }, index === suggestions.length - 1 && { borderBottomWidth: 0 }]
+                  : [styles.suggestionItem, index === suggestions.length - 1 && { borderBottomWidth: 0 }];
+                const textColor = isEvent ? "#fdba74" : C.text;
+                return (
+                  <TouchableOpacity
+                    key={index}
+                    onPress={() => onSelectSuggestion(item)}
+                    style={rowStyle}
+                  >
+                    <Ionicons name={icon as any} size={14} color={iconColor} />
+                    <Text style={[styles.suggestionText, { color: textColor }]} numberOfLines={1}>
+                      {item.displayName}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })
+            )}
+          </BlurView>
+        </View>
+      )}
+
+      {/* ── Floating Action Button ───────────────────────────────────────── */}
       <TouchableOpacity
         style={styles.floatingButton}
-        onPress={() => setCreateNewRide(true)}
+        onPress={() => router.push("/createRideScreen")}
         activeOpacity={0.85}
       >
         <LinearGradient
@@ -303,49 +536,388 @@ export default function HomeScreen() {
           end={{ x: 1, y: 0 }}
           style={styles.floatingBtnGrad}
         >
-          <Ionicons name="add-circle-outline" size={20} color="#fff" />
-          <Text style={styles.floatingButtonText}>Start a New Ride</Text>
+          <Text style={{fontSize: 18}}>➕</Text>
+          <Text style={styles.floatingButtonText}>{t("home.startNewRide")}</Text>
         </LinearGradient>
       </TouchableOpacity>
+      {/* ── Rides Modal ────────────────────────────────────────────────────── */}
+      <Modal
+        visible={modalVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            {/* Header */}
+            <View style={styles.modalHeader}>
+              <View style={styles.modalDragZone} {...swipePanResponder.panHandlers}>
+                <View style={styles.modalHandle} />
+              </View>
+              <View style={styles.modalTitleRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.modalLabel}>
+                    {t("home.ridesTo") || "Rides to"}
+                  </Text>
+                  <Text style={styles.modalTitle} numberOfLines={2}>
+                    {selectedPlace}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => setModalVisible(false)}
+                  style={styles.modalCloseBtn}
+                >
+                  <Ionicons name="close" size={22} color={C.text} />
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Ride list */}
+            <ScrollView
+              style={styles.modalScroll}
+              contentContainerStyle={styles.modalScrollContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {modalSelectedRide ? (
+                <RideCardSlected
+                  driverId={modalSelectedRide.driverId}
+                  driverName={modalSelectedRide.driverName}
+                  driverAvatar={modalSelectedRide.driverAvatar}
+                  rating={0}
+                  destination={modalSelectedRide.destination}
+                  seatsAvailable={modalSelectedRide.seatsAvailable}
+                  time={modalSelectedRide.time ?? ""}
+                  origin={`${modalSelectedRide.localisation.latitude.toFixed(3)}, ${modalSelectedRide.localisation.longitude.toFixed(3)}`}
+                  level={0}
+                  onPress={async () => {
+                    try {
+                      let loc = { latitude: 0, longitude: 0 };
+                      const { status } = await Location.requestForegroundPermissionsAsync();
+                      if (status === "granted") {
+                        const pos = await Location.getCurrentPositionAsync({});
+                        loc = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
+                      }
+                      await requestToJoinRide(modalSelectedRide.id, loc);
+                      Alert.alert(
+                        t("explore.requestSent") || "Request Sent",
+                        t("explore.requestSentMsg") || "Your request has been sent.",
+                      );
+                      setModalVisible(false);
+                      router.push(
+                        `/rideScreen?rideId=${modalSelectedRide.id}&Originlat=${modalSelectedRide.localisation.latitude}&OriginLng=${modalSelectedRide.localisation.longitude}&DestinationLat=${modalSelectedRide.destinationCoords.latitude}&DestinationLng=${modalSelectedRide.destinationCoords.longitude}&pending=true`,
+                      );
+                    } catch (err: any) {
+                      Alert.alert("Error", err.message ?? "Could not join ride");
+                    }
+                  }}
+                  onCancel={() => setModalSelectedRide(null)}
+                />
+              ) : scoredRides.length > 0 ? (
+                scoredRides.map((ride) => (
+                  <RideCard
+                    key={ride.id}
+                    driverId={ride.driverId}
+                    driverName={ride.driverName}
+                    driverAvatar={ride.driverAvatar}
+                    rating={0}
+                    level={0}
+                    destination={ride.destination}
+                    seatsAvailable={ride.seatsAvailable}
+                    time={ride.time ?? ""}
+                    origin={`${ride.localisation.latitude.toFixed(3)}, ${ride.localisation.longitude.toFixed(3)}`}
+                    onPress={() => setModalSelectedRide(ride)}
+                  />
+                ))
+              ) : (
+                <View style={styles.modalEmptyState}>
+                  <Ionicons name="car-outline" size={32} color={C.muted} />
+                  <Text style={styles.modalEmptyTitle}>
+                    {t("explore.noRidesFound") || "No rides found"}
+                  </Text>
+                  <Text style={styles.modalEmptySubtext}>
+                    {t("explore.noRidesFoundSub") || "Try a different destination"}
+                  </Text>
+                </View>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  // ── Shell ────────────────────────────────────────────────────────────────
   shell: {
     flex: 1,
     backgroundColor: C.bg,
   },
-  container: {
-    flex: 1,
-    backgroundColor: C.bg,
-  },
-  content: {
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: 120,
-  },
 
-  // ── Map ───────────────────────────────────────────────────────────────────
-  mapCard: {
-    height: 400,
-    borderRadius: 18,
+  // ── Floating Search Bar ────────────────────────────────────────────────────
+  searchBarWrapper: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    zIndex: 10,
+  },
+  searchBarBlur: {
+    borderRadius: 16,
     overflow: "hidden",
     borderWidth: 1,
-    borderColor: C.border,
+    borderColor: "rgba(137, 56, 213, 0.25)",
   },
-
-  // ── Ride Containers ───────────────────────────────────────────────────────
-  rideContainer: {
-    backgroundColor: C.surface,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: C.borderFaint,
-    overflow: "hidden",
-  },
-  rideList: {
+  searchBarInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 14,
+    paddingVertical: Platform.OS === "ios" ? 14 : 10,
     gap: 10,
+    backgroundColor: "rgba(15, 15, 30, 0.55)",
+  },
+  searchInput: {
+    flex: 1,
+    color: C.text,
+    fontSize: 15,
+    fontWeight: "500",
+    letterSpacing: 0.2,
+    padding: 0,
+  },
+  searchFilterBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: "rgba(137, 56, 213, 0.18)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  // ── Suggestions Dropdown ──────────────────────────────────────────────────
+  suggestionsDropdown: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    zIndex: 9,
+  },
+  suggestionsBlur: {
+    borderRadius: 14,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(137, 56, 213, 0.25)",
+  },
+  suggestionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    gap: 10,
+    backgroundColor: "rgba(15, 15, 30, 0.85)",
+  },
+  suggestionLoadingText: {
+    color: C.muted,
+    fontSize: 13,
+  },
+  suggestionNoResultText: {
+    color: C.dim,
+    fontSize: 13,
+  },
+  suggestionItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255, 255, 255, 0.06)",
+    gap: 10,
+    backgroundColor: "rgba(15, 15, 30, 0.85)",
+  },
+  suggestionText: {
+    color: C.text,
+    fontSize: 14,
+    flex: 1,
+  },
+
+  // ── Modal ─────────────────────────────────────────────────────────────────
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0, 0, 0, 0.6)",
+    justifyContent: "flex-end",
+  },
+  modalContainer: {
+    height: "90%",
+    backgroundColor: C.bg,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderWidth: 1,
+    borderBottomWidth: 0,
+    borderColor: C.border,
+    overflow: "hidden",
+  },
+  modalHeader: {
+    alignItems: "center",
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: C.surface,
+  },
+  modalDragZone: {
+    width: "100%",
+    alignItems: "center",
+    paddingVertical: 12,
+  },
+  modalHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: C.dim,
+  },
+  modalTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    width: "100%",
+  },
+  modalLabel: {
+    color: C.muted,
+    fontSize: 12,
+    fontWeight: "500",
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+    marginBottom: 4,
+  },
+  modalTitle: {
+    color: C.text,
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  modalCloseBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: "rgba(137, 56, 213, 0.18)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  modalScroll: {
+    flex: 1,
+  },
+  modalScrollContent: {
+    padding: 16,
+    gap: 12,
+    paddingBottom: 40,
+  },
+  modalEmptyState: {
+    alignItems: "center",
+    paddingVertical: 60,
+    gap: 8,
+  },
+  modalEmptyTitle: {
+    color: C.text,
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  modalEmptySubtext: {
+    color: C.dim,
+    fontSize: 13,
+    textAlign: "center",
+  },
+
+  // ── Search Settings Panel ─────────────────────────────────────────────────
+  settingsPanel: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    zIndex: 9,
+  },
+  settingsBlur: {
+    borderRadius: 16,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(137, 56, 213, 0.25)",
+  },
+  settingsInner: {
+    backgroundColor: "rgba(15, 15, 30, 0.85)",
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  settingsTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
+  settingsTitleText: {
+    color: C.text,
+    fontSize: 13,
+    fontWeight: "700",
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+  },
+  settingsResetBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    backgroundColor: "rgba(137, 56, 213, 0.18)",
+  },
+  settingsResetText: {
+    color: C.purpleLight,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  settingsDivider: {
+    height: 1,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    marginBottom: 12,
+  },
+  settingsSection: {
+    marginBottom: 10,
+  },
+  settingsLabelRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 2,
+  },
+  settingsLabel: {
+    color: C.muted,
+    fontSize: 13,
+    fontWeight: "500",
+  },
+  settingsValue: {
+    color: C.purpleLight,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  settingsSlider: {
+    width: "100%",
+    height: 36,
+  },
+  stepperRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  stepperBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: "rgba(137, 56, 213, 0.25)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(137, 56, 213, 0.4)",
+  },
+  stepperBtnText: {
+    color: C.purpleLight,
+    fontSize: 16,
+    fontWeight: "700",
+    lineHeight: 20,
+  },
+  stepperValue: {
+    color: C.text,
+    fontSize: 15,
+    fontWeight: "700",
+    minWidth: 20,
+    textAlign: "center",
   },
 
   // ── Floating Button ────────────────────────────────────────────────────────
@@ -374,40 +946,5 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "700",
     letterSpacing: 0.3,
-  },
-
-  // ── Empty State ────────────────────────────────────────────────────────────
-  emptyState: {
-    alignItems: "center",
-    paddingVertical: 40,
-    marginTop: 16,
-    backgroundColor: C.surface,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: C.borderFaint,
-    gap: 6,
-  },
-  emptyIconWrap: {
-    width: 56,
-    height: 56,
-    borderRadius: 16,
-    backgroundColor: "rgba(124,58,237,0.1)",
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 4,
-    borderWidth: 1,
-    borderColor: C.border,
-  },
-  emptyTitle: {
-    color: C.text,
-    fontSize: 16,
-    fontWeight: "700",
-  },
-  emptySubtext: {
-    color: C.dim,
-    fontSize: 13,
-    textAlign: "center",
-    paddingHorizontal: 32,
-    lineHeight: 20,
   },
 });

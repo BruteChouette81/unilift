@@ -2,6 +2,7 @@ import {
   type Auth,
   createUserWithEmailAndPassword,
   OAuthProvider,
+  sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithCredential,
   signOut,
@@ -222,6 +223,12 @@ export const signUpWithEmail = async (
   }
 
   return credential;
+};
+
+export const resetPassword = async (email: string): Promise<void> => {
+  const trimmed = email.trim();
+  if (!trimmed) throw createAuthError("auth/missing-input", "Please enter your email address.");
+  await withTimeout(sendPasswordResetEmail(firebaseAuth, trimmed), "login");
 };
 
 export const signOutUser = async (): Promise<void> => {

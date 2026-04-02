@@ -1,7 +1,8 @@
+import { firestoreDocumentUrl } from "@/constants/runtime-config";
+import { useAuth } from "@/context/AuthContext";
+import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useState } from "react";
-import { LinearGradient } from "expo-linear-gradient";
-import { Ionicons } from "@expo/vector-icons";
 import {
   ActivityIndicator,
   Alert,
@@ -14,22 +15,20 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { useAuth } from "@/context/AuthContext";
-import { firestoreDocumentUrl } from "@/constants/runtime-config";
 
 const C = {
   bg:          "#080810",
   surface:     "#0f0f1e",
-  border:      "rgba(124, 58, 237, 0.22)",
+  border:      "rgba(137, 56, 213, 0.22)",
   borderFaint: "rgba(255, 255, 255, 0.06)",
-  purple:      "#7C3AED",
-  purpleLight: "#a78bfa",
+  purple:      "#8938D5",
+  purpleLight: "#e09af7",
   text:        "#f3f4f6",
   muted:       "#9ca3af",
   dim:         "#4b5563",
   inputBg:     "rgba(255, 255, 255, 0.05)",
-  inputBorder: "rgba(124, 58, 237, 0.2)",
-  inputFocus:  "rgba(124, 58, 237, 0.7)",
+  inputBorder: "rgba(137, 56, 213, 0.2)",
+  inputFocus:  "rgba(137, 56, 213, 0.7)",
 };
 
 const PREFERENCE_OPTIONS: { key: string; label: string }[] = [
@@ -74,25 +73,29 @@ export default function ProfileSettingsScreen() {
     try {
       setSaving(true);
       const token = await user.getIdToken();
-      const res = await fetch(firestoreDocumentUrl("users", user.uid), {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          fields: {
-            name:        { stringValue: name.trim() },
-            age:         { integerValue: parseInt(age) || 0 },
-            school:      { stringValue: school.trim() },
-            preferences: {
-              arrayValue: {
-                values: preferences.map((p) => ({ stringValue: p })),
+      const res = await fetch(
+        firestoreDocumentUrl("users", user.uid) +
+          "?updateMask.fieldPaths=name&updateMask.fieldPaths=age&updateMask.fieldPaths=school&updateMask.fieldPaths=preferences",
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            fields: {
+              name:        { stringValue: name.trim() },
+              age:         { integerValue: parseInt(age) || 0 },
+              school:      { stringValue: school.trim() },
+              preferences: {
+                arrayValue: {
+                  values: preferences.map((p) => ({ stringValue: p })),
+                },
               },
             },
-          },
-        }),
-      });
+          }),
+        },
+      );
 
       if (!res.ok) throw new Error(await res.text());
       router.back();
@@ -111,7 +114,7 @@ export default function ProfileSettingsScreen() {
       {/* Header */}
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={8}>
-          <Ionicons name="arrow-back" size={22} color={C.purpleLight} />
+          <Text style={{fontSize: 20}}>←</Text>
         </Pressable>
         <Text style={styles.headerTitle}>My Profile</Text>
         <View style={{ width: 38 }} />
@@ -125,7 +128,7 @@ export default function ProfileSettingsScreen() {
         {/* Name */}
         <Text style={styles.label}>Name</Text>
         <View style={[styles.inputRow, nameFocused && styles.inputRowFocused]}>
-          <Ionicons name="person-outline" size={18} color={C.muted} style={styles.inputIcon} />
+          <Text style={[{fontSize: 16}, styles.inputIcon]}>👤</Text>
           <TextInput
             style={styles.textInput}
             value={name}
@@ -140,7 +143,7 @@ export default function ProfileSettingsScreen() {
         {/* Age */}
         <Text style={styles.label}>Age</Text>
         <View style={[styles.inputRow, ageFocused && styles.inputRowFocused]}>
-          <Ionicons name="calendar-outline" size={18} color={C.muted} style={styles.inputIcon} />
+          <Text style={[{fontSize: 16}, styles.inputIcon]}>📅</Text>
           <TextInput
             style={styles.textInput}
             value={age}
@@ -157,7 +160,7 @@ export default function ProfileSettingsScreen() {
         {/* School */}
         <Text style={styles.label}>School</Text>
         <View style={[styles.inputRow, schoolFocused && styles.inputRowFocused]}>
-          <Ionicons name="school-outline" size={18} color={C.muted} style={styles.inputIcon} />
+          <Text style={[{fontSize: 16}, styles.inputIcon]}>🎓</Text>
           <TextInput
             style={styles.textInput}
             value={school}
@@ -191,7 +194,7 @@ export default function ProfileSettingsScreen() {
         {/* Save */}
         <Pressable onPress={handleSave} disabled={saving} style={{ marginTop: 32 }}>
           <LinearGradient
-            colors={["#7C3AED", "#2563eb"]}
+            colors={["#FD165A", "#8938D5"]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0 }}
             style={[styles.saveBtn, saving && { opacity: 0.7 }]}
@@ -233,7 +236,7 @@ const styles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: 10,
-    backgroundColor: "rgba(167,139,250,0.1)",
+    backgroundColor: "rgba(224,154,247,0.1)",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -288,12 +291,12 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: "rgba(124, 58, 237, 0.3)",
-    backgroundColor: "rgba(124, 58, 237, 0.05)",
+    borderColor: "rgba(137, 56, 213, 0.3)",
+    backgroundColor: "rgba(137, 56, 213, 0.05)",
   },
   chipSelected: {
-    backgroundColor: "#7C3AED",
-    borderColor: "#7C3AED",
+    backgroundColor: "#8938D5",
+    borderColor: "#8938D5",
   },
   chipText: {
     color: C.muted,

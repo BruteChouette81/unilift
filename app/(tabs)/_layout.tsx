@@ -5,20 +5,22 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { HapticTab } from "@/components/haptic-tab";
 import { useAuth } from "@/context/AuthContext";
+import { useLanguage } from "@/context/LanguageContext";
 import { Ionicons } from "@expo/vector-icons";
 
 const C = {
   bg:          "#080810",
   surface:     "#0f0f1e",
-  border:      "rgba(124, 58, 237, 0.22)",
-  purple:      "#7C3AED",
-  purpleLight: "#a78bfa",
+  border:      "rgba(137, 56, 213, 0.22)",
+  purple:      "#8938D5",
+  purpleLight: "#e09af7",
   dim:         "#4b5563",
 };
 
 export default function TabLayout() {
   const insets = useSafeAreaInsets();
   const { status } = useAuth();
+  const { t } = useLanguage();
 
   if (status === "unauthenticated") {
     return <Redirect href="/(auth)/login" />;
@@ -51,11 +53,11 @@ export default function TabLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: "Home",
+          title: t("tabs.home"),
           headerShown: false,
           tabBarIcon: ({ color, focused }) => (
             <View style={focused ? {
-              backgroundColor: "rgba(124,58,237,0.15)",
+              backgroundColor: "rgba(137,56,213,0.15)",
               borderRadius: 10,
               padding: 5,
             } : { padding: 5 }}>
@@ -66,28 +68,16 @@ export default function TabLayout() {
       />
       <Tabs.Screen
         name="explore"
-        options={{
-          title: "Rides",
-          headerShown: false,
-          tabBarIcon: ({ color, focused }) => (
-            <View style={focused ? {
-              backgroundColor: "rgba(124,58,237,0.15)",
-              borderRadius: 10,
-              padding: 5,
-            } : { padding: 5 }}>
-              <Ionicons name={focused ? "car" : "car-outline"} size={22} color={color} />
-            </View>
-          ),
-        }}
+        options={{ href: null }}
       />
       <Tabs.Screen
         name="wallet"
         options={{
-          title: "Wallet",
+          title: t("tabs.wallet"),
           headerShown: false,
           tabBarIcon: ({ color, focused }) => (
             <View style={focused ? {
-              backgroundColor: "rgba(124,58,237,0.15)",
+              backgroundColor: "rgba(137,56,213,0.15)",
               borderRadius: 10,
               padding: 5,
             } : { padding: 5 }}>
@@ -99,11 +89,11 @@ export default function TabLayout() {
       <Tabs.Screen
         name="profile"
         options={{
-          title: "Profile",
+          title: t("tabs.profile"),
           headerShown: false,
           tabBarIcon: ({ color, focused }) => (
             <View style={focused ? {
-              backgroundColor: "rgba(124,58,237,0.15)",
+              backgroundColor: "rgba(137,56,213,0.15)",
               borderRadius: 10,
               padding: 5,
             } : { padding: 5 }}>

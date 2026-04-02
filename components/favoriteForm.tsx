@@ -1,6 +1,6 @@
 import { geoSuggestion } from "@/services/rideServices";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
-import { Ionicons } from "@expo/vector-icons";
+import { useLanguage } from "@/context/LanguageContext";
 import { LinearGradient } from "expo-linear-gradient";
 import React, { useEffect, useState } from "react";
 import {
@@ -54,6 +54,7 @@ export default function FavoriteRouteForm({
   onCancel,
   onDelete,
 }: Props) {
+  const { t } = useLanguage();
   const [endAddress, setEndAddress]         = useState(initialData?.endAddress ?? "");
   const [endGeolocation, setEndGeolocation] = useState<{ lat: number; lon: number } | undefined>(initialData?.endGeolocation);
   const [endSuggestions, setEndSuggestions] = useState<any[]>([]);
@@ -75,7 +76,7 @@ export default function FavoriteRouteForm({
 
   const validate = () => {
     const e: Record<string, string> = {};
-    if (!endAddress.trim()) e.endAddress = "Destination is required";
+    if (!endAddress.trim()) e.endAddress = t("favorites.destinationRequired");
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -104,13 +105,13 @@ export default function FavoriteRouteForm({
       <LinearGradient colors={HEADER_GRADIENT} style={styles.header}>
         <View style={styles.headerContent}>
           <LinearGradient colors={CARD_GRADIENT} style={styles.headerIcon}>
-            <Ionicons name="star-outline" size={20} color={C.gold} />
+            <Text style={{fontSize: 18}}>⭐</Text>
           </LinearGradient>
           <View>
             <Text style={styles.headerTitle}>
-              {isEditing ? "Edit Favorite" : "New Favorite"}
+              {isEditing ? t("favorites.editTitle") : t("favorites.newTitle")}
             </Text>
-            <Text style={styles.headerSub}>Save a destination for quick access</Text>
+            <Text style={styles.headerSub}>{t("favorites.headerSub")}</Text>
           </View>
         </View>
       </LinearGradient>
@@ -119,24 +120,24 @@ export default function FavoriteRouteForm({
         {/* ── Destination Input ───────────────────────────────────────────── */}
         <View style={styles.sectionHeader}>
           <View style={styles.sectionIconDot}>
-            <Ionicons name="location-outline" size={14} color={C.purpleLight} />
+            <Text style={{fontSize: 12}}>📍</Text>
           </View>
-          <Text style={styles.sectionTitle}>Destination</Text>
+          <Text style={styles.sectionTitle}>{t("favorites.destination")}</Text>
         </View>
 
         <View style={styles.card}>
           <View style={[styles.inputWrapper, errors.endAddress && styles.inputError]}>
-            <Ionicons name="search-outline" size={16} color={C.dim} style={{ marginRight: 8 }} />
+            <Text style={[{fontSize: 14}, { marginRight: 8 }]}>🔍</Text>
             <TextInput
               style={styles.input}
-              placeholder="Search a destination…"
+              placeholder={t("favorites.searchPlaceholder")}
               placeholderTextColor={C.dim}
               value={endAddress}
               onChangeText={onEndAddressChange}
             />
             {endAddress.length > 0 && (
               <TouchableOpacity onPress={() => { setEndAddress(""); setShowEndSuggestions(false); }}>
-                <Ionicons name="close-circle" size={16} color={C.dim} />
+                <Text style={{fontSize: 14}}>✕</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -157,7 +158,7 @@ export default function FavoriteRouteForm({
                     index === endSuggestions.length - 1 && { borderBottomWidth: 0 },
                   ]}
                 >
-                  <Ionicons name="location-outline" size={14} color={C.purpleLight} style={{ marginRight: 8 }} />
+                  <Text style={[{fontSize: 12}, { marginRight: 8 }]}>📍</Text>
                   <Text style={styles.suggestionText} numberOfLines={1}>{item?.displayName}</Text>
                 </TouchableOpacity>
               ))}
@@ -168,14 +169,14 @@ export default function FavoriteRouteForm({
         {/* ── Actions ─────────────────────────────────────────────────────── */}
         <Pressable onPress={handleSubmit} style={styles.submitBtn}>
           <LinearGradient colors={BTN_GRADIENT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.submitGrad}>
-            <Ionicons name={isEditing ? "checkmark-outline" : "star-outline"} size={17} color="#fff" />
-            <Text style={styles.submitText}>{isEditing ? "Save Changes" : "Add Favorite"}</Text>
+            <Text style={{fontSize: 15}}>{isEditing ? "✓" : "⭐"}</Text>
+            <Text style={styles.submitText}>{isEditing ? t("favorites.saveChanges") : t("favorites.addFavorite")}</Text>
           </LinearGradient>
         </Pressable>
 
         {onCancel && (
           <TouchableOpacity onPress={onCancel} style={styles.cancelBtn} activeOpacity={0.8}>
-            <Text style={styles.cancelText}>Cancel</Text>
+            <Text style={styles.cancelText}>{t("favorites.cancel")}</Text>
           </TouchableOpacity>
         )}
 
@@ -185,8 +186,8 @@ export default function FavoriteRouteForm({
             style={styles.deleteBtn}
             activeOpacity={0.8}
           >
-            <Ionicons name="trash-outline" size={15} color={C.danger} />
-            <Text style={styles.deleteText}>Delete Favorite</Text>
+            <Text style={{fontSize: 13}}>🗑️</Text>
+            <Text style={styles.deleteText}>{t("favorites.deleteFavorite")}</Text>
           </TouchableOpacity>
         )}
 

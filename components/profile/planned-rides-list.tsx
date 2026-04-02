@@ -1,7 +1,8 @@
-import { Ionicons } from "@expo/vector-icons";
 import React, { useCallback, useMemo } from "react";
 import { Alert, FlatList, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import type { Ride, StartRidePayload } from "@/types/models";
+import { useLanguage } from "@/context/LanguageContext";
+import type { Language } from "@/constants/translations";
 
 const C = {
   bg:          "#080810",
@@ -29,11 +30,12 @@ type PlannedRidesListProps = {
   onCancelRide: (rideId: string) => void;
 };
 
-function formatDate(iso: string): { weekday: string; date: string; time: string } {
+function formatDate(iso: string, language: Language): { weekday: string; date: string; time: string } {
+  const locale = language === "fr" ? "fr-CA" : "en-CA";
   const d = new Date(iso);
-  const weekday = d.toLocaleDateString("en-US", { weekday: "short" });
-  const date = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  const time = d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+  const weekday = d.toLocaleDateString(locale, { weekday: "short" });
+  const date = d.toLocaleDateString(locale, { month: "short", day: "numeric" });
+  const time = d.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
   return { weekday, date, time };
 }
 
@@ -43,6 +45,7 @@ export function PlannedRidesList({
   onStartRide,
   onCancelRide,
 }: PlannedRidesListProps) {
+  const { t, language } = useLanguage();
   const today = useMemo(() => new Date().toISOString().split("T")[0], []);
   const plannedRides = useMemo(
     () => rides.filter((ride) => ride.status === "planned" && ride.driverId === driverId),
@@ -54,7 +57,7 @@ export function PlannedRidesList({
     const rideDate = item.date?.split("T")[0];
     const canStart = rideDate === today;
     const isFirst = index === 0;
-    const formatted = item.date ? formatDate(item.date) : null;
+    const formatted = item.date ? formatDate(item.date, language) : null;
     const passengerCount = item.passengers?.length ?? 0;
     const totalSeats = passengerCount + item.seatsAvailable;
 
@@ -83,12 +86,12 @@ export function PlannedRidesList({
 
             {canStart ? (
               <View style={styles.todayBadge}>
-                <Ionicons name="radio-button-on" size={8} color={C.green} />
-                <Text style={styles.todayBadgeText}>Today</Text>
+                <Text style={{fontSize: 6}}>📍</Text>
+                <Text style={styles.todayBadgeText}>{t("rides.today")}</Text>
               </View>
             ) : (
               <View style={styles.upcomingBadge}>
-                <Text style={styles.upcomingBadgeText}>Upcoming</Text>
+                <Text style={styles.upcomingBadgeText}>{t("rides.upcoming")}</Text>
               </View>
             )}
           </View>
@@ -96,7 +99,7 @@ export function PlannedRidesList({
           {/* Destination */}
           <View style={styles.destinationRow}>
             <View style={styles.destIconWrap}>
-              <Ionicons name="location" size={14} color={C.purpleLight} />
+              <Text style={{fontSize: 12}}>📍</Text>
             </View>
             <Text style={styles.destination} numberOfLines={1}>
               {item.destination}
@@ -107,19 +110,19 @@ export function PlannedRidesList({
           <View style={styles.metaRow}>
             {formatted && (
               <View style={styles.metaChip}>
-                <Ionicons name="time-outline" size={12} color={C.muted} />
+                <Text style={{fontSize: 10}}>⏱</Text>
                 <Text style={styles.metaText}>{formatted.time}</Text>
               </View>
             )}
             <View style={styles.metaChip}>
-              <Ionicons name="people-outline" size={12} color={C.muted} />
+              <Text style={{fontSize: 10}}>👥</Text>
               <Text style={styles.metaText}>
-                {passengerCount}/{totalSeats} passengers
+                {t("rides.passengersCount", { current: passengerCount, total: totalSeats })}
               </Text>
             </View>
             <View style={styles.metaChip}>
-              <Ionicons name="car-outline" size={12} color={C.muted} />
-              <Text style={styles.metaText}>{item.seatsAvailable} seats left</Text>
+              <Text style={{fontSize: 10}}>🚗</Text>
+              <Text style={styles.metaText}>{t("rides.seatsLeft", { count: item.seatsAvailable })}</Text>
             </View>
           </View>
 
@@ -133,16 +136,14 @@ export function PlannedRidesList({
                   originLat: item.localisation.latitude,
                   originLng: item.localisation.longitude,
                   destination: item.destination,
+                  destinationLat: item.destinationCoords.latitude,
+                  destinationLng: item.destinationCoords.longitude,
                 })
               }
             >
-              <Ionicons
-                name="play"
-                size={13}
-                color={canStart ? C.green : C.dim}
-              />
+              <Text style={{fontSize: 11}}>▶</Text>
               <Text style={[styles.actionBtnText, !canStart && styles.actionBtnTextDisabled]}>
-                Start Ride
+                {t("rides.startRide")}
               </Text>
             </TouchableOpacity>
 
@@ -150,32 +151,32 @@ export function PlannedRidesList({
               style={[styles.actionBtn, styles.cancelBtn]}
               onPress={() =>
                 Alert.alert(
-                  "Cancel ride",
-                  "Are you sure you want to cancel this ride?",
+                  t("rides.confirmCancel"),
+                  t("rides.confirmCancelMsg"),
                   [
-                    { text: "No" },
-                    { text: "Yes", style: "destructive", onPress: () => onCancelRide(item.id) },
+                    { text: t("common.no") },
+                    { text: t("common.yes"), style: "destructive", onPress: () => onCancelRide(item.id) },
                   ],
                 )
               }
             >
-              <Ionicons name="close" size={13} color={C.red} />
-              <Text style={styles.cancelBtnText}>Cancel</Text>
+              <Text style={{fontSize: 11}}>✕</Text>
+              <Text style={styles.cancelBtnText}>{t("rides.cancel")}</Text>
             </TouchableOpacity>
           </View>
         </View>
       </View>
     );
-  }, [onCancelRide, onStartRide, today]);
+  }, [onCancelRide, onStartRide, today, t, language]);
 
   if (plannedRides.length === 0) {
     return (
       <View style={styles.empty}>
         <View style={styles.emptyIconWrap}>
-          <Ionicons name="calendar-outline" size={24} color={C.purple} />
+          <Text style={{fontSize: 22}}>📅</Text>
         </View>
-        <Text style={styles.emptyTitle}>No upcoming rides</Text>
-        <Text style={styles.emptySubtext}>Rides you create will appear here.</Text>
+        <Text style={styles.emptyTitle}>{t("rides.noUpcoming")}</Text>
+        <Text style={styles.emptySubtext}>{t("rides.noUpcomingSub")}</Text>
       </View>
     );
   }

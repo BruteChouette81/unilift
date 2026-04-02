@@ -2,9 +2,11 @@ import {
   firebaseStorageBaseUrl,
   firestoreDocumentUrl,
 } from "@/constants/runtime-config";
+import { useUserProfile } from "@/context/UserProfileContext";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import type { User } from "firebase/auth";
+import { useState } from "react";
 
 type UseProfileAvatarParams = {
   user: User | null;
@@ -12,6 +14,9 @@ type UseProfileAvatarParams = {
 };
 
 export function useProfileAvatar({ user, onUploaded }: UseProfileAvatarParams) {
+  const { updateUserData } = useUserProfile();
+  const [uploading, setUploading] = useState(false);
+
   const uploadImage = async (uri: string) => {
     if (!user) return;
 
@@ -78,6 +83,8 @@ export function useProfileAvatar({ user, onUploaded }: UseProfileAvatarParams) {
       }),
     });
 
+    // Update in-memory cache immediately — no Firestore re-fetch needed.
+    updateUserData({ avatar: downloadURL });
     await onUploaded();
   };
 
@@ -93,9 +100,14 @@ export function useProfileAvatar({ user, onUploaded }: UseProfileAvatarParams) {
     });
 
     if (!result.canceled) {
-      await uploadImage(result.assets[0].uri);
+      setUploading(true);
+      try {
+        await uploadImage(result.assets[0].uri);
+      } finally {
+        setUploading(false);
+      }
     }
   };
 
-  return { pickImage };
+  return { pickImage, uploading };
 }

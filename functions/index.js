@@ -237,6 +237,108 @@ app.get("/wallet/transactions", authenticate, async (req, res) => {
   }
 });
 
+// ── Push Notifications ──────────────────────────────────────────────────────
+
+/**
+ * Send a push notification via the Expo push API.
+ * @param {string} expoPushToken - Expo push token (e.g. "ExponentPushToken[...]")
+ * @param {string} title - Notification title
+ * @param {string} body - Notification body text
+ * @param {object} [data] - Optional data payload
+ * @returns {Promise<object>} Expo push API response
+ */
+async function sendPushNotification(expoPushToken, title, body, data = {}) {
+  const message = {
+    to: expoPushToken,
+    sound: "default",
+    title,
+    body,
+    data,
+  };
+
+  const response = await fetch("https://exp.host/--/api/v2/push/send", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Accept-Encoding": "gzip, deflate",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(message),
+  });
+
+  return response.json();
+}
+
+/**
+ * Look up a user's Expo push token from Firestore.
+ * @param {string} uid
+ * @returns {Promise<string|null>}
+ */
+async function getUserPushToken(uid) {
+  const snap = await db.collection("users").doc(uid).get();
+  return (snap.data() ?? {}).expoPushToken ?? null;
+}
+
+// General-purpose endpoint: send a notification to a specific user
+app.post("/notifications/send", authenticate, async (req, res) => {
+  try {
+    const { uid, title, body, data } = req.body;
+    if (!uid || !title || !body) {
+      return res.status(400).json({ error: "uid, title, and body are required" });
+    }
+
+    const token = await getUserPushToken(uid);
+    if (!token) {
+      return res.status(404).json({ error: "User has no push token" });
+    }
+
+    const result = await sendPushNotification(token, title, body, data ?? {});
+    res.json({ success: true, result });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Notification Helper Functions (fill in logic as needed) ─────────────────
+//
+// Each function looks up the recipient's push token and sends a notification.
+// Call these from other endpoints or Firestore triggers when events occur.
+//
+// async function notifyRideRequestReceived(driverUid, riderName, destination) {
+//   const token = await getUserPushToken(driverUid);
+//   if (!token) return;
+//   await sendPushNotification(token, "New Ride Request", `${riderName} wants to join your ride to ${destination}.`);
+// }
+//
+// async function notifyRideRequestAccepted(riderUid, driverName, destination) {
+//   const token = await getUserPushToken(riderUid);
+//   if (!token) return;
+//   await sendPushNotification(token, "Request Accepted!", `${driverName} accepted your ride to ${destination}.`);
+// }
+//
+// async function notifyRideStarted(passengerUids, driverName, destination) {
+//   for (const uid of passengerUids) {
+//     const token = await getUserPushToken(uid);
+//     if (!token) continue;
+//     await sendPushNotification(token, "Ride Started", `${driverName} has started the ride to ${destination}.`);
+//   }
+// }
+//
+// async function notifyRideCompleted(passengerUids, rideId) {
+//   for (const uid of passengerUids) {
+//     const token = await getUserPushToken(uid);
+//     if (!token) continue;
+//     await sendPushNotification(token, "Ride Completed", "Your ride has been completed. Don't forget to rate your driver!", { rideId });
+//   }
+// }
+//
+// async function notifyPaymentReceived(driverUid, amount) {
+//   const token = await getUserPushToken(driverUid);
+//   if (!token) return;
+//   await sendPushNotification(token, "Payment Received", `You earned $${(amount / 100).toFixed(2)} from a ride.`);
+// }
+
 // Export as a Firebase Function
 // firebase deploy --only functions
 exports.api = functions.https.onRequest(app);

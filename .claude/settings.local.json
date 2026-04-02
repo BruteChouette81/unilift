@@ -2,7 +2,18 @@
   "permissions": {
     "allow": [
       "Bash(ls:*)",
-      "Bash(head:*)"
+      "Bash(head:*)",
+      "Bash(find /c/Users/hbari/desktop/unilift/app -type f -name \"*.tsx\" | xargs grep -l \"useProfileRides\\\\|startRide\" | head -5)",
+      "Bash(cd \"C:\\\\Users\\\\hbari\\\\desktop\\\\unilift\" && npx expo install react-native-svg 2>&1 | tail -5)",
+      "Bash(cd \"C:\\\\Users\\\\hbari\\\\desktop\\\\unilift\" && npm install react-native-qrcode-svg 2>&1 | tail -5)",
+      "Bash(cd \"C:\\\\Users\\\\hbari\\\\desktop\\\\unilift\" && npx expo install expo-camera 2>&1 | tail -5)",
+      "Bash(cd \"C:\\\\Users\\\\hbari\\\\desktop\\\\unilift\" && npx expo lint 2>&1)",
+      "Bash(npx expo:*)",
+      "Bash(npx tsc:*)",
+      "Bash(find C:/Users/hbari/desktop/unilift -name AuthContext* -o -name auth*context*)",
+      "Bash(grep -r \"notification\\\\|messaging\\\\|expo-notification\" /c/Users/hbari/desktop/unilift --include=*.ts --include=*.tsx --include=*.js)",
+      "Bash(cd:*)",
+      "Bash(head -200 /c/Users/hbari/Desktop/unilift/app/\\\\\\(tabs\\\\\\)/index.tsx)"
     ]
   }
 }

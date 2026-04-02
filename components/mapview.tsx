@@ -4,10 +4,11 @@ import {
   runtimeConfig,
   withFirebaseApiKey,
 } from "@/constants/runtime-config";
+import type { PromotedEvent } from "@/constants/events";
 import { Ionicons } from "@expo/vector-icons";
-import React, { useEffect, useState } from "react";
-import { Dimensions, StyleSheet, Text, View } from "react-native";
-import MapView, { Marker, Polyline } from "react-native-maps";
+import React, { useEffect, useRef, useState } from "react";
+import { Dimensions, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import MapView, { Marker, Polyline, type Region } from "react-native-maps";
 
 // ─── Design Tokens ───────────────────────────────────────────────────────────
 const C = {
@@ -18,6 +19,7 @@ const C = {
   blue:    "#3b82f6",
   white:   "#ffffff",
   bg:      "#080810",
+  fire:    "#f97316",
 };
 
 // ─── Dark Map Style ───────────────────────────────────────────────────────────
@@ -45,10 +47,10 @@ const DARK_MAP_STYLE = [
 ];
 
 // ─── Styled Markers ───────────────────────────────────────────────────────────
-function PinMarker({ icon, color, size = 18 }: { icon: string; color: string; size?: number }) {
+function PinMarker({ emoji, color, size = 18 }: { emoji: string; color: string; size?: number }) {
   return (
     <View style={[m.pin, { borderColor: color, shadowColor: color }]}>
-      <Ionicons name={icon as any} size={size} color={color} />
+      <Text style={{ fontSize: size }}>{emoji}</Text>
       <View style={[m.pinTip, { backgroundColor: color }]} />
     </View>
   );
@@ -160,9 +162,9 @@ function getPassengerPath(passengerId: string[]) {
 // ─── Interfaces ──────────────────────────────────────────────────────────────
 interface RideMapViewProps {
   onPlaceSelect: (name: string, lat: number, lng: number) => void;
-  placeLocalisations: any[];
   favorites: any[];
   homeLocalisation: { lat: number; lng: number };
+  promotedEvents?: PromotedEvent[];
 }
 
 interface DriverRideMapViewProps {
@@ -170,11 +172,13 @@ interface DriverRideMapViewProps {
   destination: { latitude: number; longitude: number };
   passengers: string[] | undefined;
   setCoords?: (coords: { latitude: number; longitude: number }[]) => void;
+  pendingLocations?: { latitude: number; longitude: number }[];
 }
 
 interface UserRideMapViewProps {
   origin: { latitude: number; longitude: number };
   destination: { latitude: number; longitude: number };
+  driverLocation?: { latitude: number; longitude: number };
 }
 
 const DEFAULT_REGION = {
@@ -207,16 +211,26 @@ export function DriverRideMapView(props: DriverRideMapViewProps) {
           coordinate={{ latitude: props.origin.latitude, longitude: props.origin.longitude }}
           title="Origin"
         >
-          <PinMarker icon="home" color={C.blue} />
+          <PinMarker emoji="🏠" color={C.blue} />
         </Marker>
 
         {passengerLocations.map((loc, index) => (
           <Marker
-            key={index}
+            key={`p-${index}`}
             coordinate={{ latitude: loc.latitude, longitude: loc.longitude }}
             title={`Passenger ${index + 1}`}
           >
-            <PinMarker icon="person" color={C.success} />
+            <PinMarker emoji="👤" color={C.success} />
+          </Marker>
+        ))}
+
+        {props.pendingLocations?.map((loc, index) => (
+          <Marker
+            key={`req-${index}`}
+            coordinate={{ latitude: loc.latitude, longitude: loc.longitude }}
+            title={`Request ${index + 1}`}
+          >
+            <PinMarker emoji="🙋" color={C.gold} />
           </Marker>
         ))}
 
@@ -224,7 +238,7 @@ export function DriverRideMapView(props: DriverRideMapViewProps) {
           coordinate={{ latitude: props.destination.latitude, longitude: props.destination.longitude }}
           title="Destination"
         >
-          <PinMarker icon="flag" color={C.danger} />
+          <PinMarker emoji="🚩" color={C.danger} />
         </Marker>
       </MapView>
     </View>
@@ -246,14 +260,16 @@ export function UserRideMapView(props: UserRideMapViewProps) {
     console.log(props.origin);
   }, []);
 
+  const driverCoord = props.driverLocation ?? props.origin;
+
   return (
     <View style={styles.container}>
       <MapView style={styles.map} region={DEFAULT_REGION} customMapStyle={DARK_MAP_STYLE}>
         <Marker
-          coordinate={{ latitude: props.origin.latitude, longitude: props.origin.longitude }}
+          coordinate={{ latitude: driverCoord.latitude, longitude: driverCoord.longitude }}
           title="Driver"
         >
-          <PinMarker icon="car-sport" color={C.success} />
+          <PinMarker emoji="🚗" color={C.success} />
         </Marker>
 
         {userlocation && (
@@ -261,7 +277,7 @@ export function UserRideMapView(props: UserRideMapViewProps) {
             coordinate={{ latitude: userlocation.latitude, longitude: userlocation.longitude }}
             title="You"
           >
-            <PinMarker icon="person" color={C.blue} />
+            <PinMarker emoji="👤" color={C.blue} />
           </Marker>
         )}
 
@@ -269,7 +285,7 @@ export function UserRideMapView(props: UserRideMapViewProps) {
           coordinate={{ latitude: props.destination.latitude, longitude: props.destination.longitude }}
           title="Destination"
         >
-          <PinMarker icon="flag" color={C.danger} />
+          <PinMarker emoji="🚩" color={C.danger} />
         </Marker>
       </MapView>
     </View>
@@ -277,54 +293,50 @@ export function UserRideMapView(props: UserRideMapViewProps) {
 }
 
 // ─── RideMapView (home screen) ────────────────────────────────────────────────
+const RECENTER_THRESHOLD = 0.01; // ~1 km
+
 export default function RideMapView(props: RideMapViewProps) {
-  const [routeCoords, setRouteCoords] = useState<{ latitude: any; longitude: any }[]>([]);
+  const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [isCentered, setIsCentered] = useState(true);
+  const mapRef = useRef<MapView>(null);
 
   useEffect(() => {
-    const fetchRoute = async () => {
-      const origin = [-73.5673, 45.5017];
-      const destination = [-71.283689, 46.7899];
-      const data = await getPathForRide(origin, destination);
-      if (data) {
-        const geometry = data.routes[0].geometry;
-        const decoded = decodePolyline(geometry);
-        setRouteCoords(decoded.map(point => ({ latitude: point[0], longitude: point[1] })));
-      }
-    };
-    //fetchRoute();
+    (async () => {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") return;
+      const pos = await Location.getCurrentPositionAsync({});
+      setUserLocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
+    })();
   }, []);
+
+  const handleRecenter = () => {
+    if (!userLocation) return;
+    mapRef.current?.animateToRegion({
+      latitude: userLocation.latitude,
+      longitude: userLocation.longitude,
+      latitudeDelta: 0.05,
+      longitudeDelta: 0.05,
+    }, 400);
+    setIsCentered(true);
+  };
+
+  const handleRegionChange = (region: Region) => {
+    if (!userLocation) return;
+    const latDiff = Math.abs(region.latitude - userLocation.latitude);
+    const lngDiff = Math.abs(region.longitude - userLocation.longitude);
+    setIsCentered(latDiff < RECENTER_THRESHOLD && lngDiff < RECENTER_THRESHOLD);
+  };
 
   return (
     <View style={styles.container}>
-      <MapView style={styles.map} initialRegion={DEFAULT_REGION} customMapStyle={DARK_MAP_STYLE}>
-        {routeCoords.length > 0 && (
-          <Polyline coordinates={routeCoords} strokeWidth={4} strokeColor={C.purple} />
-        )}
-
-        {props.placeLocalisations.map((loc, index) => (
-          <Marker
-            key={index}
-            coordinate={{ latitude: loc.lat, longitude: loc.lng }}
-            title={loc.name}
-            description={`Location of ${loc.name}`}
-            onPress={() => props.onPlaceSelect(loc.name, loc.lat, loc.lng)}
-          >
-            <PinMarker icon="location" color={C.purple} />
-          </Marker>
-        ))}
-
-        {props.favorites.map((loc, index) => (
-          <Marker
-            key={index}
-            coordinate={{ latitude: loc.destinationGeo.lat, longitude: loc.destinationGeo.lon }}
-            title={loc.destination}
-            description={`Location of ${loc.destination}`}
-            onPress={() => props.onPlaceSelect(loc.destination, loc.destinationGeo.lat, loc.destinationGeo.lon)}
-          >
-            <PinMarker icon="star" color={C.gold} />
-          </Marker>
-        ))}
-
+      <MapView
+        ref={mapRef}
+        style={styles.map}
+        initialRegion={DEFAULT_REGION}
+        customMapStyle={DARK_MAP_STYLE}
+        onRegionChangeComplete={handleRegionChange}
+      >
+        {/* 1 ── Home ──────────────────────────────────────────────────── */}
         {props.homeLocalisation && (
           <Marker
             coordinate={{ latitude: props.homeLocalisation.lat, longitude: props.homeLocalisation.lng }}
@@ -332,10 +344,54 @@ export default function RideMapView(props: RideMapViewProps) {
             description="Your home location"
             onPress={() => props.onPlaceSelect("home", props.homeLocalisation.lat, props.homeLocalisation.lng)}
           >
-            <PinMarker icon="home" color={C.blue} />
+            <PinMarker emoji="🏠" color={C.blue} />
           </Marker>
         )}
+
+        {/* 2 ── Live Location ─────────────────────────────────────────── */}
+        {userLocation && (
+          <Marker
+            coordinate={userLocation}
+            title="You"
+            description="Your current location"
+          >
+            <PinMarker emoji="📍" color={C.success} />
+          </Marker>
+        )}
+
+        {/* 3 ── Promoted Events ───────────────────────────────────────── */}
+        {props.promotedEvents?.map((ev) => (
+          <Marker
+            key={ev.id}
+            coordinate={{ latitude: ev.lat, longitude: ev.lng }}
+            title={ev.name}
+            description={ev.venue}
+            onPress={() => props.onPlaceSelect(ev.name, ev.lat, ev.lng)}
+          >
+            <PinMarker emoji="🔥" color={C.fire} size={20} />
+          </Marker>
+        ))}
+
+        {/* 4 ── Favorites ─────────────────────────────────────────────── */}
+        {props.favorites.map((loc, index) => (
+          <Marker
+            key={`fav-${index}`}
+            coordinate={{ latitude: loc.destinationGeo.lat, longitude: loc.destinationGeo.lon }}
+            title={loc.destination}
+            description={`Location of ${loc.destination}`}
+            onPress={() => props.onPlaceSelect(loc.destination, loc.destinationGeo.lat, loc.destinationGeo.lon)}
+          >
+            <PinMarker emoji="⭐" color={C.gold} />
+          </Marker>
+        ))}
       </MapView>
+
+      {/* ── Recenter button ───────────────────────────────────────────────── */}
+      {!isCentered && userLocation && (
+        <TouchableOpacity style={styles.recenterBtn} onPress={handleRecenter} activeOpacity={0.8}>
+          <Ionicons name="locate" size={18} color="#fff" />
+        </TouchableOpacity>
+      )}
     </View>
   );
 }
@@ -346,5 +402,21 @@ const styles = StyleSheet.create({
   map: {
     width: Dimensions.get("window").width,
     height: Dimensions.get("window").height,
+  },
+  recenterBtn: {
+    position: "absolute",
+    bottom: 110,
+    right: 16,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "#7C3AED",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#7C3AED",
+    shadowOpacity: 0.6,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 6,
   },
 });

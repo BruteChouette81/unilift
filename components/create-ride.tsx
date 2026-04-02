@@ -1,36 +1,33 @@
-import DateTimePicker from "@react-native-community/datetimepicker";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
+import DateTimePicker from "@react-native-community/datetimepicker";
 import * as Location from "expo-location";
-import { GeoPoint } from "firebase/firestore";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Alert,
   Platform,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
 
-import { Ionicons } from "@expo/vector-icons";
+import { useLanguage } from "@/context/LanguageContext";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { createRide, geoSuggestion } from "../services/rideServices";
 
 // ─── Design Tokens ──────────────────────────────────────────────────────────
 const C = {
-  bg:          "#080810",
-  surface:     "#0f0f1e",
-  surfaceAlt:  "#13132a",
-  border:      "rgba(124, 58, 237, 0.22)",
+  bg:          "#0a0618",
+  surface:     "#110d22",
+  surfaceAlt:  "#160f2e",
+  border:      "rgba(137, 56, 213, 0.22)",
   borderFaint: "rgba(255, 255, 255, 0.06)",
-  purple:      "#7C3AED",
-  purpleLight: "#a78bfa",
-  blue:        "#1D4ED8",
-  blueLight:   "#60a5fa",
+  purple:      "#8938D5",
+  purpleLight: "#e09af7",
+  blue:        "#FD165A",
   text:        "#f3f4f6",
   muted:       "#9ca3af",
   dim:         "#4b5563",
@@ -39,16 +36,17 @@ const C = {
   success:     "#34d399",
 };
 
-const HEADER_GRADIENT = ["#3b0764", "#1e3a8a"] as const;
+const HEADER_GRADIENT = ["#2d0015", "#1c0038"] as const;
 const CARD_GRADIENT   = ["#1e1b4b", "#0d1224"] as const;
-const BTN_GRADIENT    = ["#7C3AED", "#2563eb"] as const;
+const BTN_GRADIENT    = ["#FD165A", "#8938D5"] as const;
+const BTN_GREEN       = ["#059669", "#34d399"] as const;
 
 // ─── Section Header ──────────────────────────────────────────────────────────
 function SectionHeader({ icon, title }: { icon: string; title: string }) {
   return (
     <View style={sh.row}>
       <View style={sh.iconDot}>
-        <Ionicons name={icon as any} size={14} color={C.purpleLight} />
+        <Text style={{fontSize: 12}}>{icon}</Text>
       </View>
       <Text style={sh.title}>{title}</Text>
     </View>
@@ -63,6 +61,7 @@ const sh = StyleSheet.create({
 
 // ─── Main Component ──────────────────────────────────────────────────────────
 export default function CreateRideScreen(props: { cancelCreate: () => void }) {
+  const { t, language } = useLanguage();
   const [destination, setDestination]         = useState("");
   const [date, setDate]                       = useState(new Date());
   const [showPicker, setShowPicker]           = useState(false);
@@ -71,9 +70,11 @@ export default function CreateRideScreen(props: { cancelCreate: () => void }) {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [liveRide, setLiveRide]               = useState(true);
   const [destinationCoords, setDestinationCoords] = useState<{ lat: number; lng: number }>();
+  const suppressSuggestionsRef = useRef(false);
   const debouncedDestination = useDebouncedValue(destination, 450);
 
   const onDestinationChange = (text: string) => {
+    suppressSuggestionsRef.current = false;
     setDestination(text);
     setShowSuggestions(false);
   };
@@ -87,7 +88,7 @@ export default function CreateRideScreen(props: { cancelCreate: () => void }) {
 
   async function handleSubmit() {
     if (!destination || !seats) {
-      Alert.alert("Error", "Please fill out all fields.");
+      Alert.alert(t("createRide.missingFieldsTitle"), t("createRide.missingFieldsMsg"));
       return;
     }
     try {
@@ -96,7 +97,7 @@ export default function CreateRideScreen(props: { cancelCreate: () => void }) {
         destination,
         date: date.toISOString(),
         seatsAvailable: parseInt(seats),
-        geopoint: new GeoPoint(loc.latitude, loc.longitude),
+        geopoint: { latitude: loc.latitude, longitude: loc.longitude },
         destinationCoords: { lat: destinationCoords?.lat, lng: destinationCoords?.lng },
         started: liveRide,
       });
@@ -104,19 +105,22 @@ export default function CreateRideScreen(props: { cancelCreate: () => void }) {
       const rideId = resjson.name.split("/").pop();
 
       if (liveRide) {
-        Alert.alert("Success", "Your ride has been created!");
-        router.replace(`/riderScreen?rideId=${rideId}&maxSeat=${seats}&Originlat=${loc.latitude}&OriginLng=${loc.longitude}&Destination=${destination}`);
+        Alert.alert(t("createRide.successTitle"), t("createRide.rideCreated"));
+        router.replace(
+          `/riderScreen?rideId=${rideId}&maxSeat=${seats}&Originlat=${loc.latitude}&OriginLng=${loc.longitude}&Destination=${encodeURIComponent(destination)}&DestinationLat=${destinationCoords?.lat ?? 0}&DestinationLng=${destinationCoords?.lng ?? 0}`,
+        );
       } else {
-        Alert.alert("Success", "Your ride has been planned!");
+        Alert.alert(t("createRide.successTitle"), t("createRide.ridePlanned"));
         props.cancelCreate();
       }
     } catch (err) {
       console.error(err);
-      Alert.alert("Error", "Failed to create ride.");
+      Alert.alert(t("createRide.failedTitle"), t("createRide.failedMsg"));
     }
   }
 
   const onSelectSuggestion = (value: string, lat: number, lng: number) => {
+    suppressSuggestionsRef.current = true;
     const destString = value.split(",")[0] + " " + value.split(",")[1];
     setDestination(destString);
     setDestinationCoords({ lat, lng });
@@ -126,6 +130,10 @@ export default function CreateRideScreen(props: { cancelCreate: () => void }) {
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
+      if (suppressSuggestionsRef.current) {
+        suppressSuggestionsRef.current = false;
+        return;
+      }
       if (debouncedDestination.length < 2) {
         setShowSuggestions(false);
         return;
@@ -145,23 +153,23 @@ export default function CreateRideScreen(props: { cancelCreate: () => void }) {
       <LinearGradient colors={HEADER_GRADIENT} style={styles.header}>
         <View style={styles.headerContent}>
           <LinearGradient colors={CARD_GRADIENT} style={styles.headerIcon}>
-            <Ionicons name="car-sport-outline" size={22} color={C.purpleLight} />
+            <Text style={{fontSize: 20}}>🚗</Text>
           </LinearGradient>
           <View>
-            <Text style={styles.headerTitle}>New Ride</Text>
-            <Text style={styles.headerSub}>Set your destination and preferences</Text>
+            <Text style={styles.headerTitle}>{t("createRide.headerTitle")}</Text>
+            <Text style={styles.headerSub}>{t("createRide.headerSub")}</Text>
           </View>
         </View>
       </LinearGradient>
 
       <View style={styles.body}>
         {/* ── Destination ───────────────────────────────────────────────────── */}
-        <SectionHeader icon="location-outline" title="Destination" />
+        <SectionHeader icon="📍" title={t("createRide.destination")} />
         <View style={styles.card}>
           {/* Origin row */}
           <View style={styles.inputRow}>
             <View style={styles.dotGreen} />
-            <Text style={styles.originLabel}>Your current location</Text>
+            <Text style={styles.originLabel}>{t("createRide.currentLocation")}</Text>
           </View>
           <View style={styles.routeLine} />
 
@@ -171,14 +179,14 @@ export default function CreateRideScreen(props: { cancelCreate: () => void }) {
             <View style={styles.inputWrapper}>
               <TextInput
                 style={styles.input}
-                placeholder="Where are you going?"
+                placeholder={t("createRide.destinationPlaceholder")}
                 placeholderTextColor={C.dim}
                 value={destination}
                 onChangeText={onDestinationChange}
               />
               {destination.length > 0 && (
                 <TouchableOpacity onPress={() => { setDestination(""); setShowSuggestions(false); }}>
-                  <Ionicons name="close-circle" size={16} color={C.dim} />
+                  <Text style={{fontSize: 14}}>✕</Text>
                 </TouchableOpacity>
               )}
             </View>
@@ -193,7 +201,7 @@ export default function CreateRideScreen(props: { cancelCreate: () => void }) {
                   onPress={() => onSelectSuggestion(item?.displayName, item?.lat, item?.lon)}
                   style={[styles.suggestionItem, index === suggestions.length - 1 && { borderBottomWidth: 0 }]}
                 >
-                  <Ionicons name="location-outline" size={14} color={C.purpleLight} style={{ marginRight: 8 }} />
+                  <Text style={[{fontSize: 12}, { marginRight: 8 }]}>📍</Text>
                   <Text style={styles.suggestionText} numberOfLines={1}>{item?.displayName}</Text>
                 </TouchableOpacity>
               ))}
@@ -201,54 +209,107 @@ export default function CreateRideScreen(props: { cancelCreate: () => void }) {
           )}
         </View>
 
+        {/* ── Seats ────────────────────────────────────────────────────────── */}
+        <SectionHeader icon="👥" title={t("createRide.availableSeats")} />
+        <View style={styles.card}>
+          <View style={styles.seatsRow}>
+            <TouchableOpacity
+              style={styles.seatBtn}
+              onPress={() => setSeats(s => String(Math.max(1, parseInt(s) - 1)))}
+            >
+              <Text style={styles.seatBtnText}>−</Text>
+            </TouchableOpacity>
+
+            <View style={styles.seatDisplay}>
+              <Text style={styles.seatNumber}>{seats}</Text>
+              <Text style={styles.seatLabel}>{t("rides.seat", { count: parseInt(seats) })}</Text>
+            </View>
+
+            <TouchableOpacity
+              style={styles.seatBtn}
+              onPress={() => setSeats(s => String(Math.min(7, parseInt(s) + 1)))}
+            >
+              <Text style={styles.seatBtnText}>+</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* ── Car visual ────────────────────────────────────────────────── */}
+          <View style={styles.carWrap}>
+            {/* Windshield */}
+            <View style={styles.carWindshield} />
+            <View style={styles.carBody}>
+              {/* Front row: driver (always filled) + seat 1 */}
+              <View style={styles.carRow}>
+                <View style={[styles.carSeat, styles.carSeatDriver]}>
+                  <Text style={styles.carSeatIcon}>🧑</Text>
+                  <Text style={styles.carSeatDriverLabel}>You</Text>
+                </View>
+                <View style={[styles.carSeat, parseInt(seats) >= 1 && styles.carSeatFilled]}>
+                  {parseInt(seats) >= 1
+                    ? <Text style={styles.carSeatIcon}>💺</Text>
+                    : <View style={styles.carSeatEmpty} />}
+                </View>
+              </View>
+              {/* Back rows: seats 2-3, 4-5, 6-7 */}
+              {([[2,3],[4,5],[6,7]] as [number,number][]).map(([a, b]) => (
+                <View key={a} style={styles.carRow}>
+                  {[a, b].map(n => (
+                    <View key={n} style={[styles.carSeat, parseInt(seats) >= n && styles.carSeatFilled]}>
+                      {parseInt(seats) >= n
+                        ? <Text style={styles.carSeatIcon}>💺</Text>
+                        : <View style={styles.carSeatEmpty} />}
+                    </View>
+                  ))}
+                </View>
+              ))}
+            </View>
+            {/* Boot */}
+            <View style={styles.carBoot} />
+          </View>
+        </View>
+
         {/* ── Ride Type ─────────────────────────────────────────────────────── */}
-        <SectionHeader icon="flash-outline" title="Ride Type" />
+        <SectionHeader icon="⚡" title={t("createRide.rideType")} />
         <View style={styles.card}>
           <View style={styles.rideTypeRow}>
-            <LinearGradient
-              colors={liveRide ? CARD_GRADIENT : ["transparent", "transparent"]}
-              style={[styles.rideTypeOption, liveRide && styles.rideTypeActive]}
+            <TouchableOpacity
+              onPress={() => setLiveRide(true)}
+              activeOpacity={0.8}
+              style={[styles.rideTypeOption, liveRide && styles.rideTypeActiveLive]}
             >
-              <Ionicons name="radio-outline" size={18} color={liveRide ? C.purpleLight : C.dim} />
-              <Text style={[styles.rideTypeLabel, liveRide && { color: C.purpleLight }]}>Live</Text>
-              <Text style={[styles.rideTypeSub, liveRide && { color: C.muted }]}>Start now</Text>
-            </LinearGradient>
+              <Text style={{fontSize: 18}}>📡</Text>
+              <Text style={[styles.rideTypeLabel, liveRide && { color: C.success }]}>{t("createRide.live")}</Text>
+              <Text style={styles.rideTypeSub}>{t("createRide.liveStart")}</Text>
+            </TouchableOpacity>
 
-            <Switch
-              value={liveRide}
-              onValueChange={setLiveRide}
-              trackColor={{ false: C.surfaceAlt, true: "rgba(124,58,237,0.4)" }}
-              thumbColor={liveRide ? C.purple : C.dim}
-              style={{ marginHorizontal: 12 }}
-            />
-
-            <LinearGradient
-              colors={!liveRide ? CARD_GRADIENT : ["transparent", "transparent"]}
-              style={[styles.rideTypeOption, !liveRide && styles.rideTypeActive, { alignItems: "flex-end" }]}
+            <TouchableOpacity
+              onPress={() => setLiveRide(false)}
+              activeOpacity={0.8}
+              style={[styles.rideTypeOption, !liveRide && styles.rideTypeActivePlanned]}
             >
-              <Ionicons name="calendar-outline" size={18} color={!liveRide ? C.blueLight : C.dim} />
-              <Text style={[styles.rideTypeLabel, !liveRide && { color: C.blueLight }]}>Planned</Text>
-              <Text style={[styles.rideTypeSub, !liveRide && { color: C.muted }]}>Schedule it</Text>
-            </LinearGradient>
+              <Text style={{fontSize: 18}}>📅</Text>
+              <Text style={[styles.rideTypeLabel, !liveRide && { color: C.purpleLight }]}>{t("createRide.planned")}</Text>
+              <Text style={styles.rideTypeSub}>{t("createRide.plannedSchedule")}</Text>
+            </TouchableOpacity>
           </View>
         </View>
 
         {/* ── Date & Time (planned only) ────────────────────────────────────── */}
         {!liveRide && (
           <>
-            <SectionHeader icon="time-outline" title="Date & Time" />
+            <SectionHeader icon="⏱" title={t("createRide.dateTime")} />
             <View style={styles.card}>
               <TouchableOpacity onPress={() => setShowPicker(true)} style={styles.dateButton}>
                 <View style={styles.dateIconWrap}>
-                  <Ionicons name="calendar" size={16} color={C.purpleLight} />
+                  <Text style={{fontSize: 14}}>📅</Text>
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.dateLabel}>Departure</Text>
+                  <Text style={styles.dateLabel}>{t("createRide.departure")}</Text>
                   <Text style={styles.dateValue}>
-                    {date.toLocaleDateString()} — {date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    {date.toLocaleDateString(language === "fr" ? "fr-CA" : "en-CA")} — {date.toLocaleTimeString(language === "fr" ? "fr-CA" : "en-CA", { hour: "2-digit", minute: "2-digit" })}
                   </Text>
                 </View>
-                <Ionicons name="chevron-forward" size={16} color={C.dim} />
+                <Text style={{fontSize: 14, color: C.muted}}>›</Text>
               </TouchableOpacity>
 
               {showPicker && (
@@ -271,48 +332,27 @@ export default function CreateRideScreen(props: { cancelCreate: () => void }) {
 
               {Platform.OS === "ios" && showPicker && (
                 <TouchableOpacity onPress={() => setShowPicker(false)} style={styles.doneButton}>
-                  <Text style={styles.doneText}>Done</Text>
+                  <Text style={styles.doneText}>{t("createRide.done")}</Text>
                 </TouchableOpacity>
               )}
             </View>
           </>
         )}
 
-        {/* ── Seats ────────────────────────────────────────────────────────── */}
-        <SectionHeader icon="people-outline" title="Available Seats" />
-        <View style={styles.card}>
-          <View style={styles.seatsRow}>
-            <TouchableOpacity
-              style={styles.seatBtn}
-              onPress={() => setSeats(s => String(Math.max(1, parseInt(s) - 1)))}
-            >
-              <Ionicons name="remove" size={18} color={C.purpleLight} />
-            </TouchableOpacity>
-
-            <View style={styles.seatDisplay}>
-              <Text style={styles.seatNumber}>{seats}</Text>
-              <Text style={styles.seatLabel}>{parseInt(seats) === 1 ? "seat" : "seats"}</Text>
-            </View>
-
-            <TouchableOpacity
-              style={styles.seatBtn}
-              onPress={() => setSeats(s => String(Math.min(8, parseInt(s) + 1)))}
-            >
-              <Ionicons name="add" size={18} color={C.purpleLight} />
-            </TouchableOpacity>
-          </View>
-        </View>
-
         {/* ── Actions ───────────────────────────────────────────────────────── */}
         <TouchableOpacity onPress={handleSubmit} style={styles.submitBtn} activeOpacity={0.85}>
-          <LinearGradient colors={BTN_GRADIENT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.submitGrad}>
-            <Ionicons name={liveRide ? "radio-outline" : "calendar-outline"} size={18} color="#fff" />
-            <Text style={styles.submitText}>{liveRide ? "Start Ride Now" : "Plan Ride"}</Text>
+          <LinearGradient
+            colors={liveRide ? BTN_GREEN : BTN_GRADIENT}
+            start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+            style={styles.submitGrad}
+          >
+            <Text style={{fontSize: 16}}>{liveRide ? "🟢" : "📅"}</Text>
+            <Text style={styles.submitText}>{liveRide ? t("createRide.startRideNow") : t("createRide.planRide")}</Text>
           </LinearGradient>
         </TouchableOpacity>
 
         <TouchableOpacity onPress={props.cancelCreate} style={styles.cancelBtn} activeOpacity={0.8}>
-          <Text style={styles.cancelText}>Cancel</Text>
+          <Text style={styles.cancelText}>{t("createRide.cancel")}</Text>
         </TouchableOpacity>
 
         <View style={{ height: 32 }} />
@@ -437,4 +477,91 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(248,113,113,0.06)",
   },
   cancelText: { color: C.danger, fontSize: 15, fontWeight: "600" },
+
+  // ── Seat buttons ────────────────────────────────────────────────────────────
+  seatBtnText: { color: C.purpleLight, fontSize: 22, fontWeight: "700", lineHeight: 26 },
+
+  // ── Car visual ──────────────────────────────────────────────────────────────
+  carWrap: {
+    alignItems: "center",
+    marginTop: 20,
+    marginBottom: 4,
+  },
+  carWindshield: {
+    width: 80,
+    height: 18,
+    backgroundColor: "rgba(137,56,213,0.18)",
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderBottomWidth: 0,
+  },
+  carBody: {
+    backgroundColor: "rgba(137,56,213,0.10)",
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 8,
+    padding: 8,
+    gap: 6,
+    width: 110,
+  },
+  carRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 6,
+  },
+  carSeat: {
+    flex: 1,
+    height: 40,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  carSeatDriver: {
+    backgroundColor: "rgba(52,211,153,0.15)",
+    borderColor: "rgba(52,211,153,0.35)",
+  },
+  carSeatFilled: {
+    backgroundColor: "rgba(137,56,213,0.2)",
+    borderColor: "rgba(137,56,213,0.45)",
+  },
+  carSeatEmpty: {
+    width: 18,
+    height: 18,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    borderStyle: "dashed",
+  },
+  carSeatIcon: { fontSize: 16 },
+  carSeatDriverLabel: {
+    fontSize: 9,
+    color: C.success,
+    fontWeight: "700",
+    marginTop: 1,
+  },
+  carBoot: {
+    width: 60,
+    height: 12,
+    backgroundColor: "rgba(137,56,213,0.18)",
+    borderBottomLeftRadius: 8,
+    borderBottomRightRadius: 8,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderTopWidth: 0,
+  },
+
+  // ── Ride type active states ──────────────────────────────────────────────────
+  rideTypeActiveLive: {
+    borderColor: "rgba(52,211,153,0.5)",
+    backgroundColor: "rgba(52,211,153,0.07)",
+  },
+  rideTypeActivePlanned: {
+    borderColor: C.border,
+    backgroundColor: "rgba(137,56,213,0.07)",
+  },
 });
