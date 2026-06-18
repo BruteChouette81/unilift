@@ -121,12 +121,14 @@ import { UserProfileProvider } from "@/context/UserProfileContext";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { usePushNotifications } from "@/hooks/use-push-notifications";
 import { useWallet } from "@/hooks/use-wallet";
+import SplashAnimation from "@/components/SplashAnimation";
 import { DarkTheme, DefaultTheme, ThemeProvider } from "@react-navigation/native";
 import { StripeProvider } from "@stripe/stripe-react-native";
 import { LinearGradient } from "expo-linear-gradient";
+import * as SplashScreen from "expo-splash-screen";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -138,6 +140,12 @@ const BANNER_BORDER    = "rgba(137, 56, 213, 0.22)";
 const PURPLE_LIGHT     = "#e09af7";
 
 export default function RootLayout() {
+  const [showSplash, setShowSplash] = useState(true);
+
+  useEffect(() => {
+    SplashScreen.hideAsync().catch(() => {});
+  }, []);
+
   return (
     <StripeProvider
       publishableKey={runtimeConfig.stripePublishableKey}
@@ -153,6 +161,7 @@ export default function RootLayout() {
           </LanguageProvider>
         </UserProfileProvider>
       </AuthProvider>
+      {showSplash && <SplashAnimation onFinish={() => setShowSplash(false)} />}
     </StripeProvider>
   );
 }
