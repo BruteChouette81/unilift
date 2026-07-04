@@ -1,8 +1,20 @@
-import { OAuthProvider, signInWithCredential } from "firebase/auth";
-import { useRouter } from "expo-router";
-import React, { useState } from "react";
+import { authColors } from "@/constants/auth-theme";
+import { LEGAL_TERMS_TEXT } from "@/constants/legalTerms";
+import { firestoreDocumentUrl } from "@/constants/runtime-config";
+import { useAuth } from "@/context/AuthContext";
+import { useLanguage } from "@/context/LanguageContext";
+import {
+  normalizeAuthError,
+  requestAppleCredential,
+  signInToFirebaseWithApple,
+} from "@/services/authService";
+import { autoFormatDateInput, parseBirthDateInput } from "@/components/userHelper";
+import LanguageToggle from "@/components/language-toggle";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as AppleAuthentication from "expo-apple-authentication";
 import { LinearGradient } from "expo-linear-gradient";
+import { useRouter } from "expo-router";
+import React, { useState, useMemo } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -16,27 +28,13 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { authColors } from "@/constants/auth-theme";
-import { useAuth } from "@/context/AuthContext";
-import { useLanguage } from "@/context/LanguageContext";
-import { auth } from "@/firebaseConfig";
-import { firestoreDocumentUrl } from "@/constants/runtime-config";
-import { normalizeAuthError } from "@/services/authService";
 
-// ─── Legal Terms Placeholder ──────────────────────────────────────────────────
-// TODO: Replace this string with your actual legal terms text.
-const LEGAL_TERMS_TEXT = `[PASTE YOUR LEGAL TERMS HERE]
-
-Exemple / Example:
-
-En utilisant UniLift, vous acceptez nos conditions d'utilisation. UniLift est une plateforme de covoiturage entre étudiants. Nous ne sommes pas responsables des incidents survenus pendant les trajets. Les utilisateurs s'engagent à respecter les règles de conduite de la communauté.
-
-By using UniLift, you agree to our terms of service. UniLift is a student carpooling platform. We are not liable for incidents occurring during rides. Users agree to follow community conduct guidelines.`;
 
 export default function SignupScreen() {
   const router = useRouter();
   const { signUp, authActionLoading } = useAuth();
   const { t } = useLanguage();
+  const insets = useSafeAreaInsets();
 
   // TODO v2: preferences feature
   // const PREFERENCE_OPTIONS = [
@@ -48,6 +46,15 @@ export default function SignupScreen() {
   //   { key: "fast_driver", label: t("auth.signup.preferences.fast_driver") },
   // ];
 
+  const SCHOOLS = [
+    'Cégep St-Foy',
+    'Cégep Garneau',
+    'Cégep Champlain St-Lawrence',
+    'Cégep de Lévis',
+    'Université Laval',
+    'UQAR',
+  ];
+
   // Navigation
   const [step, setStep] = useState<1 | 2>(1);
 
@@ -58,25 +65,27 @@ export default function SignupScreen() {
   const [showPassword, setShowPassword] = useState(false);
 
   // Step 2 fields
-  const [age, setAge] = useState("");
+  const [birthDate, setBirthDate] = useState("");
   const [school, setSchool] = useState("");
   const [termsAccepted, setTermsAccepted] = useState(false);
   // TODO v2: const [preferences, setPreferences] = useState<string[]>([]);
-
-  // Apple flow — store token only; Firebase auth is deferred to step 2
-  const [appleToken, setAppleToken] = useState<string | null>(null);
-  const [appleDisplayName, setAppleDisplayName] = useState("");
-  const [appleEmail, setAppleEmail] = useState("");
 
   // Focus states
   const [nameFocused, setNameFocused] = useState(false);
   const [emailFocused, setEmailFocused] = useState(false);
   const [passwordFocused, setPasswordFocused] = useState(false);
-  const [ageFocused, setAgeFocused] = useState(false);
+  const [birthDateFocused, setBirthDateFocused] = useState(false);
   const [schoolFocused, setSchoolFocused] = useState(false);
+  const [showSchoolDropdown, setShowSchoolDropdown] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
   const isSubmitting = submitting || authActionLoading;
+
+  const filteredSchools = useMemo(() => {
+    if (!school.trim()) return SCHOOLS;
+    const lower = school.toLowerCase();
+    return SCHOOLS.filter(s => s.toLowerCase().includes(lower));
+  }, [school]);
 
   // TODO v2: const togglePreference = (key: string) => { ... };
 
@@ -92,24 +101,31 @@ export default function SignupScreen() {
     if (isSubmitting) return;
     try {
       setSubmitting(true);
-      const appleCredential = await AppleAuthentication.signInAsync({
-        requestedScopes: [
-          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
-          AppleAuthentication.AppleAuthenticationScope.EMAIL,
-        ],
-      });
-      if (!appleCredential.identityToken) {
-        Alert.alert(t("auth.signup.appleSigninFailed"), t("auth.signup.appleNoToken"));
-        return;
-      }
-      setAppleToken(appleCredential.identityToken);
-      setAppleDisplayName(
-        [appleCredential.fullName?.givenName, appleCredential.fullName?.familyName]
+      const appleResult = await requestAppleCredential();
+      // Authenticate with Firebase immediately — Apple credentials are one-time-use
+      // and cannot be deferred to a later step without triggering invalid-credential errors.
+      const cred = await signInToFirebaseWithApple(appleResult.identityToken, appleResult.rawNonce);
+
+      // Save the Firestore profile in the same click. The root layout will
+      // flip the auth stack to (tabs) as soon as Firebase auth fires, which
+      // unmounts the signup step-2 form before it can render — so we must
+      // create the profile here, not in a deferred step. Age / school are
+      // collected later via Profile Settings for Apple users.
+      const displayName =
+        [appleResult.fullName?.givenName, appleResult.fullName?.familyName]
           .filter(Boolean)
-          .join(" "),
-      );
-      setAppleEmail(appleCredential.email ?? "");
-      setStep(2);
+          .join(" ") || cred.user.displayName || "";
+      const userEmail = appleResult.email ?? cred.user.email ?? "";
+      const token = await cred.user.getIdToken(true);
+      await saveUserProfile(cred.user.uid, token, {
+        name:      displayName,
+        email:     userEmail,
+        birthDate: "",
+        school:    "",
+      });
+
+      // Apple sign-up from this screen is always a fresh account → onboarding.
+      router.replace("/onboardingScreen");
     } catch (err) {
       const authError = normalizeAuthError(err, t("auth.signup.appleSigninFailed"));
       Alert.alert(authError.title, authError.message);
@@ -121,11 +137,11 @@ export default function SignupScreen() {
   const saveUserProfile = async (
     uid: string,
     token: string,
-    data: { name: string; email: string; age: number; school: string },
+    data: { name: string; email: string; birthDate: string; school: string },
   ) => {
     const res = await fetch(
       firestoreDocumentUrl("users", uid) +
-        "?updateMask.fieldPaths=name&updateMask.fieldPaths=email&updateMask.fieldPaths=createdAt&updateMask.fieldPaths=age&updateMask.fieldPaths=school",
+        "?updateMask.fieldPaths=name&updateMask.fieldPaths=email&updateMask.fieldPaths=createdAt&updateMask.fieldPaths=birthDate&updateMask.fieldPaths=school",
       {
         method: "PATCH",
         headers: {
@@ -137,7 +153,7 @@ export default function SignupScreen() {
             name:      { stringValue: data.name },
             email:     { stringValue: data.email },
             createdAt: { stringValue: new Date().toISOString() },
-            age:       { integerValue: data.age },
+            birthDate: { stringValue: data.birthDate },
             school:    { stringValue: data.school },
             // TODO v2: preferences: { arrayValue: { values: data.preferences.map((p) => ({ stringValue: p })) } },
           },
@@ -159,40 +175,22 @@ export default function SignupScreen() {
     try {
       setSubmitting(true);
 
-      const profilePayload = {
-        age:    parseInt(age) || 0,
-        school: school.trim(),
+      const trimmedName  = name.trim();
+      const trimmedEmail = email.trim();
+      const cred  = await signUp(trimmedName, trimmedEmail, password);
+      const token = await cred.user.getIdToken();
+
+      await saveUserProfile(cred.user.uid, token, {
+        name:      trimmedName,
+        email:     trimmedEmail,
+        birthDate: parseBirthDateInput(birthDate),
+        school:    school.trim(),
         // TODO v2: preferences,
-      };
+      });
 
-      if (appleToken) {
-        // Apple flow — sign into Firebase now (deferred from step 1) then save profile
-        const provider = new OAuthProvider("apple.com");
-        const firebaseCredential = provider.credential({ idToken: appleToken });
-        const userCred = await signInWithCredential(auth, firebaseCredential);
-        const token = await userCred.user.getIdToken();
-
-        await saveUserProfile(userCred.user.uid, token, {
-          name:  appleDisplayName || userCred.user.displayName || "",
-          email: appleEmail || userCred.user.email || "",
-          ...profilePayload,
-        });
-        // Auth state change from signInWithCredential will navigate to tabs automatically
-      } else {
-        // Email flow
-        const trimmedName  = name.trim();
-        const trimmedEmail = email.trim();
-        const cred  = await signUp(trimmedName, trimmedEmail, password);
-        const token = await cred.user.getIdToken();
-
-        await saveUserProfile(cred.user.uid, token, {
-          name:  trimmedName,
-          email: trimmedEmail,
-          ...profilePayload,
-        });
-
-        router.replace("/(tabs)");
-      }
+      // New account → collect home address, driver availability and favorite
+      // places so the app has useful data on first entry.
+      router.replace("/onboardingScreen");
     } catch (err) {
       const authError = normalizeAuthError(err, t("auth.signup.signupFailed"));
       if (authError.retryable) {
@@ -213,6 +211,11 @@ export default function SignupScreen() {
       style={styles.root}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
+      {/* Language toggle (floats above the header) */}
+      <View style={[styles.languageToggleWrap, { top: insets.top + 8 }]} pointerEvents="box-none">
+        <LanguageToggle />
+      </View>
+
       <ScrollView
         contentContainerStyle={styles.scroll}
         keyboardShouldPersistTaps="handled"
@@ -320,7 +323,7 @@ export default function SignupScreen() {
               {Platform.OS === "ios" && (
                 <AppleAuthentication.AppleAuthenticationButton
                   buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_UP}
-                  buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+                  buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
                   cornerRadius={13}
                   style={styles.appleButton}
                   onPress={handleAppleSignup}
@@ -347,20 +350,20 @@ export default function SignupScreen() {
               <Text style={styles.title}>{t("auth.signup.step2Title")}</Text>
               <Text style={styles.subtitle}>{t("auth.signup.step2Subtitle")}</Text>
 
-              {/* Age */}
-              <View style={[styles.inputRow, ageFocused && styles.inputRowFocused]}>
-                <Text style={[{fontSize: 18}, styles.inputIcon]}>📅</Text>
+              {/* Birth Date */}
+              <View style={[styles.inputRow, birthDateFocused && styles.inputRowFocused]}>
+                <Text style={[{fontSize: 18}, styles.inputIcon]}>🎂</Text>
                 <TextInput
-                  placeholder={t("auth.signup.agePlaceholder")}
+                  placeholder={t("auth.signup.birthDatePlaceholder")}
                   placeholderTextColor={authColors.placeholder}
                   style={styles.textInput}
-                  value={age}
-                  onChangeText={(v) => setAge(v.replace(/[^0-9]/g, "").slice(0, 2))}
+                  value={birthDate}
+                  onChangeText={(v) => setBirthDate(autoFormatDateInput(v))}
                   editable={!isSubmitting}
                   keyboardType="number-pad"
-                  maxLength={2}
-                  onFocus={() => setAgeFocused(true)}
-                  onBlur={() => setAgeFocused(false)}
+                  maxLength={10}
+                  onFocus={() => setBirthDateFocused(true)}
+                  onBlur={() => setBirthDateFocused(false)}
                 />
               </View>
 
@@ -374,10 +377,32 @@ export default function SignupScreen() {
                   value={school}
                   onChangeText={setSchool}
                   editable={!isSubmitting}
-                  onFocus={() => setSchoolFocused(true)}
-                  onBlur={() => setSchoolFocused(false)}
+                  onFocus={() => {
+                    setSchoolFocused(true);
+                    setShowSchoolDropdown(true);
+                  }}
+                  onBlur={() => {
+                    setSchoolFocused(false);
+                    setShowSchoolDropdown(false);
+                  }}
                 />
               </View>
+              {showSchoolDropdown && filteredSchools.length > 0 && (
+                <View style={styles.dropdown}>
+                  {filteredSchools.map((s, idx) => (
+                    <Pressable
+                      key={idx}
+                      onPress={() => {
+                        setSchool(s);
+                        setShowSchoolDropdown(false);
+                      }}
+                      style={({ pressed }) => [styles.dropdownItem, pressed && styles.dropdownItemPressed]}
+                    >
+                      <Text style={styles.dropdownItemText}>{s}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
 
               {/* TODO v2: Ride preferences */}
               {/* <Text style={styles.prefsLabel}>{t("auth.signup.prefsLabel")}</Text>
@@ -661,5 +686,39 @@ const styles = StyleSheet.create({
   },
   chipTextSelected: {
     color: "#fff",
+  },
+
+  // ── Language toggle ──────────────────────────────────────────────────────────
+  languageToggleWrap: {
+    position: "absolute",
+    right: 16,
+    zIndex: 20,
+  },
+
+  // ── School dropdown ───────────────────────────────────────────────────────
+  dropdown: {
+    backgroundColor: authColors.inputBackground,
+    borderWidth: 1,
+    borderColor: "rgba(137, 56, 213, 0.7)",
+    borderTopWidth: 0,
+    borderBottomLeftRadius: 12,
+    borderBottomRightRadius: 12,
+    marginBottom: 14,
+    marginTop: -14,
+    paddingVertical: 8,
+    overflow: "hidden",
+  },
+  dropdownItem: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.08)",
+  },
+  dropdownItemPressed: {
+    backgroundColor: "rgba(137, 56, 213, 0.1)",
+  },
+  dropdownItemText: {
+    color: authColors.inputText,
+    fontSize: 15,
   },
 });

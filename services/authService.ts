@@ -10,6 +10,8 @@ import {
   type UserCredential,
 } from "firebase/auth";
 import * as AppleAuthentication from "expo-apple-authentication";
+import * as Crypto from "expo-crypto";
+import Constants from "expo-constants";
 import { auth } from "@/firebaseConfig";
 const firebaseAuth: Auth = auth;
 
@@ -64,6 +66,12 @@ export const normalizeAuthError = (
   }
 
   switch (code) {
+    case "auth/expo-go-unsupported":
+      return {
+        title: "Native build required",
+        message: "Apple Sign-In doesn't work in Expo Go because the app bundle ID doesn't match. Run the app with expo run:ios instead.",
+        retryable: false,
+      };
     case "ERR_REQUEST_CANCELED":
       return {
         title: fallbackTitle,
@@ -159,7 +167,42 @@ export const signInWithEmail = async (
   );
 };
 
-export const signInWithApple = async (): Promise<UserCredential> => {
+export type AppleSignInResult = {
+  identityToken: string;
+  rawNonce: string;
+  fullName: AppleAuthentication.AppleAuthenticationCredential["fullName"];
+  email: string | null;
+};
+
+// Generate a cryptographically random nonce.
+// Firebase validates that the idToken's `nonce` claim matches sha256(rawNonce).
+const generateNonce = async (length = 32): Promise<string> => {
+  const bytes = await Crypto.getRandomBytesAsync(length);
+  const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._";
+  let out = "";
+  for (let i = 0; i < bytes.length; i++) {
+    out += charset[bytes[i] % charset.length];
+  }
+  return out;
+};
+
+const sha256Hex = async (input: string): Promise<string> => {
+  return await Crypto.digestStringAsync(
+    Crypto.CryptoDigestAlgorithm.SHA256,
+    input,
+  );
+};
+
+export const requestAppleCredential = async (): Promise<AppleSignInResult> => {
+  // Expo Go uses bundle ID host.exp.Exponent, so Apple's ID token audience won't
+  // match the Firebase project's expected bundle ID — always fails with auth/invalid-credential.
+  if (Constants.executionEnvironment === "storeClient") {
+    throw createAuthError(
+      "auth/expo-go-unsupported",
+      "Apple Sign-In requires a native build.",
+    );
+  }
+
   const isAvailable = await AppleAuthentication.isAvailableAsync();
   if (!isAvailable) {
     throw createAuthError(
@@ -168,12 +211,16 @@ export const signInWithApple = async (): Promise<UserCredential> => {
     );
   }
 
+  const rawNonce = await generateNonce();
+  const hashedNonce = await sha256Hex(rawNonce);
+
   const appleCredential = await withTimeout(
     AppleAuthentication.signInAsync({
       requestedScopes: [
         AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
         AppleAuthentication.AppleAuthenticationScope.EMAIL,
       ],
+      nonce: hashedNonce,
     }),
     "login",
   );
@@ -185,15 +232,33 @@ export const signInWithApple = async (): Promise<UserCredential> => {
     );
   }
 
+  return {
+    identityToken: appleCredential.identityToken,
+    rawNonce,
+    fullName: appleCredential.fullName,
+    email: appleCredential.email,
+  };
+};
+
+export const signInToFirebaseWithApple = async (
+  identityToken: string,
+  rawNonce: string,
+): Promise<UserCredential> => {
   const provider = new OAuthProvider("apple.com");
   const firebaseCredential = provider.credential({
-    idToken: appleCredential.identityToken,
+    idToken: identityToken,
+    rawNonce,
   });
 
   return await withTimeout(
     signInWithCredential(firebaseAuth, firebaseCredential),
     "login",
   );
+};
+
+export const signInWithApple = async (): Promise<UserCredential> => {
+  const { identityToken, rawNonce } = await requestAppleCredential();
+  return await signInToFirebaseWithApple(identityToken, rawNonce);
 };
 
 export const signUpWithEmail = async (
@@ -235,15 +300,37 @@ export const signOutUser = async (): Promise<void> => {
   await withTimeout(signOut(firebaseAuth), "logout");
 };
 
-export const ensureSessionIsValid = async (): Promise<boolean> => {
+/**
+ * Result of a foreground session re-validation.
+ *  - "valid":   the session was confirmed against Firebase.
+ *  - "invalid": Firebase definitively rejected the session (account disabled,
+ *               deleted, or the refresh token was revoked) → must sign out.
+ *  - "unknown": the check could not complete (e.g. transient network failure).
+ *               The persisted session is still good; do NOT sign the user out.
+ */
+export type SessionValidity = "valid" | "invalid" | "unknown";
+
+// Firebase auth error codes that mean the credential is genuinely gone. Any
+// other error (notably auth/network-request-failed) is treated as transient.
+const SESSION_INVALIDATING_CODES = new Set<string>([
+  "auth/user-token-expired",
+  "auth/user-disabled",
+  "auth/user-not-found",
+  "auth/invalid-user-token",
+  "auth/requires-recent-login",
+]);
+
+export const ensureSessionIsValid = async (): Promise<SessionValidity> => {
   const user = firebaseAuth.currentUser;
-  if (!user) return false;
+  if (!user) return "unknown";
 
   try {
     await user.reload();
-    await user.getIdToken();
-    return true;
-  } catch {
-    return false;
+    // Force a token refresh so a server-side revocation surfaces here.
+    await user.getIdToken(true);
+    return "valid";
+  } catch (error) {
+    const code = String((error as { code?: string })?.code ?? "");
+    return SESSION_INVALIDATING_CODES.has(code) ? "invalid" : "unknown";
   }
 };

@@ -1,38 +1,40 @@
-import type { Language } from "@/constants/translations";
 import { useAuth } from "@/context/AuthContext";
 import { useLanguage } from "@/context/LanguageContext";
+import { Ionicons } from "@expo/vector-icons";
+import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import * as WebBrowser from "expo-web-browser";
-import React from "react";
+import React, { useCallback, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
-  Image,
+  LayoutAnimation,
   Modal,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
+  UIManager,
   View,
 } from "react-native";
 
 import FavoriteRouteCard from "@/components/favorite-rides";
-import { PlannedRidesList } from "@/components/profile/planned-rides-list";
+import InfoButton from "@/components/info-button";
 import { PassengerRidesList } from "@/components/profile/passenger-rides-list";
-
-import { normalizeAuthError } from "@/services/authService";
+import { PlannedRidesList } from "@/components/profile/planned-rides-list";
+import { InterestedEventsList } from "@/components/profile/interested-events-list";
 
 import { useProfileAvatar } from "@/hooks/use-profile-avatar";
 import { useProfileData } from "@/hooks/use-profile-data";
-import { useProfileFavorites } from "@/hooks/use-profile-favorites";
+import { useLiveRefresh } from "@/hooks/use-live-refresh";
 import { useProfileRides } from "@/hooks/use-profile-rides";
-import type { FavoriteRoute, UserProfile } from "@/types/models";
+import type { FavoriteRoute, StartRidePayload, UserProfile } from "@/types/models";
 
-WebBrowser.maybeCompleteAuthSession();
+if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 
 // ─── Design Tokens ─────────────────────────────────────────────────────────────
 const C = {
@@ -53,12 +55,8 @@ const C = {
   success:     "#34d399",
 };
 
-const BANNER_GRADIENT  = ["#2d0015", "#1c0038"] as const;
 const CARD_GRADIENT    = ["#1c0b2a", "#0d0518"] as const;
 const XP_BAR_GRADIENT  = ["#FD165A", "#8938D5"] as const;
-const STAT_BG_GRADIENT = ["#18082e", "#0c0514"] as const;
-
-const MAX_XP = 600;
 
 // ─── Section Header Component ──────────────────────────────────────────────────
 function SectionHeader({
@@ -66,19 +64,26 @@ function SectionHeader({
   title,
   action,
   onAction,
+  infoTitle,
+  infoBody,
 }: {
-  icon: string;
+  icon: React.ComponentProps<typeof Ionicons>["name"];
   title: string;
   action?: string;
   onAction?: () => void;
+  infoTitle?: string;
+  infoBody?: string;
 }) {
   return (
     <View style={sh.row}>
       <View style={sh.left}>
         <View style={sh.iconDot}>
-          <Text style={{fontSize: 12}}>{icon}</Text>
+          <Ionicons name={icon} size={13} color={C.purpleLight} />
         </View>
         <Text style={sh.title}>{title}</Text>
+        {infoTitle && infoBody && (
+          <InfoButton title={infoTitle} body={infoBody} />
+        )}
       </View>
       {action && (
         <TouchableOpacity style={sh.actionBtn} onPress={onAction}>
@@ -98,89 +103,26 @@ const sh = StyleSheet.create({
   actionText:{ color: C.purpleLight, fontSize: 12, fontWeight: "600" },
 });
 
-// ─── Settings Row Component ────────────────────────────────────────────────────
-function SettingsRow({
-  icon,
-  label,
-  value,
-  onPress,
-  danger,
-  disabled,
-  rightElement,
-  soonLabel,
-}: {
-  icon: string;
-  label: string;
-  value?: string;
-  onPress?: () => void;
-  danger?: boolean;
-  disabled?: boolean;
-  rightElement?: React.ReactNode;
-  soonLabel?: string;
-}) {
-  return (
-    <TouchableOpacity
-      style={[sr.row, danger && sr.dangerRow, disabled && sr.disabledRow]}
-      onPress={disabled ? undefined : (onPress ?? (() => {}))}
-      activeOpacity={disabled ? 1 : 0.7}
-    >
-      <View style={[sr.iconWrap, danger && sr.dangerIcon, disabled && sr.disabledIcon]}>
-        <Text style={{fontSize: 15}}>{icon}</Text>
-      </View>
-      <Text style={[sr.label, danger && sr.dangerLabel, disabled && sr.disabledLabel]}>{label}</Text>
-      <View style={sr.right}>
-        {rightElement ?? (
-          <>
-            {value && !disabled && <Text style={sr.value}>{value}</Text>}
-            {disabled
-              ? <Text style={sr.comingSoon}>{soonLabel}</Text>
-              : <Text style={{fontSize: 13}}>›</Text>
-            }
-          </>
-        )}
-      </View>
-    </TouchableOpacity>
-  );
-}
-
-const sr = StyleSheet.create({
-  row:          { flexDirection: "row", alignItems: "center", paddingVertical: 13, paddingHorizontal: 14, backgroundColor: C.surface, borderRadius: 12, marginBottom: 7, borderWidth: 1, borderColor: C.borderFaint },
-  dangerRow:    { backgroundColor: "#130808", borderColor: "rgba(248,113,113,0.18)" },
-  disabledRow:  { opacity: 0.45 },
-  iconWrap:     { width: 32, height: 32, borderRadius: 8, backgroundColor: "rgba(224,154,247,0.1)", alignItems: "center", justifyContent: "center", marginRight: 12 },
-  dangerIcon:   { backgroundColor: "rgba(248,113,113,0.1)" },
-  disabledIcon: { backgroundColor: "rgba(255,255,255,0.04)" },
-  label:        { flex: 1, color: C.text, fontSize: 14, fontWeight: "500" },
-  dangerLabel:  { color: C.danger },
-  disabledLabel:{ color: C.muted },
-  right:        { flexDirection: "row", alignItems: "center", gap: 5 },
-  value:        { color: C.muted, fontSize: 12 },
-  comingSoon:   { color: C.dim, fontSize: 11, fontStyle: "italic" },
-});
-
-// ─── Quick Action Button ───────────────────────────────────────────────────────
-function QuickAction({ icon, label, onPress }: { icon: string; label: string; onPress: () => void }) {
-  return (
-    <TouchableOpacity style={qa.wrap} onPress={onPress} activeOpacity={0.7}>
-      <LinearGradient colors={CARD_GRADIENT} style={qa.icon}>
-        <Text style={{fontSize: 18}}>{icon}</Text>
-      </LinearGradient>
-      <Text style={qa.label}>{label}</Text>
-    </TouchableOpacity>
-  );
-}
-
-const qa = StyleSheet.create({
-  wrap:  { alignItems: "center", flex: 1, gap: 6 },
-  icon:  { width: 52, height: 52, borderRadius: 14, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: C.border },
-  label: { color: C.muted, fontSize: 11, fontWeight: "500" },
-});
-
 // ─── Main Screen ───────────────────────────────────────────────────────────────
 const ProfileScreen = () => {
-  const { user, loading, signOutUser } = useAuth();
-  const { t, language, changeLanguage } = useLanguage();
+  const { user, loading } = useAuth();
+  const { t } = useLanguage();
   const { userData, rides, refreshing, onRefresh } = useProfileData(user);
+  const [cardExpanded, setCardExpanded] = useState(false);
+
+  // Re-sync profile + rides when returning to the tab or foregrounding the app.
+  useLiveRefresh(onRefresh);
+
+  const toggleCard = () => {
+    LayoutAnimation.configureNext({
+      duration: 260,
+      create:  { type: "easeInEaseOut", property: "opacity" },
+      update:  { type: "spring", springDamping: 0.85 },
+      delete:  { type: "easeInEaseOut", property: "opacity" },
+    });
+    setCardExpanded(prev => !prev);
+  };
+
   const { pickImage, uploading } = useProfileAvatar({
     user,
     onUploaded: async () => {
@@ -191,49 +133,20 @@ const ProfileScreen = () => {
 
   const router = useRouter();
 
-  const handleLogout = async () => {
-    try {
-      await signOutUser();
-      router.replace("/(auth)/login");
-    } catch (err) {
-      const authError = normalizeAuthError(err, t("profile.account.logoutFailed"));
-      if (authError.retryable) {
-        Alert.alert(authError.title, authError.message, [
-          { text: t("common.cancel"), style: "cancel" },
-          { text: t("common.retry"), onPress: handleLogout },
-        ]);
-        return;
-      }
-      Alert.alert(authError.title, authError.message);
-    }
-  };
-
-  const { startRide, cancelRide } = useProfileRides({
+  const { cancelRide } = useProfileRides({
     user,
     onRefresh,
-    onRideStarted: ({ rideId, originLat, originLng, destination, destinationLat, destinationLng }) => {
-      router.push(
-        `/riderScreen?rideId=${rideId}&Originlat=${originLat}&OriginLng=${originLng}&Destination=${encodeURIComponent(destination)}&DestinationLat=${destinationLat}&DestinationLng=${destinationLng}`,
-      );
-    },
+    onRideStarted: () => {},
   });
 
-  const {
-    homeAddress,
-    setHomeAddress,
-    errors,
-    handleNewHomeAddress,
-  } = useProfileFavorites({ user, userData, onRefresh });
-
-  // ── Placeholder handlers for upcoming features ────────────────────────────
-  const handleEditProfile    = () => Alert.alert(t("profile.comingSoon"), t("profile.comingSoonEditProfile"));
-  const handleShareProfile   = () => Alert.alert(t("profile.comingSoon"), t("profile.comingSoonShare"));
-  const handleNotifications  = () => Alert.alert(t("profile.comingSoon"), t("profile.comingSoonNotifications"));
-  const handlePrivacy        = () => Alert.alert(t("profile.comingSoon"), t("profile.comingSoonPrivacy"));
-  const handleLinkedAccounts = () => Alert.alert(t("profile.comingSoon"), t("profile.comingSoonLinkedAccounts"));
-  const handleHelp           = () => Alert.alert(t("profile.comingSoon"), t("profile.comingSoonHelp"));
-  const handleRateApp        = () => Alert.alert(t("profile.comingSoon"), t("profile.comingSoonRate"));
-  // ─────────────────────────────────────────────────────────────────────────
+  const manageRide = useCallback(
+    (rideId: string, payload: StartRidePayload) => {
+      router.push(
+        `/riderScreen?rideId=${rideId}&Originlat=${payload.originLat}&OriginLng=${payload.originLng}&Destination=${encodeURIComponent(payload.destination)}&DestinationLat=${payload.destinationLat}&DestinationLng=${payload.destinationLng}`,
+      );
+    },
+    [router],
+  );
 
   if (loading) {
     return (
@@ -262,285 +175,299 @@ const ProfileScreen = () => {
   const displayName = name || email?.split("@")[0];
 
   return (
-    <View style={{ flex: 1 }}>
-    <Modal transparent visible={uploading} animationType="fade">
-      <View style={styles.uploadingOverlay}>
-        <View style={styles.uploadingCard}>
-          <ActivityIndicator size="large" color={C.purpleLight} />
-          <Text style={styles.uploadingText}>{t("profile.uploadingAvatar")}</Text>
-        </View>
-      </View>
-    </Modal>
-    <ScrollView
-      style={styles.container}
-      showsVerticalScrollIndicator={false}
-      refreshControl={
-        <RefreshControl
-          refreshing={refreshing}
-          onRefresh={onRefresh}
-          tintColor={C.purpleLight}
-        />
-      }
-    >
-      {/* ── Avatar + Info ───────────────────────────────────────────────────── */}
-      <View style={styles.avatarSection}>
-        <View style={styles.avatarRow}>
-          <TouchableOpacity onPress={pickImage} style={styles.avatarWrap}>
-            <Image
-              source={{
-                uri:
-                  safeUserData.avatar ||
-                  "https://www.macfcu.org/wp-content/uploads/2024/02/Windows_10_Default_Profile_Picture.svg.png",
-              }}
-              style={styles.avatar}
-            />
-            <View style={styles.avatarCamera}>
-              <Text style={{fontSize: 9}}>📷</Text>
-            </View>
-          </TouchableOpacity>
-
-          <View style={styles.levelPill}>
-            <Text style={{fontSize: 10}}>⚡</Text>
-            <Text style={styles.levelPillText}>{t("profile.level", { level })}</Text>
+    <View style={styles.shell}>
+      <Modal transparent visible={uploading} animationType="fade">
+        <View style={styles.uploadingOverlay}>
+          <View style={styles.uploadingCard}>
+            <ActivityIndicator size="large" color={C.purpleLight} />
+            <Text style={styles.uploadingText}>{t("profile.uploadingAvatar")}</Text>
           </View>
         </View>
+      </Modal>
 
-        <View style={styles.nameRow}>
-          <Text style={styles.displayName}>{displayName}</Text>
-          <View style={styles.verifiedBadge}>
-            <Text style={{fontSize: 14}}></Text>
-          </View>
-        </View>
-        <Text style={styles.emailText}>{email}</Text>
-
-        {/* Stats */}
-        <LinearGradient colors={STAT_BG_GRADIENT} style={styles.statsCard}>
-          <View style={styles.statItem}>
-            <Text style={styles.statValue}>{ridesCompleted}</Text>
-            <Text style={styles.statLabel}>{t("profile.stats.rides")}</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statItem}>
-            <Text style={[styles.statValue, { color: C.gold }]}>
-              {typeof rating === "number" ? rating.toFixed(1) : rating}
-            </Text>
-            <Text style={styles.statLabel}>{t("profile.stats.rating")}</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statItem}>
-            <Text style={[styles.statValue, { color: C.purpleLight }]}>{xp}</Text>
-            <Text style={styles.statLabel}>{t("profile.stats.totalXp")}</Text>
-          </View>
-        </LinearGradient>
-      </View>
-
-      <View style={styles.content}>
-        {/* ── XP Progress Card ─────────────────────────────────────────────── */}
-        <LinearGradient colors={CARD_GRADIENT} style={styles.xpCard}>
-          <View style={styles.xpTop}>
-            <View>
-              <Text style={styles.xpTitle}>{t("profile.level", { level })}</Text>
-              <Text style={styles.xpSub}>{t("profile.xpToNext", { xp: 100 - levelXp, next: level + 1 })}</Text>
-            </View>
-            <View style={styles.xpBadge}>
-              <Text style={{fontSize: 12}}>🏆</Text>
-              <Text style={styles.xpBadgeText}>{xp} XP</Text>
-            </View>
-          </View>
-          <View style={styles.xpTrack}>
-            <LinearGradient
-              colors={XP_BAR_GRADIENT}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={[styles.xpFill, { width: `${progress}%` }]}
-            />
-          </View>
-          <View style={styles.xpFooter}>
-            <Text style={styles.xpFooterText}>{t("profile.levelShort", { level })}</Text>
-            <Text style={styles.xpFooterText}>{t("profile.xpProgress", { current: levelXp })}</Text>
-            <Text style={styles.xpFooterText}>{t("profile.levelShort", { level: level + 1 })}</Text>
-          </View>
-        </LinearGradient>
-
-        {/* ── Rewards Banner ───────────────────────────────────────────────── */}
-        <Pressable
-          style={styles.rewardsBanner}
-          onPress={() => router.push("/rewardsScreen")}
+      {/* ── Floating Settings Button ─────────────────────────────────────────── */}
+      <View style={styles.settingsBtnRow} pointerEvents="box-none">
+        <TouchableOpacity
+          style={styles.settingsBtn}
+          onPress={() => router.push("/settingsScreen")}
+          activeOpacity={0.7}
         >
-          <LinearGradient
-            colors={["#1c0b2a", "#0d0518"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            style={styles.rewardsBannerGrad}
-          >
-            <View style={styles.rewardsBannerLeft}>
-              <View style={styles.rewardsTrophyWrap}>
-                <Text style={{ fontSize: 20 }}>🏆</Text>
+          <Ionicons name="settings-outline" size={20} color={C.purpleLight} />
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView
+        style={styles.container}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.purpleLight} />
+        }
+      >
+        <View style={styles.content}>
+
+          {/* ── Floating Profile Glass Card ──────────────────────────────────── */}
+          <Pressable onPress={toggleCard} style={styles.glassCard}>
+            <LinearGradient
+              colors={["rgba(38,12,62,0.97)", "rgba(11,4,22,0.96)"]}
+              style={styles.glassCardInner}
+            >
+              {/* Header row: avatar + identity + chevron */}
+              <View style={styles.cardHeader}>
+                <TouchableOpacity onPress={pickImage} style={styles.avatarWrap} hitSlop={8}>
+                  <Image
+                    source={{
+                      uri:
+                        safeUserData.avatar ||
+                        "https://www.macfcu.org/wp-content/uploads/2024/02/Windows_10_Default_Profile_Picture.svg.png",
+                    }}
+                    style={styles.avatar}
+                    contentFit="cover"
+                    cachePolicy="memory-disk"
+                  />
+                  <View style={styles.avatarCamera}>
+                    <Ionicons name="camera" size={9} color="#fff" />
+                  </View>
+                </TouchableOpacity>
+
+                <View style={styles.identityBlock}>
+                  <View style={styles.nameRow}>
+                    <Text style={styles.displayName} numberOfLines={1}>{displayName}</Text>
+                    {safeUserData.facebookId ? (
+                      <Ionicons name="checkmark-circle" size={16} color="#34d399" />
+                    ) : null}
+                  </View>
+                  <Text style={styles.emailText} numberOfLines={1}>{email}</Text>
+                  <View style={styles.levelPill}>
+                    <Ionicons name="flash" size={10} color={C.gold} />
+                    <Text style={styles.levelPillText}>{t("profile.level", { level })}</Text>
+                  </View>
+                </View>
+
+                <Ionicons
+                  name={cardExpanded ? "chevron-up" : "chevron-down"}
+                  size={18}
+                  color={C.purpleLight}
+                  style={styles.cardChevron}
+                />
               </View>
-              <View>
-                <Text style={styles.rewardsBannerTitle}>{t("rewards.bannerTitle")}</Text>
-                <Text style={styles.rewardsBannerSub}>{t("rewards.bannerSub")}</Text>
+
+              {/* Stats row (always visible) */}
+              <View style={styles.statsRow}>
+                <View style={styles.statItem}>
+                  <Text style={styles.statValue}>{ridesCompleted}</Text>
+                  <Text style={styles.statLabel}>{t("profile.stats.rides")}</Text>
+                </View>
+                <View style={styles.statDivider} />
+                <View style={styles.statItem}>
+                  <Text style={[styles.statValue, { color: C.gold }]}>
+                    {typeof rating === "number" ? rating.toFixed(1) : rating}
+                  </Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 3 }}>
+                    <Text style={styles.statLabel}>{t("profile.stats.rating")}</Text>
+                    <InfoButton
+                      title={t("profile.info.rating.title")}
+                      body={t("profile.info.rating.body")}
+                    />
+                  </View>
+                </View>
+                <View style={styles.statDivider} />
+                <View style={styles.statItem}>
+                  <Text style={[styles.statValue, { color: C.purpleLight }]}>{xp}</Text>
+                  <Text style={styles.statLabel}>{t("profile.stats.totalXp")}</Text>
+                </View>
               </View>
-            </View>
-            <Text style={{ fontSize: 18, color: C.purpleLight }}>›</Text>
-          </LinearGradient>
-        </Pressable>
 
-        {/* ── My Drives (as driver) — only shown when the user has planned rides ── */}
-        {rides && rides.some((r) => r.driverId === user?.uid && r.status === "planned") && (
-          <>
-            <SectionHeader icon="🚗" title={t("rides.myDrives")} />
-            <PlannedRidesList
-              rides={rides}
-              onStartRide={startRide}
-              onCancelRide={cancelRide}
-              driverId={user?.uid}
-            />
-          </>
-        )}
+              {/* Expanded content */}
+              {cardExpanded && (
+                <View style={styles.expandedContent}>
+                  <View style={styles.expandDivider} />
 
-        {/* ── My Rides (as passenger) ──────────────────────────────────────── */}
-        {rides && user && (
-          <>
-            <SectionHeader icon="🎒" title={t("rides.myRides")} />
-            <PassengerRidesList
-              rides={rides}
-              userId={user.uid}
-              onEnterRide={(ride) =>
-                router.push(
-                  `/rideScreen?rideId=${ride.id}&Originlat=${ride.localisation.latitude}&OriginLng=${ride.localisation.longitude}&DestinationLat=${ride.destinationCoords.latitude}&DestinationLng=${ride.destinationCoords.longitude}&pending=false`,
-                )
-              }
-            />
-          </>
-        )}
+                  {/* XP Progress */}
+                  <View style={styles.xpSection}>
+                    <View style={styles.xpTop}>
+                      <View>
+                        <View style={{ flexDirection: "row", alignItems: "center" }}>
+                          <Text style={styles.xpTitle}>{t("profile.level", { level })}</Text>
+                          <InfoButton
+                            title={t("profile.info.xp.title")}
+                            body={t("profile.info.xp.body")}
+                            style={{ marginLeft: 6 }}
+                          />
+                        </View>
+                        <Text style={styles.xpSub}>{t("profile.xpToNext", { xp: 100 - levelXp, next: level + 1 })}</Text>
+                      </View>
+                      <View style={styles.xpBadge}>
+                        <Ionicons name="trophy" size={12} color={C.gold} />
+                        <Text style={styles.xpBadgeText}>{xp} XP</Text>
+                      </View>
+                    </View>
+                    <View style={styles.xpTrack}>
+                      <LinearGradient
+                        colors={XP_BAR_GRADIENT}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 0 }}
+                        style={[styles.xpFill, { width: `${progress}%` }]}
+                      />
+                    </View>
+                    <View style={styles.xpFooter}>
+                      <Text style={styles.xpFooterText}>{t("profile.levelShort", { level })}</Text>
+                      <Text style={styles.xpFooterText}>{t("profile.xpProgress", { current: levelXp })}</Text>
+                      <Text style={styles.xpFooterText}>{t("profile.levelShort", { level: level + 1 })}</Text>
+                    </View>
+                  </View>
 
-        {/* ── Home Address ─────────────────────────────────────────────────── */}
-        <SectionHeader icon="🏠" title={t("profile.sections.homeAddress")} />
-        <View style={styles.card}>
-          <View style={styles.inputWrapper}>
-            <Text style={[{fontSize: 15}, styles.inputIcon]}>📍</Text>
-            <TextInput
-              style={styles.input}
-              placeholder={safeUserData.homeAddress ?? t("profile.homeAddress.placeholder")}
-              placeholderTextColor={C.dim}
-              value={homeAddress}
-              onChangeText={setHomeAddress}
-            />
-          </View>
-          {errors.startAddress && (
-            <Text style={styles.errorText}>{errors.startAddress}</Text>
-          )}
-          {homeAddress ? (
-            <Pressable style={styles.primaryBtn} onPress={handleNewHomeAddress}>
+                  {/* Rewards banner */}
+                  <Pressable
+                    onPress={() => router.push("/rewardsScreen")}
+                    style={styles.rewardsBanner}
+                  >
+                    <LinearGradient
+                      colors={["rgba(45,15,10,0.9)", "rgba(22,5,30,0.9)"]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                      style={styles.rewardsBannerGrad}
+                    >
+                      <View style={styles.rewardsBannerLeft}>
+                        <View style={styles.rewardsTrophyWrap}>
+                          <Ionicons name="trophy" size={20} color={C.gold} />
+                        </View>
+                        <View>
+                          <Text style={styles.rewardsBannerTitle}>{t("rewards.bannerTitle")}</Text>
+                        </View>
+                      </View>
+                      <Ionicons name="chevron-forward" size={18} color={C.purpleLight} />
+                    </LinearGradient>
+                  </Pressable>
+                </View>
+              )}
+
+              {/* Bottom accent line */}
               <LinearGradient
                 colors={["#FD165A", "#8938D5"]}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 0 }}
-                style={styles.primaryBtnGrad}
+                style={styles.cardAccentLine}
+              />
+            </LinearGradient>
+          </Pressable>
+
+          {/* ── Driver Mode Glass Card ───────────────────────────────────────── */}
+          {(() => {
+            const driverOn = !!(safeUserData.driverDays && safeUserData.driverDays.length > 0);
+            const accent   = driverOn ? "#4ade80" : "#6b7280";
+            const accentFaint = driverOn ? "rgba(74,222,128,0.18)" : "rgba(107,114,128,0.12)";
+            const accentBorder = driverOn ? "rgba(74,222,128,0.3)" : "rgba(107,114,128,0.22)";
+            const bgGrad = driverOn
+              ? ["rgba(18,32,14,0.97)", "rgba(8,14,6,0.96)"] as const
+              : ["rgba(18,18,22,0.97)", "rgba(8,8,12,0.96)"] as const;
+            const accentGrad = driverOn
+              ? ["#4ade80", "#16a34a"] as const
+              : ["#4b5563", "#374151"] as const;
+            return (
+              <Pressable
+                onPress={() => router.push("/driverModeScreen")}
+                style={[styles.driverCard, { borderColor: accentBorder, shadowColor: accent }]}
               >
-                <Text style={styles.primaryBtnText}>
-                  {safeUserData.homeAddress ? t("profile.homeAddress.updateBtn") : t("profile.homeAddress.saveBtn")}
-                </Text>
-              </LinearGradient>
-            </Pressable>
-          ) : null}
+                <LinearGradient colors={bgGrad} style={styles.driverCardInner}>
+                  <View style={styles.driverCardRow}>
+                    <View style={[styles.driverIconWrap, { backgroundColor: accentFaint, borderColor: driverOn ? "rgba(74,222,128,0.25)" : "rgba(107,114,128,0.2)" }]}>
+                      <Ionicons name="car-outline" size={22} color={accent} />
+                    </View>
+                    <View style={styles.driverInfo}>
+                      <Text style={styles.driverTitle}>{t("profile.settings.driverMode")}</Text>
+                      <Text style={[styles.driverStatus, { color: driverOn ? "rgba(74,222,128,0.8)" : "#6b7280" }]}>
+                        {driverOn
+                          ? t("driverMode.activeDays", { count: safeUserData.driverDays!.length })
+                          : t("driverMode.off")}
+                      </Text>
+                    </View>
+                    <View style={[styles.driverBadge, driverOn && styles.driverBadgeActive]}>
+                      <Text style={[styles.driverBadgeText, driverOn && styles.driverBadgeTextActive]}>
+                        {driverOn ? "ON" : "OFF"}
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={16} color={driverOn ? "rgba(74,222,128,0.5)" : "rgba(107,114,128,0.5)"} style={{ marginLeft: 6 }} />
+                  </View>
+                  <LinearGradient
+                    colors={accentGrad}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.driverAccentLine}
+                  />
+                </LinearGradient>
+              </Pressable>
+            );
+          })()}
+
+          {/* ── My Drives (as driver) ─────────────────────────────────────────── */}
+          {rides && rides.some((r) => r.driverId === user?.uid && r.status === "planned") && (
+            <>
+              <SectionHeader icon="car-outline" title={t("rides.myDrives")} />
+              <PlannedRidesList
+                rides={rides}
+                onManageRide={manageRide}
+                onCancelRide={cancelRide}
+                driverId={user?.uid}
+              />
+            </>
+          )}
+
+          {/* ── My Rides (ride history as passenger) ─────────────────────────── */}
+          {user && (
+            <>
+              <SectionHeader icon="bag-outline" title={t("rides.myRides")} />
+              <PassengerRidesList
+                rides={rides ?? []}
+                userId={user.uid}
+              />
+            </>
+          )}
+
+          {/* ── Interested Events ────────────────────────────────────────────── */}
+          <SectionHeader icon="flame-outline" title={t("hypeEvent.savedTitle")} />
+          <InterestedEventsList />
+
+          {/* ── Favorites ────────────────────────────────────────────────────── */}
+          <SectionHeader
+            icon="star-outline"
+            title={t("profile.sections.favorites")}
+            action={t("profile.favorites.new")}
+            onAction={() => router.push("/favoriteScreen")}
+            infoTitle={t("profile.info.favorites.title")}
+            infoBody={t("profile.info.favorites.body")}
+          />
+
+          {safeUserData.favorite && safeUserData.favorite.length > 0 ? (
+            safeUserData.favorite.map((route: FavoriteRoute, index: number) => (
+              <FavoriteRouteCard
+                key={index}
+                destination={route.destination}
+                onPress={() =>
+                  router.push(
+                    `/favoriteScreen?id=${index}&endAddress=${encodeURIComponent(route.destination)}&endLat=${route.destinationGeo.lat}&endLon=${route.destinationGeo.lon}`,
+                  )
+                }
+              />
+            ))
+          ) : (
+            <View style={styles.emptyState}>
+              <View style={styles.emptyIconWrap}>
+                <Ionicons name="star" size={24} color={C.purpleLight} />
+              </View>
+              <Text style={styles.emptyTitle}>{t("profile.favorites.empty")}</Text>
+              <Text style={styles.emptySubtext}>{t("profile.favorites.emptySub")}</Text>
+              <Pressable
+                style={styles.emptyAction}
+                onPress={() => router.push("/favoriteScreen")}
+              >
+                <Text style={styles.emptyActionText}>{t("profile.favorites.addFirst")}</Text>
+              </Pressable>
+            </View>
+          )}
+
+          <View style={{ height: 100 }} />
         </View>
-
-        {/* ── Favorites ────────────────────────────────────────────────────── */}
-        <SectionHeader
-          icon="⭐"
-          title={t("profile.sections.favorites")}
-          action={t("profile.favorites.new")}
-          onAction={() => router.push("/favoriteScreen")}
-        />
-
-        {safeUserData.favorite && safeUserData.favorite.length > 0 ? (
-          safeUserData.favorite.map((route: FavoriteRoute, index: number) => (
-            <FavoriteRouteCard
-              key={index}
-              destination={route.destination}
-              onPress={() =>
-                router.push(
-                  `/favoriteScreen?id=${index}&endAddress=${encodeURIComponent(route.destination)}&endLat=${route.destinationGeo.lat}&endLon=${route.destinationGeo.lon}`,
-                )
-              }
-            />
-          ))
-        ) : (
-          <View style={styles.emptyState}>
-            <View style={styles.emptyIconWrap}>
-              <Text style={{fontSize: 24}}>⭐</Text>
-            </View>
-            <Text style={styles.emptyTitle}>{t("profile.favorites.empty")}</Text>
-            <Text style={styles.emptySubtext}>{t("profile.favorites.emptySub")}</Text>
-            <Pressable
-              style={styles.emptyAction}
-              onPress={() => router.push("/favoriteScreen")}
-            >
-              <Text style={styles.emptyActionText}>{t("profile.favorites.addFirst")}</Text>
-            </Pressable>
-          </View>
-        )}
-
-        {/* ── Settings ─────────────────────────────────────────────────────── */}
-        <SectionHeader icon="⚙️" title={t("profile.sections.settings")} />
-        <SettingsRow
-          icon="👤"
-          label={t("profile.settings.myProfile")}
-          value={name || undefined}
-          onPress={() =>
-            router.push(
-              `/profileSettings?name=${encodeURIComponent(name ?? "")}&age=${safeUserData.age ?? ""}&school=${encodeURIComponent(safeUserData.school ?? "")}`,
-              // TODO v2: &prefs=${encodeURIComponent((safeUserData.preferences ?? []).join(","))}
-            )
-          }
-        />
-        <SettingsRow icon="🔔" label={t("profile.settings.notifications")} disabled soonLabel={t("profile.soonBadge")} />
-        <SettingsRow icon="🔒" label={t("profile.settings.privacy")}       disabled soonLabel={t("profile.soonBadge")} />
-        <SettingsRow icon="🔗" label={t("profile.settings.linkedAccounts")} disabled soonLabel={t("profile.soonBadge")} />
-        <SettingsRow icon="❓" label={t("profile.settings.helpSupport")}   disabled soonLabel={t("profile.soonBadge")} />
-        <SettingsRow icon="⭐" label={t("profile.settings.rateApp")}       disabled soonLabel={t("profile.soonBadge")} />
-        <SettingsRow
-          icon="🌐"
-          label={t("profile.settings.language")}
-          rightElement={
-            <View style={{ flexDirection: "row", gap: 6 }}>
-              {(["fr", "en"] as Language[]).map((lang) => (
-                <TouchableOpacity
-                  key={lang}
-                  onPress={() => void changeLanguage(lang)}
-                  style={{
-                    paddingHorizontal: 10,
-                    paddingVertical: 4,
-                    borderRadius: 8,
-                    backgroundColor: language === lang
-                      ? "rgba(137,56,213,0.35)"
-                      : "rgba(255,255,255,0.06)",
-                    borderWidth: 1,
-                    borderColor: language === lang ? C.border : C.borderFaint,
-                  }}
-                >
-                  <Text style={{
-                    color: language === lang ? C.purpleLight : C.muted,
-                    fontSize: 12,
-                    fontWeight: "600",
-                  }}>
-                    {lang === "fr" ? "FR" : "EN"}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          }
-        />
-
-        {/* ── Account / Logout ─────────────────────────────────────────────── */}
-        <SectionHeader icon="👤" title={t("profile.sections.account")} />
-        <SettingsRow icon="🚪" label={t("profile.account.logout")} onPress={handleLogout} danger />
-
-        <View style={{ height: 32 }} />
-      </View>
-    </ScrollView>
+      </ScrollView>
     </View>
   );
 };
@@ -556,124 +483,134 @@ const styles = StyleSheet.create({
   },
   loadingText: { color: C.muted, fontSize: 14 },
 
-  // ── Shell ────────────────────────────────────────────────────────────────
-  container: { flex: 1, backgroundColor: C.bg },
-  content:   { paddingHorizontal: 16, paddingBottom: 20 },
+  // ── Shell ──────────────────────────────────────────────────────────────── 
+  shell:     { flex: 1, backgroundColor: C.bg },
+  container: { flex: 1 },
+  content:   { paddingHorizontal: 16, paddingTop: 64, paddingBottom: 20 },
 
-  // ── Banner ───────────────────────────────────────────────────────────────
-  banner: {
-    height: 148,
-    position: "relative",
-  },
-  bannerNoise: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.12)",
-  },
-  bannerActions: {
+  // ── Floating Settings Button ──────────────────────────────────────────────
+  settingsBtnRow: {
     position: "absolute",
     top: 14,
-    right: 14,
+    left: 0,
+    right: 0,
+    zIndex: 20,
     flexDirection: "row",
-    gap: 8,
+    justifyContent: "flex-end",
+    paddingRight: 18,
   },
-  bannerBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "rgba(0,0,0,0.35)",
+  settingsBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: "rgba(8,8,16,0.55)",
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.15)",
+    borderColor: "rgba(137, 56, 213, 0.35)",
   },
 
-  // ── Avatar Section ───────────────────────────────────────────────────────
-  avatarSection: {
-    backgroundColor: C.surface,
-    paddingHorizontal: 16,
-    paddingTop: 20,
-    paddingBottom: 18,
-    borderBottomWidth: 1,
-    borderBottomColor: C.borderFaint,
+  // ── Glass Profile Card ────────────────────────────────────────────────────
+  glassCard: {
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: "rgba(137, 56, 213, 0.4)",
+    overflow: "hidden",
+    marginTop: 4,
+    marginBottom: 4,
+    shadowColor: "#8938D5",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 22,
+    elevation: 14,
   },
-  avatarRow: {
+  glassCardInner: {
+    padding: 18,
+  },
+
+  // Card header row
+  cardHeader: {
     flexDirection: "row",
-    alignItems: "flex-end",
-    justifyContent: "space-between",
-    marginBottom: 10,
+    alignItems: "center",
+    gap: 14,
+    marginBottom: 16,
   },
-  avatarWrap: { position: "relative" },
+  avatarWrap:   { position: "relative" },
   avatar: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    borderWidth: 3,
-    borderColor: C.surface,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    borderWidth: 2,
+    borderColor: "rgba(137, 56, 213, 0.5)",
   },
   avatarCamera: {
     position: "absolute",
     bottom: 0,
     right: 0,
-    width: 22,
-    height: 22,
-    borderRadius: 11,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
     backgroundColor: C.purple,
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 2,
-    borderColor: C.surface,
+    borderWidth: 1.5,
+    borderColor: "rgba(38,12,62,1)",
   },
+  identityBlock: { flex: 1 },
+  nameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginBottom: 2,
+  },
+  displayName: { color: C.text, fontSize: 19, fontWeight: "700", flexShrink: 1 },
+  emailText:   { color: C.muted, fontSize: 11, marginBottom: 7 },
   levelPill: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
+    alignSelf: "flex-start",
     backgroundColor: "rgba(251,191,36,0.1)",
     borderRadius: 20,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
     borderWidth: 1,
-    borderColor: "rgba(251,191,36,0.25)",
+    borderColor: "rgba(251,191,36,0.28)",
   },
-  levelPillText: { color: C.gold, fontWeight: "700", fontSize: 12 },
+  levelPillText: { color: C.gold, fontWeight: "700", fontSize: 11 },
+  cardChevron:   { marginLeft: "auto" },
 
-  nameRow: {
+  // Stats row
+  statsRow: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    marginBottom: 3,
-  },
-  displayName: { color: C.text, fontSize: 21, fontWeight: "700" },
-  verifiedBadge: {},
-  emailText: { color: C.muted, fontSize: 12, marginBottom: 14 },
-
-  // Stats
-  statsCard: {
-    flexDirection: "row",
+    backgroundColor: "rgba(255,255,255,0.04)",
     borderRadius: 14,
-    paddingVertical: 14,
+    paddingVertical: 12,
     borderWidth: 1,
-    borderColor: C.border,
+    borderColor: "rgba(255,255,255,0.07)",
   },
   statItem:    { flex: 1, alignItems: "center" },
   statDivider: { width: 1, backgroundColor: "rgba(255,255,255,0.08)" },
-  statValue:   { color: C.text, fontSize: 19, fontWeight: "700" },
-  statLabel:   { color: C.muted, fontSize: 10, marginTop: 2, fontWeight: "500", textTransform: "uppercase", letterSpacing: 0.5 },
+  statValue:   { color: C.text, fontSize: 18, fontWeight: "700" },
+  statLabel:   { color: C.muted, fontSize: 9, marginTop: 2, fontWeight: "500", textTransform: "uppercase", letterSpacing: 0.5 },
 
-  // ── XP Card ──────────────────────────────────────────────────────────────
-  xpCard: {
-    borderRadius: 16,
-    padding: 16,
-    marginTop: 16,
-    borderWidth: 1,
-    borderColor: C.border,
+  // Expanded content
+  expandedContent: {},
+  expandDivider: {
+    height: 1,
+    backgroundColor: "rgba(137, 56, 213, 0.18)",
+    marginVertical: 16,
   },
+
+  // XP section
+  xpSection: { marginBottom: 14 },
   xpTop: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-start",
-    marginBottom: 14,
+    marginBottom: 12,
   },
-  xpTitle: { color: C.text, fontSize: 16, fontWeight: "700" },
+  xpTitle: { color: C.text, fontSize: 15, fontWeight: "700" },
   xpSub:   { color: C.muted, fontSize: 12, marginTop: 2 },
   xpBadge: {
     flexDirection: "row",
@@ -688,27 +625,105 @@ const styles = StyleSheet.create({
   },
   xpBadgeText: { color: C.gold, fontWeight: "700", fontSize: 12 },
   xpTrack: {
-    height: 7,
+    height: 6,
     backgroundColor: "rgba(255,255,255,0.07)",
-    borderRadius: 4,
+    borderRadius: 3,
     overflow: "hidden",
   },
-  xpFill: { height: "100%", borderRadius: 4 },
-  xpFooter: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginTop: 7,
-  },
+  xpFill:       { height: "100%", borderRadius: 3 },
+  xpFooter:     { flexDirection: "row", justifyContent: "space-between", marginTop: 6 },
   xpFooterText: { color: C.dim, fontSize: 10 },
 
-  // ── Quick Actions ─────────────────────────────────────────────────────────
-  quickRow: {
+  // Rewards banner inside card
+  rewardsBanner: { borderRadius: 12, overflow: "hidden" },
+  rewardsBannerGrad: {
     flexDirection: "row",
+    alignItems: "center",
     justifyContent: "space-between",
-    marginTop: 20,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+    borderColor: "rgba(251,191,36,0.22)",
+    borderRadius: 12,
+  },
+  rewardsBannerLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    flex: 1,
+  },
+  rewardsTrophyWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: "rgba(251,191,36,0.1)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(251,191,36,0.2)",
+  },
+  rewardsBannerTitle: { color: C.text, fontSize: 13, fontWeight: "700", marginBottom: 1 },
+  rewardsBannerSub:   { color: C.muted, fontSize: 11, lineHeight: 15 },
+
+  // Bottom accent line
+  cardAccentLine: {
+    height: 2,
+    borderRadius: 1,
+    marginTop: 16,
+    marginHorizontal: -18,
   },
 
-  // ── Card ─────────────────────────────────────────────────────────────────
+  // ── Driver Mode Card ─────────────────────────────────────────────────────
+  driverCard: {
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: "rgba(74,222,128,0.3)",
+    overflow: "hidden",
+    marginTop: 10,
+    marginBottom: 4,
+    shadowColor: "#4ade80",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  driverCardInner: { paddingVertical: 14, paddingHorizontal: 18 },
+  driverCardRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  driverIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: "rgba(74,222,128,0.1)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(74,222,128,0.25)",
+  },
+  driverInfo:  { flex: 1 },
+  driverTitle: { color: "#f3f4f6", fontSize: 14, fontWeight: "700" },
+  driverStatus:{ color: "rgba(74,222,128,0.7)", fontSize: 12, marginTop: 2 },
+  driverBadge: {
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+    borderRadius: 8,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.1)",
+  },
+  driverBadgeActive: {
+    backgroundColor: "rgba(74,222,128,0.12)",
+    borderColor: "rgba(74,222,128,0.35)",
+  },
+  driverBadgeText:       { color: "#6b7280", fontSize: 11, fontWeight: "700" },
+  driverBadgeTextActive: { color: "#4ade80" },
+  driverAccentLine: {
+    height: 2,
+    borderRadius: 1,
+    marginTop: 14,
+    marginHorizontal: -18,
+  },
+
+  // ── Sections ─────────────────────────────────────────────────────────────
   card: {
     backgroundColor: C.surface,
     borderRadius: 14,
@@ -716,8 +731,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: C.borderFaint,
   },
-
-  // ── Input ─────────────────────────────────────────────────────────────────
   inputWrapper: {
     flexDirection: "row",
     alignItems: "center",
@@ -736,12 +749,10 @@ const styles = StyleSheet.create({
   },
   errorText: { color: C.danger, fontSize: 12, marginTop: 6, marginLeft: 2 },
 
-  // ── Primary Button ────────────────────────────────────────────────────────
-  primaryBtn: { marginTop: 10, borderRadius: 10, overflow: "hidden" },
+  primaryBtn:     { marginTop: 10, borderRadius: 10, overflow: "hidden" },
   primaryBtnGrad: { paddingVertical: 12, alignItems: "center" },
   primaryBtnText: { color: "#fff", fontWeight: "700", fontSize: 14 },
 
-  // ── Empty State ───────────────────────────────────────────────────────────
   emptyState: {
     alignItems: "center",
     paddingVertical: 28,
@@ -762,8 +773,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: C.border,
   },
-  emptyTitle:   { color: C.text, fontSize: 14, fontWeight: "600" },
-  emptySubtext: { color: C.dim, fontSize: 12, textAlign: "center", paddingHorizontal: 32 },
+  emptyTitle:      { color: C.text, fontSize: 14, fontWeight: "600" },
+  emptySubtext:    { color: C.dim, fontSize: 12, textAlign: "center", paddingHorizontal: 32 },
   emptyAction: {
     marginTop: 8,
     backgroundColor: "rgba(137,56,213,0.18)",
@@ -774,50 +785,6 @@ const styles = StyleSheet.create({
     borderColor: C.border,
   },
   emptyActionText: { color: C.purpleLight, fontSize: 13, fontWeight: "600" },
-
-  // ── Rewards Banner ────────────────────────────────────────────────────────
-  rewardsBanner: {
-    marginTop: 12,
-    borderRadius: 14,
-    overflow: "hidden",
-  },
-  rewardsBannerGrad: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    borderWidth: 1,
-    borderColor: "rgba(251,191,36,0.2)",
-    borderRadius: 14,
-  },
-  rewardsBannerLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    flex: 1,
-  },
-  rewardsTrophyWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: "rgba(251,191,36,0.1)",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "rgba(251,191,36,0.2)",
-  },
-  rewardsBannerTitle: {
-    color: "#f3f4f6",
-    fontSize: 14,
-    fontWeight: "700",
-    marginBottom: 2,
-  },
-  rewardsBannerSub: {
-    color: "#9ca3af",
-    fontSize: 11,
-    lineHeight: 15,
-  },
 
   // ── Upload Overlay ────────────────────────────────────────────────────────
   uploadingOverlay: {
@@ -837,6 +804,45 @@ const styles = StyleSheet.create({
     minWidth: 180,
   },
   uploadingText: { color: C.text, fontSize: 14, fontWeight: "600" },
+
+  // ── Facebook / Suggestions (unused stubs kept for type-safety) ────────────
+  fbConnectBtn:          { borderRadius: 12, overflow: "hidden" },
+  fbConnectGrad:         { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, paddingVertical: 14, paddingHorizontal: 20 },
+  fbConnectText:         { color: "#fff", fontSize: 14, fontWeight: "700" },
+  fbConnectGradDisabled: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, paddingVertical: 14, paddingHorizontal: 20, backgroundColor: "rgba(255,255,255,0.05)", borderRadius: 12, borderWidth: 1, borderColor: "rgba(255,255,255,0.08)" },
+  fbConnectTextDisabled: { color: "rgba(255,255,255,0.35)", fontSize: 14, fontWeight: "700" as const },
+  fbSoonBadge:           { backgroundColor: "rgba(137,56,213,0.35)", borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2 },
+  fbSoonText:            { color: "#c084fc", fontSize: 11, fontWeight: "700" as const },
+  fbConnectedRow:        { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: "rgba(24,119,242,0.08)", borderRadius: 12, padding: 14, borderWidth: 1, borderColor: "rgba(24,119,242,0.25)" },
+  fbIconWrap:            { width: 40, height: 40, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  fbNameRow:             { flexDirection: "row", alignItems: "center", gap: 6 },
+  fbName:                { color: C.text, fontSize: 14, fontWeight: "700", flexShrink: 1 },
+  fbVerifiedBadge:       { flexDirection: "row", alignItems: "center", gap: 3, backgroundColor: "rgba(52,211,153,0.12)", borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
+  fbVerifiedText:        { color: "#34d399", fontSize: 10, fontWeight: "700" },
+  fbConnectedLabel:      { color: "rgba(24,119,242,0.8)", fontSize: 11, marginTop: 2 },
+  fbDisconnectBtn:       { padding: 6 },
+  suggestionsContainer: {
+    marginTop: 6,
+    backgroundColor: C.surfaceAlt,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.06)",
+    overflow: "hidden",
+    marginBottom: 4,
+  },
+  suggestionItem: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255, 255, 255, 0.06)",
+  },
+  suggestionText: {
+    color: C.text,
+    fontSize: 14,
+    flex: 1,
+  },
 });
 
 export default ProfileScreen;

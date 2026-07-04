@@ -1,0 +1,192 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+    // Fields that only Cloud Functions (admin SDK) may write.
+    // Client requests that touch any of these are rejected.
+    function isFinancialField(key) {
+      return key in [
+        'pendingChargeCents', 'pendingEarningsCents',
+        'stripeCustomerId', 'stripePaymentMethodId',
+        'stripePaymentMethodLast4', 'stripePaymentMethodBrand'
+      ];
+    }
+
+    // Used in create rules: resource is null so we can't diff — check incoming keys directly.
+    function newDocHasFinancialFields() {
+      return request.resource.data.keys().hasAny([
+        'pendingChargeCents', 'pendingEarningsCents',
+        'stripeCustomerId', 'stripePaymentMethodId',
+        'stripePaymentMethodLast4', 'stripePaymentMethodBrand'
+      ]);
+    }
+
+    // Used in update rules: diff against the existing doc to catch only changed fields.
+    function touchesFinancialFields() {
+      return request.resource.data.diff(resource.data)
+        .affectedKeys()
+        .hasAny([
+          'pendingChargeCents', 'pendingEarningsCents',
+          'stripeCustomerId', 'stripePaymentMethodId',
+          'stripePaymentMethodLast4', 'stripePaymentMethodBrand'
+        ]);
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return request.auth.uid == uid;
+    }
+
+    function isRideDriver(rideData) {
+      return rideData.driverId == request.auth.uid;
+    }
+
+    function isRidePassenger(rideData) {
+      return request.auth.uid in rideData.passengers;
+    }
+
+    // Founder admin: gated by a Firebase Auth custom claim ({ admin: true }) set
+    // on the founder accounts via functions/scripts/set-admin-claims.js. Used by
+    // the founder-only admin dashboard to edit config collections (events).
+    function isAdmin() {
+      return request.auth != null && request.auth.token.admin == true;
+    }
+
+    // ── Users ──────────────────────────────────────────────────────────────────
+    match /users/{uid} {
+
+      // Any signed-in user can read public profile fields (needed for ride cards,
+      // passenger profile modals, driver info, etc.)
+      allow read: if isSignedIn();
+
+      // A user can create their own document (sign-up flow).
+      allow create: if isSignedIn() && isOwner(uid) && !newDocHasFinancialFields();
+
+      // A user can update their own document but cannot touch financial fields —
+      // those are exclusively managed by Cloud Functions via the admin SDK.
+      allow update: if isSignedIn() && isOwner(uid) && !touchesFinancialFields();
+
+      // Any signed-in user may update ONLY the ratings/XP/ridesCompleted fields
+      // on another user's document. This supports the post-ride rating flow where
+      // a passenger writes the driver's rating from the client.
+      // TODO: Migrate updateRatings() and updateXP() to a Cloud Function so this
+      //       rule can be tightened to require the caller was on the ride.
+      allow update: if isSignedIn()
+        && !isOwner(uid)
+        && request.resource.data.diff(resource.data)
+              .affectedKeys()
+              .hasOnly(['ratings', 'ratingWeigth', 'xp', 'ridesCompleted']);
+
+      allow delete: if false;
+    }
+
+    // Transactions subcollection — a user may only read their own; all writes are
+    // Cloud Function–only (admin SDK bypasses these rules entirely).
+    match /users/{uid}/transactions/{txId} {
+      allow read: if isSignedIn() && isOwner(uid);
+      allow write: if false;
+    }
+
+    // ── Rides ──────────────────────────────────────────────────────────────────
+    match /rides/{rideId} {
+
+      // Any signed-in user can read rides (home screen, explore tab, etc.)
+      allow read: if isSignedIn();
+
+      // Only the driver can create the ride; driverId must equal the caller's uid.
+      allow create: if isSignedIn()
+        && request.resource.data.driverId == request.auth.uid;
+
+      allow update: if isSignedIn() && (
+
+        // ── Driver operations ─────────────────────────────────────────────────
+        // The driver of this ride may update any operational field except
+        // paymentStatus (set exclusively by /rides/complete Cloud Function).
+        // This explicitly covers per-passenger dropoff fields:
+        //   droppedPassengers, confirmedDropoffPassengers, pendingRatings.
+        (isRideDriver(resource.data)
+          && !request.resource.data.diff(resource.data)
+                .affectedKeys()
+                .hasAny(['driverId', 'paymentStatus']))
+
+        ||
+
+        // ── Passenger operations ───────────────────────────────────────────────
+        // Accepted passengers may update a limited set of fields on the ride doc:
+        // their pickup/dropoff coordinates, boarding status, and rating records.
+        (isRidePassenger(resource.data)
+          && request.resource.data.diff(resource.data)
+                .affectedKeys()
+                .hasOnly([
+                  'boardedPassengers',
+                  'passengerPickups',
+                  'passengerDropoffs',
+                  'ratingsSubmitted'
+                ]))
+
+        ||
+
+        // ── Join-request operations ────────────────────────────────────────────
+        // Any signed-in user may send or cancel a join request. Only joinRequests
+        // is allowed here — the passengers array and seatsAvailable are
+        // exclusively mutated by the driver (via the driver path above), so a
+        // passenger cannot quit an accepted ride or remove another passenger
+        // through this path.
+        (request.resource.data.diff(resource.data)
+          .affectedKeys()
+          .hasOnly(['joinRequests']))
+      );
+
+      // Rides are never hard-deleted from the client — they are marked expired.
+      allow delete: if false;
+    }
+
+    // ── Ride Requests ───────────────────────────────────────────────────────────
+    // Passenger-created planned trips ("queue a ride in advance"). The passenger
+    // owns the request fully; drivers (future phase) only read them.
+    match /rideRequests/{requestId} {
+
+      // Any signed-in user can read (drivers will browse open requests later).
+      allow read: if isSignedIn();
+
+      // Only the passenger can create their own request.
+      allow create: if isSignedIn()
+        && request.resource.data.passengerId == request.auth.uid;
+
+      // Only the owner can update their request, and they cannot reassign it.
+      allow update: if isSignedIn()
+        && isOwner(resource.data.passengerId)
+        && request.resource.data.passengerId == resource.data.passengerId;
+
+      // The owner may delete (cancel) their own request.
+      allow delete: if isSignedIn() && isOwner(resource.data.passengerId);
+    }
+
+    // ── Hype Events ──────────────────────────────────────────────────────────────
+    // Event catalog for the Hype map. Any signed-in user may read. Writes are
+    // restricted to founder admins (custom claim) so the admin dashboard can
+    // create/edit/delete events. Regular clients still cannot write.
+    // NOTE: attendeeCount is maintained by the /events/interest Cloud Function
+    // (admin SDK, bypasses these rules); the dashboard should not edit it.
+    match /events/{eventId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ── Driver Sessions ─────────────────────────────────────────────────────────
+    // A driver's live "online to drive" state. Doc id == driver uid. Readable by
+    // any signed-in user (so dispatch/matching can see online drivers); only the
+    // owner may write their own session.
+    match /driverSessions/{uid} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn()
+        && isOwner(uid)
+        && request.resource.data.driverId == request.auth.uid;
+      allow delete: if isSignedIn() && isOwner(uid);
+    }
+  }
+}

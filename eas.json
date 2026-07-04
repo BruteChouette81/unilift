@@ -3,14 +3,62 @@
     "version": ">= 2.0.0"
   },
   "build": {
-    "preview": {
+    "development": {
+      "environment": "preview",
+      "channel": "development",
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_APP_ENV": "dev",
+        "EXPO_PUBLIC_FIREBASE_API_KEY": "AIzaSyDQMdY0la_sZuHvumHjFl4ibfCsOe1UW6Q",
+        "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN": "unilift-6e756.firebaseapp.com",
+        "EXPO_PUBLIC_FIREBASE_PROJECT_ID": "unilift-6e756",
+        "EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET": "unilift-6e756.firebasestorage.app",
+        "EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID": "682863404857",
+        "EXPO_PUBLIC_FIREBASE_APP_ID": "1:682863404857:web:a3a8c9a0436ccec5232ae8",
+        "EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID": "G-WWHVR2KVMX",
+        "EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY_TEST": "pk_test_51STT8dLknqTkokcHelcM5zBiAHVbZdQs6Rv82C7WkB8zwheZCn9DKNUjPn2iftKOC1FopG8scpTQEceuvV9ETaXB00Y8nib6HK",
+        "EXPO_PUBLIC_FACEBOOK_APP_ID": "941539408674327"
+      }
+    },
+    "preview": {
+      "environment": "preview",
+      "channel": "preview",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+       "EXPO_PUBLIC_FIREBASE_API_KEY": "AIzaSyDQMdY0la_sZuHvumHjFl4ibfCsOe1UW6Q",
+        "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN": "unilift-6e756.firebaseapp.com",
+        "EXPO_PUBLIC_FIREBASE_PROJECT_ID": "unilift-6e756",
+        "EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET": "unilift-6e756.firebasestorage.app",
+        "EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID": "682863404857",
+        "EXPO_PUBLIC_FIREBASE_APP_ID": "1:682863404857:web:a3a8c9a0436ccec5232ae8",
+        "EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID": "G-WWHVR2KVMX",
+        "EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY": "pk_live_51STT8dLknqTkokcH5lxUgNPxzUWnyEhSSKRAnC1JyoA0qL7baQ3hx9lxQkUdlYCMNrDHeBkJCgUQxCOSuGMPGaIz00rcpXmxZ6",
+
+
+        "EXPO_PUBLIC_FACEBOOK_APP_ID": "941539408674327"
       }
     },
     "production": {
+      "environment": "production",
+      "channel": "production",
       "android": {
         "buildType": "app-bundle"
+      },
+      "env": {
+         "EXPO_PUBLIC_FIREBASE_API_KEY": "AIzaSyDQMdY0la_sZuHvumHjFl4ibfCsOe1UW6Q",
+        "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN": "unilift-6e756.firebaseapp.com",
+        "EXPO_PUBLIC_FIREBASE_PROJECT_ID": "unilift-6e756",
+        "EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET": "unilift-6e756.firebasestorage.app",
+        "EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID": "682863404857",
+        "EXPO_PUBLIC_FIREBASE_APP_ID": "1:682863404857:web:a3a8c9a0436ccec5232ae8",
+        "EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID": "G-WWHVR2KVMX",
+        "EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY": "pk_live_51STT8dLknqTkokcH5lxUgNPxzUWnyEhSSKRAnC1JyoA0qL7baQ3hx9lxQkUdlYCMNrDHeBkJCgUQxCOSuGMPGaIz00rcpXmxZ6",
+
+        "EXPO_PUBLIC_FACEBOOK_APP_ID": "941539408674327"
       }
     }
   },

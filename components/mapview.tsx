@@ -1,22 +1,23 @@
-import * as Location from "expo-location";
+import { hypeScoreToIconSize, type HypeEvent } from "@/constants/events";
 import {
+  devLog,
   firestoreDocumentUrl,
-  runtimeConfig,
   withFirebaseApiKey,
 } from "@/constants/runtime-config";
-import type { PromotedEvent } from "@/constants/events";
+import { getRouteStats } from "@/services/routeService";
 import { Ionicons } from "@expo/vector-icons";
+import * as Location from "expo-location";
 import React, { useEffect, useRef, useState } from "react";
-import { Dimensions, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { Image, StyleSheet, TouchableOpacity, View } from "react-native";
 import MapView, { Marker, Polyline, type Region } from "react-native-maps";
 
 // ─── Design Tokens ───────────────────────────────────────────────────────────
 const C = {
-  purple:  "#7C3AED",
+  purple:  "#8938D5",
   gold:    "#fbbf24",
   success: "#34d399",
   danger:  "#f87171",
-  blue:    "#3b82f6",
+  blue:    "#60a5fa",
   white:   "#ffffff",
   bg:      "#080810",
   fire:    "#f97316",
@@ -46,11 +47,54 @@ const DARK_MAP_STYLE = [
   { featureType: "water",           elementType: "labels.text.fill", stylers: [{ color: "#4b5563" }] },
 ];
 
-// ─── Styled Markers ───────────────────────────────────────────────────────────
-function PinMarker({ emoji, color, size = 18 }: { emoji: string; color: string; size?: number }) {
+// ─── Marker that takes one snapshot then stops tracking ───────────────────────
+// Custom-view markers in react-native-maps require the native layer to take a
+// "snapshot" of the React view before they appear on the map. By default
+// (tracksViewChanges=true) every render snapshots — bad for perf. Setting it
+// to false outright means markers added AFTER the map is ready never snapshot,
+// so they only appear once the user touches the map. This wrapper does it
+// right: snapshot on mount, then disable tracking on the next tick.
+function SnapshottingMarker(
+  props: React.ComponentProps<typeof Marker> & { children: React.ReactNode },
+) {
+  const [tracking, setTracking] = useState(true);
+  useEffect(() => {
+    const id = setTimeout(() => setTracking(false), 600);
+    return () => clearTimeout(id);
+  }, []);
   return (
-    <View style={[m.pin, { borderColor: color, shadowColor: color }]}>
-      <Text style={{ fontSize: size }}>{emoji}</Text>
+    <Marker {...props} tracksViewChanges={tracking}>
+      {props.children}
+    </Marker>
+  );
+}
+
+// ─── Styled Markers ───────────────────────────────────────────────────────────
+function PinMarker({
+  icon,
+  color,
+  size = 30,
+}: {
+  icon: React.ComponentProps<typeof Ionicons>["name"];
+  color: string;
+  size?: number;
+}) {
+  return (
+    <View style={[m.pin, { shadowColor: color }]}>
+      <Ionicons name={icon} size={size} color={color} />
+      <View style={[m.pinTip, { backgroundColor: color }]} />
+    </View>
+  );
+}
+
+function AvatarPinMarker({ uri, color }: { uri: string | null; color: string }) {
+  return (
+    <View style={[m.pin, { shadowColor: color }]}>
+      {uri ? (
+        <Image source={{ uri }} style={m.avatarImg} />
+      ) : (
+        <Ionicons name="person" size={30} color={color} />
+      )}
       <View style={[m.pinTip, { backgroundColor: color }]} />
     </View>
   );
@@ -58,17 +102,12 @@ function PinMarker({ emoji, color, size = 18 }: { emoji: string; color: string; 
 
 const m = StyleSheet.create({
   pin: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    backgroundColor: "#0f0f1e",
-    borderWidth: 2,
     alignItems: "center",
     justifyContent: "center",
-    shadowOpacity: 0.6,
-    shadowRadius: 8,
+    shadowOpacity: 0.9,
+    shadowRadius: 12,
     shadowOffset: { width: 0, height: 2 },
-    elevation: 6,
+    elevation: 8,
   },
   pinTip: {
     position: "absolute",
@@ -76,7 +115,12 @@ const m = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    opacity: 0.85,
+    opacity: 0.9,
+  },
+  avatarImg: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
   },
 });
 
@@ -119,28 +163,20 @@ async function fetchUser(uid: string) {
   const url = withFirebaseApiKey(firestoreDocumentUrl("users", uid));
   try {
     const res = await fetch(url);
-    if (!res.ok) { console.log(res); return; }
+    if (!res.ok) return;
     const data = await res.json();
-    console.log("Firestore user data:", JSON.stringify(data.fields.localisation));
     return data;
   } catch (err) {
     console.error(err);
   }
 }
 
+/** @deprecated Use getRouteStats from services/routeService instead. */
 async function getPathForRide(origin: number[], destination: number[]) {
-  const url = "https://api.openrouteservice.org/v2/directions/driving-car/json";
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { Authorization: runtimeConfig.orsApiKey, "Content-Type": "application/json" },
-      body: JSON.stringify({ coordinates: [origin, destination] }),
-    });
-    return await res.json();
-  } catch (e) {
-    console.error("ORS error:", e);
-    return null;
-  }
+  // Kept for backward compatibility; delegates to the shared route service.
+  const from = { latitude: origin[1], longitude: origin[0] };
+  const to = { latitude: destination[1], longitude: destination[0] };
+  return getRouteStats(from, to);
 }
 
 function getPassengerPath(passengerId: string[]) {
@@ -150,9 +186,6 @@ function getPassengerPath(passengerId: string[]) {
       if (data) {
         const loc = data.fields.localisation.geoPointValue;
         locations.push(loc);
-        console.log(`Passenger ${passengerId[i]} location:`, loc);
-      } else {
-        console.log(`No data for passenger ${passengerId[i]}`);
       }
     });
   }
@@ -164,7 +197,10 @@ interface RideMapViewProps {
   onPlaceSelect: (name: string, lat: number, lng: number) => void;
   favorites: any[];
   homeLocalisation: { lat: number; lng: number };
-  promotedEvents?: PromotedEvent[];
+  /** Hype-map events; flame marker size scales with each event's score (1–10). */
+  events?: HypeEvent[];
+  /** Tapping an event marker opens the floating Hype card (not the lift flow). */
+  onEventSelect?: (event: HypeEvent) => void;
 }
 
 interface DriverRideMapViewProps {
@@ -172,7 +208,14 @@ interface DriverRideMapViewProps {
   destination: { latitude: number; longitude: number };
   passengers: string[] | undefined;
   setCoords?: (coords: { latitude: number; longitude: number }[]) => void;
-  pendingLocations?: { latitude: number; longitude: number }[];
+  pendingLocations?: { latitude: number; longitude: number; passengerId: string; avatarUri?: string | null; dropoff?: { latitude: number; longitude: number } }[];
+  /** Pickup map keyed by passenger uid — used to draw multi-waypoint polyline. */
+  passengerPickups?: Record<string, { latitude: number; longitude: number }>;
+  /** Dropoff map keyed by passenger uid — per-passenger dropoff location. */
+  passengerDropoffs?: Record<string, { latitude: number; longitude: number }>;
+  /** Encoded polyline captured at ride start. When provided the component
+   *  decodes and renders it directly — no Google Directions call is made. */
+  frozenPolyline?: string;
 }
 
 interface UserRideMapViewProps {
@@ -190,63 +233,165 @@ const DEFAULT_REGION = {
 
 // ─── DriverRideMapView ────────────────────────────────────────────────────────
 export function DriverRideMapView(props: DriverRideMapViewProps) {
-  const [passengerLocations, setPassengerLocations] = useState<any[]>([]);
+  const [routePath, setRoutePath] = useState<{ latitude: number; longitude: number }[]>([]);
+  // Track whether we've already decoded a frozen polyline so we don't redo it.
+  const frozenDecodedRef = useRef(false);
+  const mapRef = useRef<MapView>(null);
+  const [mapReady, setMapReady] = useState(false);
+  // Signature of the last set of coords we framed — avoids re-fitting (and the
+  // camera jump) on every parent re-render when nothing actually moved.
+  const lastFitSigRef = useRef("");
+
+  const isReal = (c?: { latitude: number; longitude: number } | null): c is { latitude: number; longitude: number } =>
+    !!c && (c.latitude !== 0 || c.longitude !== 0);
+
+  // Read passenger pickup/dropoff markers DIRECTLY off the live ride-doc maps
+  // (fed by the onSnapshot listener). Previously these were derived from the
+  // `passengers` array through an async state hop, which could silently render
+  // nothing if the ordering raced. Rendering straight from the maps means a
+  // pickup/dropoff shows the moment the snapshot delivers it.
+  const pickups = props.passengerPickups
+    ? Object.entries(props.passengerPickups).filter((e): e is [string, { latitude: number; longitude: number }] => isReal(e[1]))
+    : [];
+  const dropoffs = props.passengerDropoffs
+    ? Object.entries(props.passengerDropoffs).filter((e): e is [string, { latitude: number; longitude: number }] => isReal(e[1]))
+    : [];
+
+  devLog("[RIDE-DEBUG] mapview markers", {
+    pickupsIn: props.passengerPickups ? Object.keys(props.passengerPickups).length : 0,
+    dropoffsIn: props.passengerDropoffs ? Object.keys(props.passengerDropoffs).length : 0,
+    pickupsRendered: pickups.length,
+    dropoffsRendered: dropoffs.length,
+    hasFrozenPolyline: !!props.frozenPolyline,
+    routePathLen: routePath.length,
+  });
+
+  // Collect every meaningful point so the camera can frame them all. Without
+  // this the map sat on a fixed wide region and the passenger pickup/dropoff/
+  // destination markers were off-screen — appearing as if no data loaded.
+  const fitTargets: { latitude: number; longitude: number }[] = [];
+  if (isReal(props.origin)) fitTargets.push(props.origin);
+  if (isReal(props.destination)) fitTargets.push(props.destination);
+  for (const [, l] of pickups) fitTargets.push(l);
+  for (const [, l] of dropoffs) fitTargets.push(l);
+  for (const l of props.pendingLocations ?? []) if (isReal(l)) fitTargets.push({ latitude: l.latitude, longitude: l.longitude });
+  const fitSig = fitTargets.map((c) => `${c.latitude.toFixed(4)},${c.longitude.toFixed(4)}`).sort().join("|");
 
   useEffect(() => {
-    const fetchRoute = async () => {
-      if (!props.passengers || props.passengers.length === 0) return;
-      const data = await getPassengerPath(props.passengers);
-      if (data) {
-        setPassengerLocations(data);
-        props.setCoords?.(data);
+    if (!mapReady || fitTargets.length === 0) return;
+    if (fitSig === lastFitSigRef.current) return;
+    lastFitSigRef.current = fitSig;
+    // Small delay so React commits the marker renders before the camera
+    // animation triggers the native snapshot pass for custom-view markers.
+    const id = setTimeout(() => {
+      if (fitTargets.length === 1) {
+        mapRef.current?.animateToRegion(
+          { ...fitTargets[0], latitudeDelta: 0.05, longitudeDelta: 0.05 },
+          500,
+        );
+      } else {
+        mapRef.current?.fitToCoordinates(fitTargets, {
+          edgePadding: { top: 120, right: 60, bottom: 260, left: 60 },
+          animated: true,
+        });
       }
-    };
-    fetchRoute();
-  }, [props.passengers]);
+    }, 200);
+    return () => clearTimeout(id);
+  // fitTargets is derived from fitSig; depending on the signature keeps deps stable.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapReady, fitSig]);
+
+  // Polyline: render only when the frozen encoded polyline is provided (post-start).
+  // Before the ride starts, no polyline is drawn on the driver map.
+  useEffect(() => {
+    if (!props.frozenPolyline) return;
+    if (frozenDecodedRef.current) return;
+    frozenDecodedRef.current = true;
+    const decoded = decodePolyline(props.frozenPolyline).map(
+      ([lat, lng]) => ({ latitude: lat, longitude: lng }),
+    );
+    setRoutePath(decoded);
+  }, [props.frozenPolyline]);
 
   return (
     <View style={styles.container}>
-      <MapView style={styles.map} initialRegion={DEFAULT_REGION} customMapStyle={DARK_MAP_STYLE}>
-        <Marker
+      <MapView
+        ref={mapRef}
+        style={styles.map}
+        initialRegion={DEFAULT_REGION}
+        customMapStyle={DARK_MAP_STYLE}
+        onMapReady={() => setMapReady(true)}
+      >
+        <SnapshottingMarker
           coordinate={{ latitude: props.origin.latitude, longitude: props.origin.longitude }}
-          title="Origin"
+          title="Driver"
         >
-          <PinMarker emoji="🏠" color={C.blue} />
-        </Marker>
+          <PinMarker icon="home" color={C.blue} />
+        </SnapshottingMarker>
 
-        {passengerLocations.map((loc, index) => (
-          <Marker
-            key={`p-${index}`}
+        {/* Passenger pickup points (green) */}
+        {pickups.map(([uid, loc]) => (
+          <SnapshottingMarker
+            key={`pickup-${uid}`}
             coordinate={{ latitude: loc.latitude, longitude: loc.longitude }}
-            title={`Passenger ${index + 1}`}
+            title="Passenger pickup"
           >
-            <PinMarker emoji="👤" color={C.success} />
-          </Marker>
+            <PinMarker icon="person" color={C.success} />
+          </SnapshottingMarker>
+        ))}
+
+        {/* Passenger drop-off points (purple) */}
+        {dropoffs.map(([uid, loc]) => (
+          <SnapshottingMarker
+            key={`dropoff-${uid}`}
+            coordinate={{ latitude: loc.latitude, longitude: loc.longitude }}
+            title="Passenger drop-off"
+          >
+            <PinMarker icon="location-sharp" color={C.purple} />
+          </SnapshottingMarker>
         ))}
 
         {props.pendingLocations?.map((loc, index) => (
-          <Marker
-            key={`req-${index}`}
-            coordinate={{ latitude: loc.latitude, longitude: loc.longitude }}
-            title={`Request ${index + 1}`}
-          >
-            <PinMarker emoji="🙋" color={C.gold} />
-          </Marker>
+          <React.Fragment key={`req-${loc.passengerId}`}>
+            <Marker
+              coordinate={{ latitude: loc.latitude, longitude: loc.longitude }}
+              title={`Request ${index + 1}`}
+            >
+              <AvatarPinMarker uri={loc.avatarUri ?? null} color={C.gold} />
+            </Marker>
+            {loc.dropoff && (
+              <SnapshottingMarker
+                key={`req-dropoff-${loc.passengerId}`}
+                coordinate={{ latitude: loc.dropoff.latitude, longitude: loc.dropoff.longitude }}
+                title={`Requested Dropoff ${index + 1}`}
+              >
+                <PinMarker icon="location-sharp" color={C.gold} />
+              </SnapshottingMarker>
+            )}
+          </React.Fragment>
         ))}
 
-        <Marker
+        <SnapshottingMarker
           coordinate={{ latitude: props.destination.latitude, longitude: props.destination.longitude }}
           title="Destination"
         >
-          <PinMarker emoji="🚩" color={C.danger} />
-        </Marker>
+          <PinMarker icon="flag" color={C.danger} />
+        </SnapshottingMarker>
+
+        {routePath.length > 1 && (
+          <Polyline
+            coordinates={routePath}
+            strokeColor={C.purple}
+            strokeWidth={4}
+          />
+        )}
       </MapView>
     </View>
   );
 }
 
 // ─── UserRideMapView ──────────────────────────────────────────────────────────
-export function UserRideMapView(props: UserRideMapViewProps) {
+function UserRideMapViewInner(props: UserRideMapViewProps) {
   const [userlocation, setUserlocation] = useState<{ latitude: number; longitude: number }>();
 
   useEffect(() => {
@@ -257,40 +402,53 @@ export function UserRideMapView(props: UserRideMapViewProps) {
       setUserlocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
     };
     getLoc();
-    console.log(props.origin);
   }, []);
 
   const driverCoord = props.driverLocation ?? props.origin;
 
   return (
     <View style={styles.container}>
-      <MapView style={styles.map} region={DEFAULT_REGION} customMapStyle={DARK_MAP_STYLE}>
+      <MapView style={styles.map} initialRegion={DEFAULT_REGION} customMapStyle={DARK_MAP_STYLE}>
         <Marker
           coordinate={{ latitude: driverCoord.latitude, longitude: driverCoord.longitude }}
           title="Driver"
+          tracksViewChanges={false}
         >
-          <PinMarker emoji="🚗" color={C.success} />
+          <PinMarker icon="car-sport" color={C.success} />
         </Marker>
 
         {userlocation && (
           <Marker
             coordinate={{ latitude: userlocation.latitude, longitude: userlocation.longitude }}
             title="You"
+            tracksViewChanges={false}
           >
-            <PinMarker emoji="👤" color={C.blue} />
+            <PinMarker icon="person" color={C.blue} />
           </Marker>
         )}
 
         <Marker
           coordinate={{ latitude: props.destination.latitude, longitude: props.destination.longitude }}
           title="Destination"
+          tracksViewChanges={false}
         >
-          <PinMarker emoji="🚩" color={C.danger} />
+          <PinMarker icon="flag" color={C.danger} />
         </Marker>
       </MapView>
     </View>
   );
 }
+
+export const UserRideMapView = React.memo(UserRideMapViewInner, (prev, next) => {
+  return (
+    prev.origin.latitude === next.origin.latitude &&
+    prev.origin.longitude === next.origin.longitude &&
+    prev.destination.latitude === next.destination.latitude &&
+    prev.destination.longitude === next.destination.longitude &&
+    prev.driverLocation?.latitude === next.driverLocation?.latitude &&
+    prev.driverLocation?.longitude === next.driverLocation?.longitude
+  );
+});
 
 // ─── RideMapView (home screen) ────────────────────────────────────────────────
 const RECENTER_THRESHOLD = 0.01; // ~1 km
@@ -298,7 +456,11 @@ const RECENTER_THRESHOLD = 0.01; // ~1 km
 export default function RideMapView(props: RideMapViewProps) {
   const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [isCentered, setIsCentered] = useState(true);
+  const [mapReady, setMapReady] = useState(false);
+  const initialFitDoneRef = useRef(false);
   const mapRef = useRef<MapView>(null);
+
+  const hasHome = props.homeLocalisation.lat !== 0 || props.homeLocalisation.lng !== 0;
 
   useEffect(() => {
     (async () => {
@@ -308,6 +470,45 @@ export default function RideMapView(props: RideMapViewProps) {
       setUserLocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
     })();
   }, []);
+
+  // Once the map is ready and we have at least one point of interest, fit the
+  // camera around all known places (once). The animation is also what forces the
+  // native layer to re-snapshot custom-view markers that were added after the
+  // map's initial render — without it they only appear on user interaction.
+  useEffect(() => {
+    if (!mapReady || initialFitDoneRef.current) return;
+
+    const coords: { latitude: number; longitude: number }[] = [];
+    if (userLocation) coords.push(userLocation);
+    if (hasHome) coords.push({ latitude: props.homeLocalisation.lat, longitude: props.homeLocalisation.lng });
+    for (const fav of props.favorites) {
+      coords.push({ latitude: fav.destinationGeo.lat, longitude: fav.destinationGeo.lon });
+    }
+
+    if (coords.length === 0) return;
+
+    initialFitDoneRef.current = true;
+
+    // Small delay so React finishes committing the marker renders before the
+    // animation triggers the native snapshot pass.
+    const t = setTimeout(() => {
+      if (coords.length === 1) {
+        mapRef.current?.animateToRegion({
+          latitude: coords[0].latitude,
+          longitude: coords[0].longitude,
+          latitudeDelta: 0.08,
+          longitudeDelta: 0.08,
+        }, 500);
+      } else {
+        mapRef.current?.fitToCoordinates(coords, {
+          edgePadding: { top: 100, right: 60, bottom: 220, left: 60 },
+          animated: true,
+        });
+      }
+    }, 150);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapReady, userLocation?.latitude, userLocation?.longitude, hasHome, props.favorites.length]);
 
   const handleRecenter = () => {
     if (!userLocation) return;
@@ -334,55 +535,56 @@ export default function RideMapView(props: RideMapViewProps) {
         style={styles.map}
         initialRegion={DEFAULT_REGION}
         customMapStyle={DARK_MAP_STYLE}
+        onMapReady={() => setMapReady(true)}
         onRegionChangeComplete={handleRegionChange}
       >
         {/* 1 ── Home ──────────────────────────────────────────────────── */}
-        {props.homeLocalisation && (
-          <Marker
+        {hasHome && (
+          <SnapshottingMarker
             coordinate={{ latitude: props.homeLocalisation.lat, longitude: props.homeLocalisation.lng }}
             title="Home"
             description="Your home location"
             onPress={() => props.onPlaceSelect("home", props.homeLocalisation.lat, props.homeLocalisation.lng)}
           >
-            <PinMarker emoji="🏠" color={C.blue} />
-          </Marker>
+            <PinMarker icon="home" color={C.blue} />
+          </SnapshottingMarker>
         )}
 
         {/* 2 ── Live Location ─────────────────────────────────────────── */}
         {userLocation && (
-          <Marker
+          <SnapshottingMarker
             coordinate={userLocation}
             title="You"
             description="Your current location"
           >
-            <PinMarker emoji="📍" color={C.success} />
-          </Marker>
+            <PinMarker icon="navigate" color={C.success} />
+          </SnapshottingMarker>
         )}
 
-        {/* 3 ── Promoted Events ───────────────────────────────────────── */}
-        {props.promotedEvents?.map((ev) => (
-          <Marker
-            key={ev.id}
-            coordinate={{ latitude: ev.lat, longitude: ev.lng }}
-            title={ev.name}
-            description={ev.venue}
-            onPress={() => props.onPlaceSelect(ev.name, ev.lat, ev.lng)}
-          >
-            <PinMarker emoji="🔥" color={C.fire} size={20} />
-          </Marker>
-        ))}
-
-        {/* 4 ── Favorites ─────────────────────────────────────────────── */}
+        {/* 3 ── Favorites ─────────────────────────────────────────────── */}
         {props.favorites.map((loc, index) => (
-          <Marker
-            key={`fav-${index}`}
+          <SnapshottingMarker
+            key={`fav-${loc.destinationGeo.lat}-${loc.destinationGeo.lon}-${index}`}
             coordinate={{ latitude: loc.destinationGeo.lat, longitude: loc.destinationGeo.lon }}
             title={loc.destination}
             description={`Location of ${loc.destination}`}
             onPress={() => props.onPlaceSelect(loc.destination, loc.destinationGeo.lat, loc.destinationGeo.lon)}
           >
-            <PinMarker emoji="⭐" color={C.gold} />
-          </Marker>
+            <PinMarker icon="star" color={C.gold} />
+          </SnapshottingMarker>
+        ))}
+
+        {/* 4 ── Hype Events (flame size scales with score 1–10, renders last = on top) ─ */}
+        {props.events?.map((ev) => (
+          <SnapshottingMarker
+            key={ev.id}
+            coordinate={{ latitude: ev.lat, longitude: ev.lng }}
+            title={ev.name}
+            description={ev.venue}
+            onPress={() => props.onEventSelect?.(ev)}
+          >
+            <PinMarker icon="flame" color={C.fire} size={hypeScoreToIconSize(ev.score)} />
+          </SnapshottingMarker>
         ))}
       </MapView>
 
@@ -399,21 +601,22 @@ export default function RideMapView(props: RideMapViewProps) {
 // ─── Styles ──────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  map: {
-    width: Dimensions.get("window").width,
-    height: Dimensions.get("window").height,
-  },
+  // Fill the parent container rather than the whole window so the map renders
+  // correctly whether it's full-screen (ride screens) or a shorter panel
+  // (driver ready-to-start). Full-screen parents are flex:1, so this still
+  // fills the screen there.
+  map: { ...StyleSheet.absoluteFillObject },
   recenterBtn: {
     position: "absolute",
-    bottom: 110,
+    bottom: 150,
     right: 16,
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: "#7C3AED",
+    backgroundColor: "#8938D5",
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#7C3AED",
+    shadowColor: "#8938D5",
     shadowOpacity: 0.6,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 },

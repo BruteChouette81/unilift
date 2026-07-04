@@ -17,3 +17,31 @@ export function calculateDriverEarningCents(distanceKm: number, passengerCount: 
   const distance = Math.max(distanceKm, RIDE_PRICING.minimumDistanceKm);
   return Math.round(distance * RIDE_PRICING.driverRateCentsPerKm) * passengerCount;
 }
+
+export function formatCentsAsDollars(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+/** Compute driver ROI from individual passenger leg distances. */
+export function calculateDriverROI(
+  passengerLegDistances: number[],
+): {
+  totalPassengerChargesCents: number;
+  totalDriverEarningsCents: number;
+  platformFeeCents: number;
+} {
+  let totalPassengerChargesCents = 0;
+  let totalDriverEarningsCents = 0;
+
+  for (const legKm of passengerLegDistances) {
+    totalPassengerChargesCents += calculatePassengerChargeCents(legKm);
+    const d = Math.max(legKm, RIDE_PRICING.minimumDistanceKm);
+    totalDriverEarningsCents += Math.round(d * RIDE_PRICING.driverRateCentsPerKm);
+  }
+
+  return {
+    totalPassengerChargesCents,
+    totalDriverEarningsCents,
+    platformFeeCents: totalPassengerChargesCents - totalDriverEarningsCents,
+  };
+}

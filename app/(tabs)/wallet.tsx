@@ -1,22 +1,28 @@
 import { useAuth } from "@/context/AuthContext";
 import { useLanguage } from "@/context/LanguageContext";
-import { useWallet } from "@/hooks/use-wallet";
-import { addFunds, confirmPayment, requestCashout, setupWallet } from "@/services/walletService";
+import { useWallet } from "@/context/WalletContext";
+import { useLiveRefresh } from "@/hooks/use-live-refresh";
+import {
+  confirmPaymentMethod,
+  removePaymentMethod,
+  setupPaymentMethod,
+} from "@/services/walletService";
 import {
   initPaymentSheet,
   presentPaymentSheet,
 } from "@stripe/stripe-react-native";
+import InfoButton from "@/components/info-button";
+import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
+import { Ionicons } from "@expo/vector-icons";
 import React, { useState } from "react";
 import {
   ActivityIndicator,
-
   Alert,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
@@ -25,10 +31,12 @@ import {
 const C = {
   bg:          "#080810",
   surface:     "#0f0f1e",
-  border:      "rgba(137, 56, 213, 0.22)",
+  surfaceAlt:  "#13132a",
+  border:      "rgba(137, 56, 213, 0.30)",
   borderFaint: "rgba(255, 255, 255, 0.06)",
   purple:      "#8938D5",
   purpleLight: "#e09af7",
+  pink:        "#FD165A",
   text:        "#f3f4f6",
   muted:       "#9ca3af",
   dim:         "#4b5563",
@@ -37,19 +45,19 @@ const C = {
   gold:        "#fbbf24",
 };
 
-const BALANCE_GRADIENT = ["#2d0015", "#1c0038"] as const;
-const BTN_ADD          = ["#7C3AED", "#2563eb"] as const;
-const BTN_CASHOUT      = ["#FD165A", "#8938D5"] as const;
-const CARD_GRADIENT    = ["#1e1b4b", "#0d1224"] as const;
+const BALANCE_GRADIENT  = ["#1c0038", "#08001a"] as const;
+const CARD_GRADIENT     = ["#1e1b4b", "#0d1224"] as const;
+const EARNINGS_GRADIENT = ["#052e16", "#0d1224"] as const;
+const BTN_GRADIENT      = ["#FD165A", "#8938D5"] as const;
 
-const PRESETS = [10, 20, 50, 100];
+type IoniconsName = React.ComponentProps<typeof Ionicons>["name"];
 
 // ── Section Header ────────────────────────────────────────────────────────────
-function SectionHeader({ icon, title }: { icon: string; title: string }) {
+function SectionHeader({ iconName, title }: { iconName: IoniconsName; title: string }) {
   return (
     <View style={sh.row}>
       <View style={sh.iconDot}>
-        <Text style={{fontSize: 12}}>{icon}</Text>
+        <Ionicons name={iconName} size={14} color={C.purpleLight} />
       </View>
       <Text style={sh.title}>{title}</Text>
     </View>
@@ -58,7 +66,7 @@ function SectionHeader({ icon, title }: { icon: string; title: string }) {
 
 const sh = StyleSheet.create({
   row:     { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10, marginTop: 24 },
-  iconDot: { width: 26, height: 26, borderRadius: 7, backgroundColor: "rgba(224,154,247,0.12)", alignItems: "center", justifyContent: "center" },
+  iconDot: { width: 28, height: 28, borderRadius: 8, backgroundColor: "rgba(224,154,247,0.10)", alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "rgba(224,154,247,0.15)" },
   title:   { color: C.text, fontSize: 15, fontWeight: "700", letterSpacing: 0.2 },
 });
 
@@ -82,7 +90,7 @@ const badge = StyleSheet.create({
 function ErrorBanner({ message, onRetry, retryLabel }: { message: string; onRetry: () => void; retryLabel: string }) {
   return (
     <View style={eb.wrap}>
-      <Text style={{fontSize: 14}}>⚠️</Text>
+      <Ionicons name="warning-outline" size={16} color={C.danger} />
       <Text style={eb.text} numberOfLines={2}>{message}</Text>
       <TouchableOpacity onPress={onRetry} style={eb.retryBtn}>
         <Text style={eb.retryText}>{retryLabel}</Text>
@@ -92,7 +100,7 @@ function ErrorBanner({ message, onRetry, retryLabel }: { message: string; onRetr
 }
 
 const eb = StyleSheet.create({
-  wrap:      { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "rgba(248,113,113,0.1)", borderRadius: 10, padding: 12, borderWidth: 1, borderColor: "rgba(248,113,113,0.25)", marginBottom: 8 },
+  wrap:      { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "rgba(248,113,113,0.1)", borderRadius: 12, padding: 12, borderWidth: 1, borderColor: "rgba(248,113,113,0.25)", marginBottom: 8 },
   text:      { flex: 1, color: C.danger, fontSize: 13 },
   retryBtn:  { backgroundColor: "rgba(248,113,113,0.2)", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 },
   retryText: { color: C.danger, fontSize: 12, fontWeight: "600" },
@@ -103,77 +111,44 @@ export default function WalletScreen() {
   const { user } = useAuth();
   const { t, language } = useLanguage();
   const {
-    balance,
+    pendingChargeCents,
+    pendingEarningsCents,
+    paymentMethod,
     transactions,
     loading,
     refreshing,
     error,
     refresh,
-    setBalance,
-    refreshTransactions,
-  } = useWallet(user);
+    reload,
+    setPaymentMethod,
+  } = useWallet();
 
   const [actionLoading, setActionLoading] = useState(false);
-  const [showAddFunds, setShowAddFunds]   = useState(false);
-  const [showCashout, setShowCashout]     = useState(false);
-  const [selectedPreset, setSelectedPreset] = useState<number | null>(null);
-  const [customAmount, setCustomAmount]      = useState("");
-  const [cashoutAmount, setCashoutAmount]    = useState("");
 
-  const getAddAmount = (): number => {
-    if (customAmount) return parseFloat(customAmount) || 0;
-    return selectedPreset ?? 0;
-  };
+  // Re-sync card + transactions when returning to the tab or foregrounding.
+  useLiveRefresh(reload);
 
-  const handleAddFunds = async () => {
-    if (!user) {
-      Alert.alert(t("wallet.notSignedIn"), t("wallet.notSignedInMsg"));
-      return;
-    }
-    const dollars = getAddAmount();
-    if (!dollars || dollars < 10) {
-      Alert.alert(t("wallet.minimum10"), t("wallet.minimum10Msg"));
-      return;
-    }
-    const amountCents = Math.round(dollars * 100);
+  // ── Add Card ────────────────────────────────────────────────────────────────
+  const handleAddCard = async () => {
+    if (!user) return;
     setActionLoading(true);
     try {
       const token = await user.getIdToken();
 
-      let customerId: string;
-      let ephemeralKey: string;
-      let clientSecret: string;
-
+      let setupData: any;
       try {
-        let setupData = await setupWallet(token).catch(async () => {
-          // Silent retry after brief delay (handles missing customerId on first use)
-          await new Promise((r) => setTimeout(r, 1200));
-          return setupWallet(await user.getIdToken());
-        });
-        if (!setupData?.customerId) {
-          // Still no customer — one more attempt then give up
-          await new Promise((r) => setTimeout(r, 1500));
-          setupData = await setupWallet(await user.getIdToken());
-        }
-        customerId   = setupData.customerId;
-        ephemeralKey = setupData.ephemeralKey;
+        setupData = await setupPaymentMethod(token);
       } catch {
-        Alert.alert(t("wallet.setupFailed"), t("wallet.setupFailedMsg"));
-        return;
+        await new Promise((r) => setTimeout(r, 1200));
+        setupData = await setupPaymentMethod(await user.getIdToken());
       }
 
-      try {
-        const fundsData = await addFunds(token, amountCents);
-        clientSecret = fundsData.clientSecret;
-      } catch (err: any) {
-        Alert.alert(t("wallet.paymentError"), err.message ?? t("wallet.paymentErrorMsg"));
-        return;
-      }
+      const { clientSecret, customerId, ephemeralKey } = setupData;
 
       const { error: initError } = await initPaymentSheet({
         customerId,
         customerEphemeralKeySecret: ephemeralKey,
-        paymentIntentClientSecret: clientSecret,
+        setupIntentClientSecret: clientSecret,
         merchantDisplayName: "UniLift",
       });
       if (initError) {
@@ -183,33 +158,17 @@ export default function WalletScreen() {
 
       const { error: presentError } = await presentPaymentSheet();
       if (presentError) {
-        // "Canceled" is not an error — user dismissed the sheet
         if (presentError.code !== "Canceled") {
           Alert.alert(t("wallet.paymentFailed"), presentError.message);
         }
         return;
       }
 
-      // Extract paymentIntentId from clientSecret format: "pi_xxx_secret_yyy"
-      const paymentIntentId = clientSecret.split("_secret_")[0];
-      if (!paymentIntentId.startsWith("pi_")) {
-        Alert.alert(t("wallet.confirmationError"), t("wallet.confirmationErrorMsg"));
-        return;
-      }
-
-      try {
-        const { balance: newBalance } = await confirmPayment(token, paymentIntentId);
-        setBalance(newBalance);
-        await refreshTransactions();
-        setShowAddFunds(false);
-        setSelectedPreset(null);
-        setCustomAmount("");
-        Alert.alert(t("wallet.success"), t("wallet.successAdded", { amount: (amountCents / 100).toFixed(2) }));
-      } catch (err: any) {
-        // Payment went through but confirmation failed — don't lose their money
-        Alert.alert(t("wallet.confirmationPending"), t("wallet.confirmationPendingMsg"));
-        await refresh();
-      }
+      const setupIntentId = clientSecret.split("_secret_")[0];
+      const freshToken = await user.getIdToken();
+      const { paymentMethod: pm } = await confirmPaymentMethod(freshToken, setupIntentId);
+      setPaymentMethod(pm);          // instant optimistic feedback
+      await reload();                // reconcile with backend truth (shared state)
     } catch (err: any) {
       Alert.alert(t("wallet.unexpectedError"), err.message ?? t("wallet.somethingWrong"));
     } finally {
@@ -217,41 +176,26 @@ export default function WalletScreen() {
     }
   };
 
-  const handleCashout = async () => {
-    if (!user) {
-      Alert.alert(t("wallet.notSignedIn"), t("wallet.notSignedInCashout"));
-      return;
-    }
-    const dollars = parseFloat(cashoutAmount) || 0;
-    if (dollars < 10) {
-      Alert.alert(t("wallet.minimum10"), t("wallet.minimum10Cashout"));
-      return;
-    }
-    const amountCents = Math.round(dollars * 100);
-    if (amountCents > balance) {
-      Alert.alert(t("wallet.insufficientBalance"), t("wallet.insufficientBalanceMsg", { balance: (balance / 100).toFixed(2) }));
-      return;
-    }
+  // ── Remove Card ──────────────────────────────────────────────────────────────
+  const handleRemoveCard = async () => {
+    if (!user) return;
     Alert.alert(
-      t("wallet.confirmCashout"),
-      t("wallet.confirmCashoutMsg", { amount: dollars.toFixed(2) }),
+      t("wallet.removeCard"),
+      t("wallet.removeCardMsg"),
       [
         { text: t("common.cancel"), style: "cancel" },
         {
           text: t("common.confirm"),
+          style: "destructive",
           onPress: async () => {
             setActionLoading(true);
             try {
               const token = await user.getIdToken();
-              const { balance: newBalance } = await requestCashout(token, amountCents);
-              setBalance(newBalance);
-              await refreshTransactions();
-              setShowCashout(false);
-              setCashoutAmount("");
-              Alert.alert(t("wallet.cashoutRequested"), t("wallet.cashoutRequestedMsg"));
+              await removePaymentMethod(token);
+              setPaymentMethod(null);   // instant optimistic feedback
+              await reload();           // reconcile with backend truth (shared state)
             } catch (err: any) {
-              const msg = err.message ?? t("wallet.somethingWrong");
-              Alert.alert(t("wallet.cashoutFailed"), msg);
+              Alert.alert(t("wallet.unexpectedError"), err.message ?? t("wallet.somethingWrong"));
             } finally {
               setActionLoading(false);
             }
@@ -261,7 +205,7 @@ export default function WalletScreen() {
     );
   };
 
-  // ── Loading state ─────────────────────────────────────────────────────────
+  // ── Loading state ────────────────────────────────────────────────────────────
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
@@ -279,186 +223,168 @@ export default function WalletScreen() {
         <RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={C.purpleLight} />
       }
     >
-      {/* ── Balance Card ────────────────────────────────────────────────── */}
+      {/* ── Balance Hero Card ─────────────────────────────────────────────── */}
       <LinearGradient colors={BALANCE_GRADIENT} style={styles.balanceCard}>
         <View style={styles.balanceHeader}>
-          <Text style={styles.balanceLabel}>{t("wallet.myWallet")}</Text>
-          
+          <View style={styles.balanceLabelRow}>
+            <View style={styles.balanceIconWrap}>
+              <Ionicons name="wallet-outline" size={16} color={C.purpleLight} />
+            </View>
+            <Text style={styles.balanceLabel}>{t("wallet.pendingThisMonth")}</Text>
+          </View>
+          <InfoButton
+            title={t("wallet.info.pendingCharge.title")}
+            body={t("wallet.info.pendingCharge.body")}
+          />
         </View>
-        <Text style={styles.balanceAmount}>${(balance / 100).toFixed(2)}</Text>
-        <Text style={styles.balanceSubtitle}>{t("wallet.availableBalance")}</Text>
+        <Text style={styles.balanceAmount}>${(pendingChargeCents / 100).toFixed(2)}</Text>
+        <View style={styles.balanceFooter}>
+          <Ionicons name="time-outline" size={12} color="rgba(255,255,255,0.4)" />
+          <Text style={styles.balanceSubtitle}>{t("wallet.billedEndOfMonth")}</Text>
+        </View>
       </LinearGradient>
 
       <View style={styles.content}>
-        {/* ── Error Banner ────────────────────────────────────────────────── */}
+        {/* ── Error Banner ─────────────────────────────────────────────────── */}
         {error && <ErrorBanner message={error} onRetry={refresh} retryLabel={t("wallet.retry")} />}
 
-        {/* ── Action Row ──────────────────────────────────────────────────── */}
-        <View style={styles.actionRow}>
-          <TouchableOpacity
-            style={styles.actionBtnWrap}
-            activeOpacity={0.8}
-            disabled={actionLoading}
-            onPress={() => { setShowAddFunds(!showAddFunds); setShowCashout(false); }}
-          >
-            <LinearGradient colors={BTN_ADD} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.actionBtn}>
-              <Text style={{fontSize: 18}}>➕</Text>
-              <Text style={styles.actionBtnText}>{t("wallet.addFunds")}</Text>
-            </LinearGradient>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.actionBtnWrap, balance === 0 && styles.actionBtnDisabled]}
-            activeOpacity={balance === 0 ? 1 : 0.8}
-            disabled={balance === 0 || actionLoading}
-            onPress={() => { setShowCashout(!showCashout); setShowAddFunds(false); }}
-          >
-            <LinearGradient
-              colors={balance === 0 ? ["#1a1040", "#0f1730"] : BTN_CASHOUT}
-              start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-              style={styles.actionBtn}
-            >
-              <Text style={{fontSize: 18}}>⬇</Text>
-              <Text style={[styles.actionBtnText, balance === 0 && { color: C.dim }]}>
-                {t("wallet.cashOut")}
-              </Text>
-            </LinearGradient>
-          </TouchableOpacity>
+        {/* ── Payment Method Section ────────────────────────────────────────── */}
+        <View style={styles.sectionRow}>
+          <SectionHeader iconName="card-outline" title={t("wallet.paymentMethod")} />
+          <InfoButton
+            title={t("wallet.info.paymentMethod.title")}
+            body={t("wallet.info.paymentMethod.body")}
+          />
         </View>
 
-        {/* ── Add Funds Panel ──────────────────────────────────────────────── */}
-        {showAddFunds && (
-          <LinearGradient colors={CARD_GRADIENT} style={styles.panel}>
-            <Text style={styles.panelTitle}>{t("wallet.addFundsTitle")}</Text>
-
-            <View style={styles.presetRow}>
-              {PRESETS.map((amount) => (
-                <TouchableOpacity
-                  key={amount}
-                  style={[
-                    styles.presetChip,
-                    selectedPreset === amount && !customAmount && styles.presetChipActive,
-                  ]}
-                  onPress={() => { setSelectedPreset(amount); setCustomAmount(""); }}
-                >
-                  <Text style={[
-                    styles.presetChipText,
-                    selectedPreset === amount && !customAmount && styles.presetChipTextActive,
-                  ]}>
-                    ${amount}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+        {paymentMethod ? (
+          <View style={styles.pmRow}>
+            <View style={styles.pmIconWrap}>
+              <Ionicons name="card-outline" size={20} color={C.purpleLight} />
             </View>
-
-            <View style={styles.inputWrapper}>
-              <Text style={styles.inputCurrency}>$</Text>
-              <TextInput
-                style={styles.input}
-                placeholder={t("wallet.customAmount")}
-                placeholderTextColor={C.dim}
-                keyboardType="decimal-pad"
-                value={customAmount}
-                onChangeText={(v) => { setCustomAmount(v); setSelectedPreset(null); }}
-              />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.pmBrand}>
+                {paymentMethod.brand.toUpperCase()} •••• {paymentMethod.last4}
+              </Text>
+              <Text style={styles.pmLabel}>{t("wallet.defaultCard")}</Text>
             </View>
-
-            <TouchableOpacity
-              activeOpacity={0.8}
-              onPress={handleAddFunds}
-              disabled={actionLoading}
-              style={[styles.primaryBtnWrap, actionLoading && styles.disabledBtn]}
-            >
-              <LinearGradient colors={BTN_ADD} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.primaryBtn}>
-                {actionLoading
-                  ? <ActivityIndicator size="small" color="#fff" />
-                  : <Text style={styles.primaryBtnText}>{t("wallet.payWithCard")}</Text>
-                }
-              </LinearGradient>
+            <TouchableOpacity onPress={handleRemoveCard} disabled={actionLoading} hitSlop={8} style={styles.removeBtn}>
+              <Ionicons name="trash-outline" size={16} color={C.danger} />
             </TouchableOpacity>
-          </LinearGradient>
+          </View>
+        ) : (
+          <TouchableOpacity
+            style={[styles.addCardBtn, actionLoading && { opacity: 0.6 }]}
+            onPress={handleAddCard}
+            disabled={actionLoading}
+            activeOpacity={0.75}
+          >
+            {actionLoading ? (
+              <ActivityIndicator size="small" color={C.purpleLight} />
+            ) : (
+              <LinearGradient
+                colors={BTN_GRADIENT}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.addCardIconGrad}
+              >
+                <Ionicons name="add" size={16} color="#fff" />
+              </LinearGradient>
+            )}
+            <Text style={styles.addCardBtnText}>{t("wallet.addCard")}</Text>
+          </TouchableOpacity>
         )}
 
-        {/* ── Cash Out Panel ───────────────────────────────────────────────── */}
-        {showCashout && (
-          <LinearGradient colors={CARD_GRADIENT} style={styles.panel}>
-            <Text style={styles.panelTitle}>{t("wallet.cashOutTitle")}</Text>
-
-            <View style={styles.inputWrapper}>
-              <Text style={styles.inputCurrency}>$</Text>
-              <TextInput
-                style={styles.input}
-                placeholder={t("wallet.maxAmount", { amount: (balance / 100).toFixed(2) })}
-                placeholderTextColor={C.dim}
-                keyboardType="decimal-pad"
-                value={cashoutAmount}
-                onChangeText={setCashoutAmount}
+        {/* ── Driver Earnings (only if driver has pending earnings) ─────────── */}
+        {pendingEarningsCents > 0 && (
+          <>
+            <View style={styles.sectionRow}>
+              <SectionHeader iconName="cash-outline" title={t("wallet.pendingEarnings")} />
+              <InfoButton
+                title={t("wallet.info.earnings.title")}
+                body={t("wallet.info.earnings.body")}
               />
             </View>
-
-            <TouchableOpacity
-              activeOpacity={0.8}
-              onPress={handleCashout}
-              disabled={actionLoading}
-              style={[styles.primaryBtnWrap, actionLoading && styles.disabledBtn]}
-            >
-              <LinearGradient colors={BTN_CASHOUT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.primaryBtn}>
-                {actionLoading
-                  ? <ActivityIndicator size="small" color="#fff" />
-                  : <Text style={styles.primaryBtnText}>{t("wallet.requestCashout")}</Text>
-                }
-              </LinearGradient>
-            </TouchableOpacity>
-
-            <Text style={styles.cashoutNote}>{t("wallet.cashoutNote")}</Text>
-          </LinearGradient>
+            <LinearGradient colors={EARNINGS_GRADIENT} style={styles.earningsCard}>
+              <View style={styles.earningsRow}>
+                <View style={styles.earningsIconWrap}>
+                  <Ionicons name="trending-up-outline" size={18} color={C.success} />
+                </View>
+                <View>
+                  <Text style={styles.earningsAmount}>
+                    ${(pendingEarningsCents / 100).toFixed(2)}
+                  </Text>
+                  <Text style={styles.earningsLabel}>{t("wallet.paidEndOfMonth")}</Text>
+                </View>
+              </View>
+            </LinearGradient>
+          </>
         )}
 
         {/* ── Transactions ─────────────────────────────────────────────────── */}
-        <SectionHeader icon="🧾" title={t("wallet.transactions")} />
+        <View style={styles.sectionRow}>
+          <SectionHeader iconName="receipt-outline" title={t("wallet.transactions")} />
+          <InfoButton
+            title={t("wallet.info.transactions.title")}
+            body={t("wallet.info.transactions.body")}
+          />
+        </View>
 
         {transactions.length === 0 ? (
           <View style={styles.emptyState}>
             <View style={styles.emptyIconWrap}>
-              <Text style={{fontSize: 24}}>🧾</Text>
+              <Ionicons name="receipt-outline" size={26} color={C.purpleLight} />
             </View>
             <Text style={styles.emptyTitle}>{t("wallet.noTransactions")}</Text>
             <Text style={styles.emptySubtext}>{t("wallet.noTransactionsSub")}</Text>
           </View>
         ) : (
-          transactions.map((tx) => (
-            <View key={tx.id} style={styles.txRow}>
-              <View style={[
-                styles.txIconWrap,
-                { backgroundColor: tx.type === "topup" ? "rgba(52, 211, 153, 0.77)" : "rgba(248, 113, 113, 0.77)" },
-              ]}>
-                <Text style={{fontSize: 14}}>{tx.type === "topup" ? "↑" : "↓"}</Text>
+          transactions.map((tx) => {
+            const isCredit = tx.type === "ride_earning" || tx.type === "monthly_payout";
+            const txTypeNames: Record<typeof tx.type, string> = {
+              ride_charge:    t("wallet.txRideCharge"),
+              ride_earning:   t("wallet.txRideEarning"),
+              monthly_charge: t("wallet.txMonthlyCharge"),
+              monthly_payout: t("wallet.txMonthlyPayout"),
+            };
+            return (
+              <View key={tx.id} style={styles.txRow}>
+                <View style={[
+                  styles.txIconWrap,
+                  { backgroundColor: isCredit ? "rgba(52,211,153,0.12)" : "rgba(248,113,113,0.12)", borderColor: isCredit ? "rgba(52,211,153,0.25)" : "rgba(248,113,113,0.25)" },
+                ]}>
+                  <Ionicons
+                    name={isCredit ? "arrow-up-outline" : "arrow-down-outline"}
+                    size={16}
+                    color={isCredit ? C.success : C.danger}
+                  />
+                </View>
+                <View style={styles.txInfo}>
+                  <Text style={styles.txDesc} numberOfLines={1}>{txTypeNames[tx.type]}</Text>
+                  <Text style={styles.txDate}>
+                    {new Date(tx.createdAt).toLocaleDateString(language === "fr" ? "fr-CA" : "en-CA", {
+                      month: "short", day: "numeric", year: "numeric",
+                    })}
+                  </Text>
+                </View>
+                <View style={styles.txRight}>
+                  <Text style={[styles.txAmount, { color: isCredit ? C.success : C.danger }]}>
+                    {isCredit ? "+" : "-"}${(tx.amount / 100).toFixed(2)}
+                  </Text>
+                  <StatusBadge
+                    status={tx.status}
+                    label={
+                      tx.status === "completed"
+                        ? t("wallet.statusCompleted")
+                        : tx.status === "failed"
+                        ? t("wallet.statusFailed")
+                        : t("wallet.statusPending")
+                    }
+                  />
+                </View>
               </View>
-              <View style={styles.txInfo}>
-                <Text style={styles.txDesc} numberOfLines={1}>{tx.description}</Text>
-                <Text style={styles.txDate}>
-                  {new Date(tx.createdAt).toLocaleDateString(language === "fr" ? "fr-CA" : "en-CA", {
-                    month: "short", day: "numeric", year: "numeric",
-                  })}
-                </Text>
-              </View>
-              <View style={styles.txRight}>
-                <Text style={[styles.txAmount, { color: tx.type === "topup" ? C.success : C.danger }]}>
-                  {tx.type === "topup" ? "+" : "-"}${(tx.amount / 100).toFixed(2)}
-                </Text>
-                <StatusBadge
-                  status={tx.status}
-                  label={
-                    tx.status === "completed"
-                      ? t("wallet.statusCompleted")
-                      : tx.status === "failed"
-                      ? t("wallet.statusFailed")
-                      : t("wallet.statusPending")
-                  }
-                />
-              </View>
-            </View>
-          ))
+            );
+          })
         )}
 
         <View style={{ height: 32 }} />
@@ -473,57 +399,49 @@ const styles = StyleSheet.create({
   container:        { flex: 1, backgroundColor: C.bg },
   content:          { paddingHorizontal: 16 },
 
-  // Balance card
-  balanceCard:     { margin: 16, borderRadius: 20, padding: 24, borderWidth: 1, borderColor: "rgba(255,255,255,0.08)" },
-  balanceHeader:   { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
-  balanceLabel:    { color: "rgba(255,255,255,0.7)", fontSize: 14, fontWeight: "600" },
-  balanceAmount:   { color: "#fff", fontSize: 42, fontWeight: "800", letterSpacing: -1 },
-  balanceSubtitle: { color: "rgba(255,255,255,0.5)", fontSize: 12, marginTop: 4 },
+  // Balance hero card
+  balanceCard:      { margin: 16, borderRadius: 24, padding: 24, borderWidth: 1, borderColor: C.border },
+  balanceHeader:    { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
+  balanceLabelRow:  { flexDirection: "row", alignItems: "center", gap: 8 },
+  balanceIconWrap:  { width: 30, height: 30, borderRadius: 8, backgroundColor: "rgba(137,56,213,0.15)", alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: C.border },
+  balanceLabel:     { color: "rgba(255,255,255,0.65)", fontSize: 13, fontWeight: "600" },
+  balanceAmount:    { color: "#fff", fontSize: 44, fontWeight: "800", letterSpacing: -1 },
+  balanceFooter:    { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 6 },
+  balanceSubtitle:  { color: "rgba(255,255,255,0.4)", fontSize: 12 },
 
-  // Action row
-  actionRow:         { flexDirection: "row", gap: 12, marginBottom: 4 },
-  actionBtnWrap:     { flex: 1, borderRadius: 14, overflow: "hidden" },
-  actionBtnDisabled: { opacity: 0.4 },
-  actionBtn:         { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14 },
-  actionBtnText:     { color: "#fff", fontWeight: "700", fontSize: 14 },
+  // Payment method
+  pmRow:      { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: "rgba(137,56,213,0.06)", borderRadius: 16, padding: 14, borderWidth: 1, borderColor: C.border },
+  pmIconWrap: { width: 42, height: 42, borderRadius: 12, backgroundColor: "rgba(137,56,213,0.12)", alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: C.border },
+  pmBrand:    { color: C.text, fontSize: 14, fontWeight: "700" },
+  pmLabel:    { color: C.muted, fontSize: 11, marginTop: 2 },
+  removeBtn:  { width: 34, height: 34, borderRadius: 10, backgroundColor: "rgba(248,113,113,0.1)", alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "rgba(248,113,113,0.2)" },
 
-  // Panel
-  panel:      { borderRadius: 16, padding: 16, marginTop: 12, borderWidth: 1, borderColor: C.border, gap: 12 },
-  panelTitle: { color: C.text, fontSize: 15, fontWeight: "700" },
+  addCardBtn:         { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: "rgba(137,56,213,0.06)", borderRadius: 16, padding: 16, borderWidth: 1, borderColor: C.border },
+  addCardIconGrad:    { width: 26, height: 26, borderRadius: 8, alignItems: "center", justifyContent: "center" },
+  addCardBtnText:     { color: C.purpleLight, fontSize: 14, fontWeight: "600" },
 
-  // Presets
-  presetRow:           { flexDirection: "row", gap: 8 },
-  presetChip:          { flex: 1, paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: C.border, alignItems: "center", backgroundColor: "rgba(255,255,255,0.04)" },
-  presetChipActive:    { backgroundColor: "rgba(137,56,213,0.25)", borderColor: C.purple },
-  presetChipText:      { color: C.muted, fontWeight: "600", fontSize: 14 },
-  presetChipTextActive:{ color: C.purpleLight },
-
-  // Input
-  inputWrapper:  { flexDirection: "row", alignItems: "center", backgroundColor: "rgba(255,255,255,0.04)", borderWidth: 1, borderColor: "rgba(255,255,255,0.09)", borderRadius: 10, paddingHorizontal: 12 },
-  inputCurrency: { color: C.muted, fontSize: 16, marginRight: 4 },
-  input:         { flex: 1, paddingVertical: 12, fontSize: 15, color: C.text },
-
-  // Primary button
-  primaryBtnWrap: { borderRadius: 12, overflow: "hidden" },
-  primaryBtn:     { paddingVertical: 14, alignItems: "center" },
-  primaryBtnText: { color: "#fff", fontWeight: "700", fontSize: 15 },
-  disabledBtn:    { opacity: 0.6 },
-
-  // Cashout note
-  cashoutNote: { color: C.dim, fontSize: 12, textAlign: "center" },
+  // Earnings card
+  earningsCard:    { borderRadius: 16, padding: 16, borderWidth: 1, borderColor: "rgba(52,211,153,0.20)" },
+  earningsRow:     { flexDirection: "row", alignItems: "center", gap: 14 },
+  earningsIconWrap: { width: 44, height: 44, borderRadius: 12, backgroundColor: "rgba(52,211,153,0.10)", alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "rgba(52,211,153,0.20)" },
+  earningsAmount:  { color: C.success, fontSize: 28, fontWeight: "800", letterSpacing: -0.5 },
+  earningsLabel:   { color: C.muted, fontSize: 12, marginTop: 3 },
 
   // Transactions
-  txRow:      { flexDirection: "row", alignItems: "center", paddingVertical: 12, paddingHorizontal: 14, backgroundColor: C.surface, borderRadius: 12, marginBottom: 7, borderWidth: 1, borderColor: C.borderFaint },
-  txIconWrap: { width: 36, height: 36, borderRadius: 10, alignItems: "center", justifyContent: "center", marginRight: 12 },
+  txRow:      { flexDirection: "row", alignItems: "center", paddingVertical: 12, paddingHorizontal: 14, backgroundColor: "rgba(137,56,213,0.04)", borderRadius: 14, marginBottom: 7, borderWidth: 1, borderColor: C.borderFaint },
+  txIconWrap: { width: 38, height: 38, borderRadius: 11, alignItems: "center", justifyContent: "center", marginRight: 12, borderWidth: 1 },
   txInfo:     { flex: 1 },
   txDesc:     { color: C.text, fontSize: 13, fontWeight: "600" },
   txDate:     { color: C.muted, fontSize: 11, marginTop: 2 },
   txRight:    { alignItems: "flex-end", gap: 4 },
   txAmount:   { fontSize: 14, fontWeight: "700" },
 
+  // Section row wrapper (header + info button)
+  sectionRow: { flexDirection: "row", alignItems: "center" },
+
   // Empty state
-  emptyState:    { alignItems: "center", paddingVertical: 28, backgroundColor: C.surface, borderRadius: 14, borderWidth: 1, borderColor: C.borderFaint, gap: 5 },
-  emptyIconWrap: { width: 52, height: 52, borderRadius: 14, backgroundColor: "rgba(137,56,213,0.1)", alignItems: "center", justifyContent: "center", marginBottom: 4, borderWidth: 1, borderColor: C.border },
+  emptyState:    { alignItems: "center", paddingVertical: 32, backgroundColor: "rgba(137,56,213,0.04)", borderRadius: 16, borderWidth: 1, borderColor: C.borderFaint, gap: 6 },
+  emptyIconWrap: { width: 56, height: 56, borderRadius: 16, backgroundColor: "rgba(137,56,213,0.10)", alignItems: "center", justifyContent: "center", marginBottom: 4, borderWidth: 1, borderColor: C.border },
   emptyTitle:    { color: C.text, fontSize: 14, fontWeight: "600" },
   emptySubtext:  { color: C.dim, fontSize: 12 },
 });

@@ -13,7 +13,20 @@
       "Bash(find C:/Users/hbari/desktop/unilift -name AuthContext* -o -name auth*context*)",
       "Bash(grep -r \"notification\\\\|messaging\\\\|expo-notification\" /c/Users/hbari/desktop/unilift --include=*.ts --include=*.tsx --include=*.js)",
       "Bash(cd:*)",
-      "Bash(head -200 /c/Users/hbari/Desktop/unilift/app/\\\\\\(tabs\\\\\\)/index.tsx)"
+      "Bash(head -200 /c/Users/hbari/Desktop/unilift/app/\\\\\\(tabs\\\\\\)/index.tsx)",
+      "Bash(xargs grep:*)",
+      "Bash(grep -E \"\\\\.\\(ts|tsx|js\\)$\")",
+      "WebFetch(domain:developer.monday.com)",
+      "WebSearch",
+      "Bash(git check-ignore *)",
+      "Read(//c/Users/hbari/AppData/Local/Temp/claude/c--Users-hbari-Desktop-unilift/ce872513-848e-4cf6-8909-9fbd89566a44/tasks/**)",
+      "Bash(grep -E \"\\\\.\\(tsx|ts\\)$\")",
+      "Bash(grep -E \"\\\\.\\(ts|tsx\\)$\")",
+      "Bash(dir \"c:\\\\Users\\\\hbari\\\\Desktop\\\\unilift\" -Name)",
+      "Bash(dir \"c:\\\\Users\\\\hbari\\\\Desktop\\\\unilift\\\\app\" -Name)",
+      "Bash(grep -A 10 \"app\\\\\\\\\\\\\\\\rideScreen.tsx\")",
+      "Bash(git stash *)",
+      "Bash(node -e \"const m=require\\('./node_modules/@expo/vector-icons/build/vendor/react-native-vector-icons/glyphmaps/FontAwesome5Free_meta.json'\\); const b=new Set\\(m.brands\\); ['facebook','facebook-f','instagram','tiktok','spotify'].forEach\\(k=>console.log\\(k, b.has\\(k\\)\\)\\);\")"
     ]
   }
 }

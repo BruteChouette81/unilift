@@ -1,5 +1,6 @@
 import { firestoreDocumentUrl } from "@/constants/runtime-config";
 import { useUserProfile } from "@/context/UserProfileContext";
+import { cancelRideAsDriver } from "@/services/rideServices";
 import type { StartRidePayload } from "@/types/models";
 import type { User } from "firebase/auth";
 import { useCallback } from "react";
@@ -25,7 +26,8 @@ export function useProfileRides({
   const startRide = useCallback(
     async (uid: string, data: StartRidePayload) => {
       const docPath =
-        firestoreDocumentUrl("rides", uid) + "?updateMask.fieldPaths=started";
+        firestoreDocumentUrl("rides", uid) +
+        "?updateMask.fieldPaths=started&updateMask.fieldPaths=status&updateMask.fieldPaths=startedAt";
       const token = await user?.getIdToken();
 
       const res = await fetch(docPath, {
@@ -37,6 +39,8 @@ export function useProfileRides({
         body: JSON.stringify({
           fields: {
             started: { booleanValue: true },
+            status: { stringValue: "started" },
+            startedAt: { timestampValue: new Date().toISOString() },
           },
         }),
       });
@@ -59,27 +63,12 @@ export function useProfileRides({
   );
 
   const cancelRide = useCallback(
-    async (uid: string) => {
-      const docPath = firestoreDocumentUrl("rides", uid);
-      const token = await user?.getIdToken();
-
-      const res = await fetch(docPath, {
-        method: "DELETE",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-      });
-
-      if (!res.ok) {
-        const errorText = await res.text();
-        throw new Error(`Failed to cancel ride: ${errorText}`);
-      }
-
-      alert("Ride cancelled!");
+    async (uid: string): Promise<number> => {
+      const feeApplied = await cancelRideAsDriver(uid);
       await refreshRides();
+      return feeApplied;
     },
-    [refreshRides, user],
+    [refreshRides],
   );
 
   return { startRide, cancelRide };

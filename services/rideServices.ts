@@ -1,18 +1,60 @@
 import {
+  CANCELLATION_FEES,
+  isWithinGraceWindow,
+} from "@/constants/cancellation";
+import {
+  apiFetch,
+  apiBaseUrl,
   firestoreBaseUrl,
   firestoreCollectionUrl,
   runtimeConfig,
   withFirebaseApiKey
 } from "@/constants/runtime-config";
+import { haversineKm } from "@/hooks/use-ride-recommendations";
 import type { JoinRequest, LocationPoint, Ride } from "@/types/models";
 import { getAuth } from "firebase/auth";
 
+export function createRideError(code: string, message: string): Error {
+  const err = new Error(message);
+  (err as Error & { code: string }).code = code;
+  return err;
+}
+
+async function assertCurrentUserHasPaymentMethod(): Promise<void> {
+  const user = getAuth().currentUser;
+  if (!user) throw createRideError("NOT_AUTHENTICATED", "Not authenticated");
+  const token = await user.getIdToken();
+  let res: Response;
+  try {
+    res = await apiFetch(`${apiBaseUrl}/wallet/setup`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({}),
+    });
+  } catch {
+    throw createRideError("WALLET_UNAVAILABLE", "Wallet service unavailable");
+  }
+  if (!res.ok) throw createRideError("WALLET_UNAVAILABLE", "Wallet service unavailable");
+  const data = await res.json().catch(() => null);
+  if (!data?.paymentMethod?.id) {
+    throw createRideError("NO_PAYMENT_METHOD", "NO_PAYMENT_METHOD");
+  }
+}
+
 const BASE_URL = firestoreCollectionUrl("rides");
 const USERS_BASE_URL = firestoreCollectionUrl("users");
-const RIDES_CACHE_TTL_MS = 3000;
+const RIDES_CACHE_TTL_MS = 30000;
 let ridesInFlight: Promise<Ride[]> | null = null;
 let cachedRides: Ride[] = [];
 let ridesFetchedAt = 0;
+
+// Throttle driver location writes to at most once every 5 seconds — the GPS
+// watcher fires more frequently but Firestore charges per write.
+let lastDriverLocationWriteAt = 0;
+const DRIVER_LOCATION_THROTTLE_MS = 5000;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -45,7 +87,6 @@ const parseRideFromFirestoreDocument = (doc: unknown): Ride | null => {
     isRecord(fields.seatsAvailable) ? fields.seatsAvailable.integerValue : 0,
     0,
   );
-  //console.log(seatsAvailable)
   const localisation = readGeoPoint(
     isRecord(fields.localisation) ? fields.localisation.geoPointValue : null,
   );
@@ -82,11 +123,15 @@ const parseRideFromFirestoreDocument = (doc: unknown): Ride | null => {
       if (isRecord(val) && isRecord(val.mapValue) && isRecord(val.mapValue.fields)) {
         const f = val.mapValue.fields as Record<string, unknown>;
         const loc = readGeoPoint(isRecord(f.location) ? f.location.geoPointValue : null);
+        const dropoff = readGeoPoint(isRecord(f.dropoff) ? f.dropoff.geoPointValue : null);
+        const dropoffLabel = readString(isRecord(f.dropoffLabel) ? f.dropoffLabel.stringValue : "", "");
         joinRequests[pid] = {
           passengerId: pid,
           location: loc ?? { latitude: 0, longitude: 0 },
           status: readString(isRecord(f.status) ? f.status.stringValue : "pending", "pending") as JoinRequest["status"],
           requestedAt: readString(isRecord(f.requestedAt) ? f.requestedAt.stringValue : "", ""),
+          ...(dropoff ? { dropoff } : {}),
+          ...(dropoffLabel ? { dropoffLabel } : {}),
         };
       }
     }
@@ -95,6 +140,35 @@ const parseRideFromFirestoreDocument = (doc: unknown): Ride | null => {
   // Parse driverLocation
   const driverLocation = readGeoPoint(
     isRecord(fields.driverLocation) ? fields.driverLocation.geoPointValue : null,
+  );
+
+  // Parse passengerPickups map
+  const passengerPickups: Record<string, { latitude: number; longitude: number }> = {};
+  if (isRecord(fields.passengerPickups) && isRecord(fields.passengerPickups.mapValue) && isRecord(fields.passengerPickups.mapValue.fields)) {
+    const ppFields = fields.passengerPickups.mapValue.fields as Record<string, unknown>;
+    for (const [uid, val] of Object.entries(ppFields)) {
+      if (isRecord(val)) {
+        const loc = readGeoPoint(val.geoPointValue);
+        if (loc) passengerPickups[uid] = loc;
+      }
+    }
+  }
+
+  // Parse passengerDropoffs map
+  const passengerDropoffs: Record<string, { latitude: number; longitude: number }> = {};
+  if (isRecord(fields.passengerDropoffs) && isRecord(fields.passengerDropoffs.mapValue) && isRecord(fields.passengerDropoffs.mapValue.fields)) {
+    const pdFields = fields.passengerDropoffs.mapValue.fields as Record<string, unknown>;
+    for (const [uid, val] of Object.entries(pdFields)) {
+      if (isRecord(val)) {
+        const loc = readGeoPoint(val.geoPointValue);
+        if (loc) passengerDropoffs[uid] = loc;
+      }
+    }
+  }
+
+  const departureAt = readString(
+    isRecord(fields.departureAt) ? fields.departureAt.timestampValue : "",
+    "",
   );
 
   // Parse pendingRatings
@@ -111,6 +185,22 @@ const parseRideFromFirestoreDocument = (doc: unknown): Ride | null => {
     isRecord(fields.ratingsSubmitted.arrayValue) &&
     Array.isArray(fields.ratingsSubmitted.arrayValue.values)
       ? fields.ratingsSubmitted.arrayValue.values
+      : [];
+
+  // Parse droppedPassengers
+  const droppedPassengersValues =
+    isRecord(fields.droppedPassengers) &&
+    isRecord(fields.droppedPassengers.arrayValue) &&
+    Array.isArray(fields.droppedPassengers.arrayValue.values)
+      ? fields.droppedPassengers.arrayValue.values
+      : [];
+
+  // Parse confirmedDropoffPassengers
+  const confirmedDropoffValues =
+    isRecord(fields.confirmedDropoffPassengers) &&
+    isRecord(fields.confirmedDropoffPassengers.arrayValue) &&
+    Array.isArray(fields.confirmedDropoffPassengers.arrayValue.values)
+      ? fields.confirmedDropoffPassengers.arrayValue.values
       : [];
 
   const driverName = readString(
@@ -135,16 +225,42 @@ const parseRideFromFirestoreDocument = (doc: unknown): Ride | null => {
       .filter(Boolean),
     localisation,
     started: isRecord(fields.started) ? Boolean(fields.started.booleanValue) : false,
+    startedAt: readString(isRecord(fields.startedAt) ? fields.startedAt.timestampValue : "", "") || undefined,
     status: readString(isRecord(fields.status) ? fields.status.stringValue : "planned", "planned"),
     boardedPassengers: boardedValues
       .map((v: unknown) => (isRecord(v) ? readString(v.stringValue, "") : ""))
       .filter(Boolean),
     joinRequests: Object.keys(joinRequests).length > 0 ? joinRequests : undefined,
     driverLocation: driverLocation ?? undefined,
+    passengerPickups: Object.keys(passengerPickups).length > 0 ? passengerPickups : undefined,
+    passengerDropoffs: Object.keys(passengerDropoffs).length > 0 ? passengerDropoffs : undefined,
+    departureAt: departureAt || undefined,
+    maxPickupRadiusKm: isRecord(fields.maxPickupRadiusKm)
+      ? readNumber(fields.maxPickupRadiusKm.integerValue, 0) || undefined
+      : undefined,
+    baseRouteKm: isRecord(fields.baseRouteKm)
+      ? (Number(fields.baseRouteKm.doubleValue) ||
+         Number(fields.baseRouteKm.integerValue) ||
+         undefined)
+      : undefined,
+    maxDetourKm: isRecord(fields.maxDetourKm)
+      ? (Number(fields.maxDetourKm.integerValue) ||
+         Number(fields.maxDetourKm.doubleValue) ||
+         undefined)
+      : undefined,
+    routePolyline: isRecord(fields.routePolyline)
+      ? readString(fields.routePolyline.stringValue, "") || undefined
+      : undefined,
     pendingRatings: pendingRatingsValues
       .map((v: unknown) => (isRecord(v) ? readString(v.stringValue, "") : ""))
       .filter(Boolean),
     ratingsSubmitted: ratingsSubmittedValues
+      .map((v: unknown) => (isRecord(v) ? readString(v.stringValue, "") : ""))
+      .filter(Boolean),
+    droppedPassengers: droppedPassengersValues
+      .map((v: unknown) => (isRecord(v) ? readString(v.stringValue, "") : ""))
+      .filter(Boolean),
+    confirmedDropoffPassengers: confirmedDropoffValues
       .map((v: unknown) => (isRecord(v) ? readString(v.stringValue, "") : ""))
       .filter(Boolean),
   };
@@ -180,10 +296,16 @@ export async function createRide(rideData: {
   geopoint: { latitude: number; longitude: number };
   destinationCoords: { lat: number | undefined; lng: number | undefined };
   started: boolean;
+  maxPickupRadiusKm?: number;
+  departureAt?: string;
+  routePolyline?: string;
+  maxDetourKm?: number;
+  baseRouteKm?: number;
 }) {
   const auth = getAuth();
   const user = auth.currentUser;
   if (!user) throw new Error("Not authenticated");
+  await assertCurrentUserHasPaymentMethod();
 
   // Fetch the driver's profile to embed name/avatar in the ride document
   let driverName = user.displayName || user.email?.split("@")[0] || "";
@@ -225,6 +347,21 @@ export async function createRide(rideData: {
 
       passengers: { arrayValue: { values: [] } },
       joinRequests: { mapValue: { fields: {} } },
+      ...(rideData.maxPickupRadiusKm !== undefined
+        ? { maxPickupRadiusKm: { integerValue: rideData.maxPickupRadiusKm } }
+        : {}),
+      ...(rideData.departureAt
+        ? { departureAt: { timestampValue: rideData.departureAt } }
+        : {}),
+      ...(rideData.routePolyline
+        ? { routePolyline: { stringValue: rideData.routePolyline } }
+        : {}),
+      ...(rideData.maxDetourKm !== undefined
+        ? { maxDetourKm: { integerValue: String(rideData.maxDetourKm) } }
+        : {}),
+      ...(rideData.baseRouteKm !== undefined && Number.isFinite(rideData.baseRouteKm)
+        ? { baseRouteKm: { doubleValue: rideData.baseRouteKm } }
+        : {}),
     },
   };
 
@@ -289,10 +426,11 @@ export function invalidateRidesCache() {
 }
 
 /** Accept (join) a ride */
-export async function acceptRide(rideId: string) {
+export async function acceptRide(rideId: string, seatsRequested: number = 1) {
   const auth = getAuth();
   const user = auth.currentUser;
   if (!user) throw new Error("Not authenticated");
+  await assertCurrentUserHasPaymentMethod();
 
   const getUrl = withFirebaseApiKey(`${BASE_URL}/${rideId}`);
   const patchUrl = withFirebaseApiKey(
@@ -320,7 +458,7 @@ export async function acceptRide(rideId: string) {
         arrayValue: { values: currentPassengers.map((id: string) => ({ stringValue: id })) },
       },
       seatsAvailable: {
-        integerValue: Number(rideData.fields.seatsAvailable.integerValue) - 1,
+        integerValue: Math.max(0, Number(rideData.fields.seatsAvailable.integerValue) - seatsRequested),
       },
     },
   };
@@ -346,37 +484,29 @@ export async function deleteRide(rideId: string) {
   invalidateRidesCache();
 }
 
-export async function geoCode(place:string) {
+export async function geoCode(place: string): Promise<{ latitude: number; longitude: number } | null> {
   try {
-    // Encode the place name so it can safely be used in a URL
-    const encodedPlace = encodeURIComponent(place);
+    const encoded = encodeURIComponent(place);
+    const url =
+      `https://maps.googleapis.com/maps/api/geocode/json` +
+      `?address=${encoded}&components=administrative_area:QC|country:CA&key=${runtimeConfig.googleMapsApiKey}`;
 
-    // Nominatim (OpenStreetMap) geocoding endpoint
-    const url = `https://nominatim.openstreetmap.org/search?q=${encodedPlace}&format=json&limit=1`;
-
-    const response = await fetch(url, {
-      headers: {
-        "User-Agent": "UniLift/1.0"  // Nominatim requires a user-agent
-      }
-    });
-
+    const response = await fetch(url);
     if (!response.ok) {
       throw new Error("Network response was not ok");
     }
 
     const data = await response.json();
-
-    if (data.length === 0) {
-      return null; // No results found
+    if (data.status !== "OK" || !Array.isArray(data.results) || data.results.length === 0) {
+      return null;
     }
 
-    // Extract latitude and longitude from the first result
-    const { lat, lon } = data[0];
+    const loc = data.results[0]?.geometry?.location;
+    if (!loc || typeof loc.lat !== "number" || typeof loc.lng !== "number") {
+      return null;
+    }
 
-    return {
-      latitude: Number(lat),
-      longitude: Number(lon)
-    };
+    return { latitude: loc.lat, longitude: loc.lng };
   } catch (error) {
     console.error("Error fetching coordinates:", error);
     return null;
@@ -387,36 +517,65 @@ export type LocationResult = {
   displayName: string;
   lat: string;
   lon: string;
+  placeId?: string;
 };
 
-const parseSuggestionItem = (item: unknown): LocationResult | null => {
-  if (!isRecord(item)) return null;
-  const displayName = readString(item.display_name, "");
-  const lat = readString(item.lat, "");
-  const lon = readString(item.lon, "");
-  if (!displayName || !lat || !lon) return null;
-  return { displayName, lat, lon };
-};
+async function getPlaceCoordinates(
+  placeId: string,
+  signal?: AbortSignal,
+): Promise<{ lat: string; lon: string } | null> {
+  try {
+    const url =
+      `https://maps.googleapis.com/maps/api/place/details/json` +
+      `?place_id=${encodeURIComponent(placeId)}&fields=geometry&key=${runtimeConfig.googleMapsApiKey}`;
+    const res = await fetch(url, { signal });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const loc = data?.result?.geometry?.location;
+    if (!loc || typeof loc.lat !== "number" || typeof loc.lng !== "number") return null;
+    return { lat: String(loc.lat), lon: String(loc.lng) };
+  } catch {
+    return null;
+  }
+}
 
 export async function geoSuggestion(
   place: string,
   signal?: AbortSignal,
 ): Promise<LocationResult[]> {
-  try {
+  try { //`&locationrestriction=rectangle:44.99,-79.76|62.59,-57.10` +
     const encoded = encodeURIComponent(place);
     const url =
-      `https://nominatim.openstreetmap.org/search` +
-      `?q=${encoded}&format=json&countrycodes=ca&viewbox=-79.8,62.6,-57.1,44.9&bounded=1&limit=5&addressdetails=1&accept-language=fr`
-    const response = await fetch(url, {
-      headers: { "User-Agent": "UniLift/1.0" },
-      signal,
-    });
+      `https://maps.googleapis.com/maps/api/place/autocomplete/json` +
+      `?input=${encoded}&components=country:ca` +
+      
+      `&language=fr&key=${runtimeConfig.googleMapsApiKey}`;
+
+    const response = await fetch(url, { signal });
     if (!response.ok) throw new Error("Network response was not ok");
-    const data = (await response.json()) as unknown;
-    if (!Array.isArray(data)) return [];
-    return data
-      .map((item) => parseSuggestionItem(item))
-      .filter((item): item is LocationResult => item !== null);
+    const data = await response.json();
+    if (data.status !== "OK" || !Array.isArray(data.predictions)) return [];
+
+    const predictions = data.predictions.slice(0, 5) as Array<{
+      description?: string;
+      place_id?: string;
+    }>;
+
+    const results = await Promise.all(
+      predictions.map(async (p): Promise<LocationResult | null> => {
+        if (!p.description || !p.place_id) return null;
+        const coords = await getPlaceCoordinates(p.place_id, signal);
+        if (!coords) return null;
+        return {
+          displayName: p.description,
+          lat: coords.lat,
+          lon: coords.lon,
+          placeId: p.place_id,
+        };
+      }),
+    );
+
+    return results.filter((r): r is LocationResult => r !== null);
   } catch (error: unknown) {
     if (error instanceof Error && error.name === "AbortError") return [];
     console.error("geoSuggestion error:", error);
@@ -431,8 +590,6 @@ export async function updateRatings(rideId: string, rating: number) {
   });
   if (!res.ok) await throwFetchError(res, "Failed to fetch ride for rating");
   const data = await res.json();
-  console.log(data)
-
   const driverId = data.fields.driverId.stringValue;
   //update driver's ratings in users collection
   const userUrl = withFirebaseApiKey(`${USERS_BASE_URL}/${driverId}`);
@@ -529,14 +686,63 @@ const rideDocPath = (rideId: string): string => {
   return `projects/${projectId}/databases/${dbId}/documents/rides/${rideId}`;
 };
 
+const userDocPath = (uid: string): string => {
+  const projectId = runtimeConfig.firebaseProjectId;
+  const dbId = encodeURIComponent(runtimeConfig.firestoreDatabaseId);
+  return `projects/${projectId}/databases/${dbId}/documents/users/${uid}`;
+};
+
+async function applyCancellationChargeToUser(
+  uid: string,
+  cents: number,
+): Promise<void> {
+  if (cents <= 0) return;
+  const user = getAuth().currentUser;
+  if (!user) return;
+  const token = await user.getIdToken();
+
+  const res = await fetch(withFirebaseApiKey(batchWriteUrl()), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      writes: [
+        {
+          transform: {
+            document: userDocPath(uid),
+            fieldTransforms: [
+              {
+                fieldPath: "pendingChargeCents",
+                increment: { integerValue: String(cents) },
+              },
+            ],
+          },
+        },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    console.warn(`Failed to apply cancellation charge to user ${uid}`);
+    return;
+  }
+
+}
+
 /** Request to join a ride (passenger sends request, driver must approve) */
 export async function requestToJoinRide(
   rideId: string,
   passengerLocation: LocationPoint,
+  seatsRequested: number = 1,
+  dropoff?: LocationPoint,
+  dropoffLabel?: string,
 ): Promise<void> {
   const auth = getAuth();
   const user = auth.currentUser;
   if (!user) throw new Error("Not authenticated");
+  await assertCurrentUserHasPaymentMethod();
 
   // Fetch current ride to validate
   const getUrl = withFirebaseApiKey(`${BASE_URL}/${rideId}`);
@@ -549,11 +755,28 @@ export async function requestToJoinRide(
   if (status !== "planned") throw new Error("This ride is no longer accepting requests.");
 
   const seats = Number(fields.seatsAvailable?.integerValue ?? 0);
-  if (seats <= 0) throw new Error("No seats available.");
+  if (seats < seatsRequested) throw new Error(`Not enough seats available (need ${seatsRequested}, have ${seats}).`);
 
   const passengers: string[] =
     fields.passengers?.arrayValue?.values?.map((v: any) => v.stringValue) ?? [];
   if (passengers.includes(user.uid)) throw new Error("You are already in this ride.");
+
+  // Check passenger is within the driver's max pickup radius
+  const maxPickupRadiusKm = Number(fields.maxPickupRadiusKm?.integerValue ?? 0);
+  if (maxPickupRadiusKm > 0) {
+    const driverLoc = isRecord(fields.localisation?.geoPointValue)
+      ? fields.localisation.geoPointValue as { latitude: number; longitude: number }
+      : null;
+    if (driverLoc) {
+      const distKm = haversineKm(
+        passengerLocation.latitude, passengerLocation.longitude,
+        driverLoc.latitude, driverLoc.longitude,
+      );
+      if (distKm > maxPickupRadiusKm) {
+        throw new Error(`You are too far from the driver's location (${Math.round(distKm * 10) / 10} km away, max ${maxPickupRadiusKm} km).`);
+      }
+    }
+  }
 
   // Check not already requested
   const existingRequest = fields.joinRequests?.mapValue?.fields?.[user.uid];
@@ -577,6 +800,18 @@ export async function requestToJoinRide(
           },
         },
         requestedAt: { stringValue: new Date().toISOString() },
+        seatsRequested: { integerValue: String(seatsRequested) },
+        ...(dropoff
+          ? {
+              dropoff: {
+                geoPointValue: {
+                  latitude: dropoff.latitude,
+                  longitude: dropoff.longitude,
+                },
+              },
+            }
+          : {}),
+        ...(dropoffLabel ? { dropoffLabel: { stringValue: dropoffLabel } } : {}),
       },
     },
   };
@@ -633,6 +868,9 @@ export async function respondToJoinRequest(
         status: { stringValue: accept ? "accepted" : "rejected" },
         location: existingEntry.location ?? { geoPointValue: { latitude: 0, longitude: 0 } },
         requestedAt: existingEntry.requestedAt ?? { stringValue: "" },
+        ...(existingEntry.seatsRequested ? { seatsRequested: existingEntry.seatsRequested } : {}),
+        ...(existingEntry.dropoff ? { dropoff: existingEntry.dropoff } : {}),
+        ...(existingEntry.dropoffLabel ? { dropoffLabel: existingEntry.dropoffLabel } : {}),
       },
     },
   };
@@ -656,7 +894,7 @@ export async function respondToJoinRequest(
     return;
   }
 
-  // Accept: add to passengers[], decrement seats, update joinRequest status
+  // Accept: add to passengers[], decrement seats by seatsRequested, update joinRequest status
   const currentPassengers: string[] =
     fields.passengers?.arrayValue?.values?.map((v: any) => v.stringValue) ?? [];
 
@@ -664,17 +902,40 @@ export async function respondToJoinRequest(
 
   currentPassengers.push(passengerId);
   const currentSeats = Number(fields.seatsAvailable?.integerValue ?? 0);
+  const seatsRequested = Number(existingEntry.seatsRequested?.integerValue ?? 1);
 
   const patchUrl = withFirebaseApiKey(
-    `${BASE_URL}/${rideId}?updateMask.fieldPaths=passengers&updateMask.fieldPaths=seatsAvailable&updateMask.fieldPaths=joinRequests`,
+    `${BASE_URL}/${rideId}?updateMask.fieldPaths=passengers&updateMask.fieldPaths=seatsAvailable&updateMask.fieldPaths=joinRequests&updateMask.fieldPaths=passengerSeats&updateMask.fieldPaths=passengerPickups&updateMask.fieldPaths=passengerDropoffs`,
   );
+
+  // Build passengerSeats map
+  const existingPS = fields.passengerSeats?.mapValue?.fields ?? {};
+  const mergedPS: Record<string, unknown> = { ...existingPS };
+  mergedPS[passengerId] = { integerValue: String(seatsRequested) };
+
+  // Build passengerPickups map — copy passenger's location from join request
+  const existingPP = fields.passengerPickups?.mapValue?.fields ?? {};
+  const mergedPP: Record<string, unknown> = { ...existingPP };
+  const passengerLoc = existingEntry.location ?? { geoPointValue: { latitude: 0, longitude: 0 } };
+  mergedPP[passengerId] = passengerLoc;
+
+  // Build passengerDropoffs map — copy dropoff from join request if present
+  const existingPD = fields.passengerDropoffs?.mapValue?.fields ?? {};
+  const mergedPD: Record<string, unknown> = { ...existingPD };
+  if (existingEntry.dropoff) {
+    mergedPD[passengerId] = existingEntry.dropoff;
+  }
+
   const updateDoc = {
     fields: {
       passengers: {
         arrayValue: { values: currentPassengers.map((id: string) => ({ stringValue: id })) },
       },
-      seatsAvailable: { integerValue: Math.max(0, currentSeats - 1) },
+      seatsAvailable: { integerValue: Math.max(0, currentSeats - seatsRequested) },
       joinRequests: { mapValue: { fields: mergedJR } },
+      passengerSeats: { mapValue: { fields: mergedPS } },
+      passengerPickups: { mapValue: { fields: mergedPP } },
+      passengerDropoffs: { mapValue: { fields: mergedPD } },
     },
   };
 
@@ -689,13 +950,45 @@ export async function respondToJoinRequest(
 
 /** Driver starts the ride — locks passengers, blocks new joins */
 export async function startRideService(rideId: string): Promise<void> {
+  const user = getAuth().currentUser;
+  if (!user) throw createRideError("NOT_AUTHENTICATED", "Not authenticated");
+
+  const getUrl = withFirebaseApiKey(`${BASE_URL}/${rideId}`);
+  const rideRes = await fetch(getUrl, { headers: await getAuthHeaders() });
+  if (!rideRes.ok) await throwFetchError(rideRes, "Failed to fetch ride");
+  const rideData = await rideRes.json();
+  const fields = rideData.fields ?? {};
+
+  const driverId = readString(isRecord(fields.driverId) ? fields.driverId.stringValue : "");
+  if (driverId !== user.uid) {
+    throw createRideError("NOT_RIDE_DRIVER", "NOT_RIDE_DRIVER");
+  }
+
+  const currentStatus = readString(
+    isRecord(fields.status) ? fields.status.stringValue : "planned",
+    "planned",
+  );
+  if (currentStatus === "started") throw createRideError("ALREADY_STARTED", "ALREADY_STARTED");
+  if (currentStatus === "completed") throw createRideError("ALREADY_COMPLETED", "ALREADY_COMPLETED");
+  if (currentStatus !== "planned") throw createRideError("ALREADY_STARTED", "ALREADY_STARTED");
+
+  const passengers: string[] =
+    (isRecord(fields.passengers) && isRecord(fields.passengers.arrayValue)
+      ? (fields.passengers.arrayValue.values as { stringValue?: string }[] | undefined)
+      : undefined
+    )?.map((v) => v.stringValue ?? "").filter(Boolean) ?? [];
+  if (passengers.length === 0) {
+    throw createRideError("NO_ACCEPTED_PASSENGERS", "NO_ACCEPTED_PASSENGERS");
+  }
+
   const patchUrl = withFirebaseApiKey(
-    `${BASE_URL}/${rideId}?updateMask.fieldPaths=status&updateMask.fieldPaths=started`,
+    `${BASE_URL}/${rideId}?updateMask.fieldPaths=status&updateMask.fieldPaths=started&updateMask.fieldPaths=startedAt`,
   );
   const updateDoc = {
     fields: {
       status: { stringValue: "started" },
       started: { booleanValue: true },
+      startedAt: { timestampValue: new Date().toISOString() },
     },
   };
   const res = await fetch(patchUrl, {
@@ -712,6 +1005,9 @@ export async function updateDriverLocation(
   rideId: string,
   location: LocationPoint,
 ): Promise<void> {
+  const now = Date.now();
+  if (now - lastDriverLocationWriteAt < DRIVER_LOCATION_THROTTLE_MS) return;
+  lastDriverLocationWriteAt = now;
   const patchUrl = withFirebaseApiKey(
     `${BASE_URL}/${rideId}?updateMask.fieldPaths=driverLocation`,
   );
@@ -725,13 +1021,21 @@ export async function updateDriverLocation(
       },
     },
   };
-  const res = await fetch(patchUrl, {
-    method: "PATCH",
-    headers: await getAuthHeaders(true),
-    body: JSON.stringify(updateDoc),
-  });
-  if (!res.ok) {
-    console.warn("Failed to update driver location");
+  // Fire-and-forget telemetry write: callers don't await this (it runs from the
+  // location watcher), so a transient network failure — e.g. the blip when
+  // returning from Google Maps — must be swallowed here, never thrown, or it
+  // surfaces as an uncaught promise rejection.
+  try {
+    const res = await fetch(patchUrl, {
+      method: "PATCH",
+      headers: await getAuthHeaders(true),
+      body: JSON.stringify(updateDoc),
+    });
+    if (!res.ok) {
+      console.warn("Failed to update driver location");
+    }
+  } catch (e) {
+    console.warn("Failed to update driver location (network)", e);
   }
 }
 
@@ -739,27 +1043,112 @@ export async function updateDriverLocation(
 export async function markRideCompleted(
   rideId: string,
   passengerIds: string[],
+  preservePendingRatings = false,
 ): Promise<void> {
+  // Verify the caller is actually the driver of this ride before writing.
+  const currentUser = getAuth().currentUser;
+  if (!currentUser) throw new Error("Not authenticated");
+
+  const rideCheckRes = await fetch(withFirebaseApiKey(`${BASE_URL}/${rideId}`), {
+    headers: await getAuthHeaders(),
+  });
+  if (!rideCheckRes.ok) throw new Error("Failed to verify ride ownership");
+  const rideCheckData = await rideCheckRes.json();
+  const rideDriverId: string = rideCheckData.fields?.driverId?.stringValue ?? "";
+  if (rideDriverId !== currentUser.uid) {
+    throw new Error("Only the driver can mark a ride as completed");
+  }
+
+  const fieldPaths = preservePendingRatings
+    ? ["status"]
+    : ["status", "pendingRatings", "ratingsSubmitted"];
   const patchUrl = withFirebaseApiKey(
-    `${BASE_URL}/${rideId}?updateMask.fieldPaths=status&updateMask.fieldPaths=pendingRatings&updateMask.fieldPaths=ratingsSubmitted`,
+    `${BASE_URL}/${rideId}?${fieldPaths.map((f) => `updateMask.fieldPaths=${f}`).join("&")}`,
   );
-  const updateDoc = {
-    fields: {
-      status: { stringValue: "completed" },
-      pendingRatings: {
-        arrayValue: {
-          values: passengerIds.map((id) => ({ stringValue: id })),
-        },
-      },
-      ratingsSubmitted: { arrayValue: { values: [] } },
-    },
+  const fields: Record<string, unknown> = {
+    status: { stringValue: "completed" },
   };
+  if (!preservePendingRatings) {
+    fields.pendingRatings = {
+      arrayValue: { values: passengerIds.map((id) => ({ stringValue: id })) },
+    };
+    fields.ratingsSubmitted = { arrayValue: { values: [] } };
+  }
   const res = await fetch(patchUrl, {
     method: "PATCH",
     headers: await getAuthHeaders(true),
-    body: JSON.stringify(updateDoc),
+    body: JSON.stringify({ fields }),
   });
   if (!res.ok) await throwFetchError(res, "Failed to mark ride completed");
+  invalidateRidesCache();
+}
+
+/** Driver marks a single passenger as dropped off; appends to droppedPassengers,
+ *  and (if confirmed) also to confirmedDropoffPassengers and pendingRatings. */
+export async function markPassengerDropped(
+  rideId: string,
+  passengerId: string,
+  isConfirmed: boolean,
+): Promise<void> {
+  const currentUser = getAuth().currentUser;
+  if (!currentUser) throw new Error("Not authenticated");
+
+  // Read current arrays so we can append client-side and PATCH the result.
+  // Plain PATCH with an explicit updateMask is the most rule-friendly path:
+  // the security rule's diff sees exactly the fields we list, no surprises
+  // from transform-only batchWrites.
+  const rideCheckRes = await fetch(withFirebaseApiKey(`${BASE_URL}/${rideId}`), {
+    headers: await getAuthHeaders(),
+  });
+  if (!rideCheckRes.ok) throw new Error("Failed to verify ride ownership");
+  const rideCheckData = await rideCheckRes.json();
+  const rideFields = rideCheckData.fields ?? {};
+
+  const rideDriverId: string = rideFields.driverId?.stringValue ?? "";
+  if (rideDriverId !== currentUser.uid) {
+    throw new Error("Only the driver can drop off passengers");
+  }
+
+  const readArr = (key: string): string[] =>
+    rideFields[key]?.arrayValue?.values?.map((v: { stringValue: string }) => v.stringValue) ?? [];
+
+  const dropped = readArr("droppedPassengers");
+  const confirmed = readArr("confirmedDropoffPassengers");
+  const pending = readArr("pendingRatings");
+
+  const nextDropped = dropped.includes(passengerId) ? dropped : [...dropped, passengerId];
+  const nextConfirmed = isConfirmed && !confirmed.includes(passengerId)
+    ? [...confirmed, passengerId]
+    : confirmed;
+  const nextPending = isConfirmed && !pending.includes(passengerId)
+    ? [...pending, passengerId]
+    : pending;
+
+  const toArrayValue = (arr: string[]) => ({
+    arrayValue: { values: arr.map((id) => ({ stringValue: id })) },
+  });
+
+  const fields: Record<string, unknown> = {
+    droppedPassengers: toArrayValue(nextDropped),
+  };
+  const updateMaskParts = ["droppedPassengers"];
+  if (isConfirmed) {
+    fields.confirmedDropoffPassengers = toArrayValue(nextConfirmed);
+    fields.pendingRatings = toArrayValue(nextPending);
+    updateMaskParts.push("confirmedDropoffPassengers", "pendingRatings");
+  }
+
+  const updateMask = updateMaskParts
+    .map((p) => `updateMask.fieldPaths=${p}`)
+    .join("&");
+  const patchUrl = withFirebaseApiKey(`${BASE_URL}/${rideId}?${updateMask}`);
+
+  const res = await fetch(patchUrl, {
+    method: "PATCH",
+    headers: await getAuthHeaders(true),
+    body: JSON.stringify({ fields }),
+  });
+  if (!res.ok) await throwFetchError(res, "Failed to mark passenger dropped");
   invalidateRidesCache();
 }
 
@@ -802,10 +1191,16 @@ export async function fetchRideById(rideId: string): Promise<Ride | null> {
 }
 
 /** Directly enroll in a future/scheduled ride (no driver approval needed) */
-export async function enrollInFutureRide(rideId: string): Promise<void> {
+export async function enrollInFutureRide(
+  rideId: string,
+  seatsRequested: number = 1,
+  passengerLocation?: LocationPoint,
+  dropoff?: LocationPoint,
+): Promise<void> {
   const auth = getAuth();
   const user = auth.currentUser;
   if (!user) throw new Error("Not authenticated");
+  await assertCurrentUserHasPaymentMethod();
 
   const getUrl = withFirebaseApiKey(`${BASE_URL}/${rideId}`);
   const rideRes = await fetch(getUrl, { headers: await getAuthHeaders() });
@@ -817,7 +1212,7 @@ export async function enrollInFutureRide(rideId: string): Promise<void> {
   if (status !== "planned") throw new Error("This ride is no longer available.");
 
   const seats = Number(fields.seatsAvailable?.integerValue ?? 0);
-  if (seats <= 0) throw new Error("No seats available.");
+  if (seats < seatsRequested) throw new Error(`Not enough seats available (need ${seatsRequested}, have ${seats}).`);
 
   const currentPassengers: string[] =
     fields.passengers?.arrayValue?.values?.map((v: any) => v.stringValue) ?? [];
@@ -825,15 +1220,47 @@ export async function enrollInFutureRide(rideId: string): Promise<void> {
 
   currentPassengers.push(user.uid);
 
+  // Build passengerSeats map
+  const existingPS = fields.passengerSeats?.mapValue?.fields ?? {};
+  const mergedPS: Record<string, unknown> = { ...existingPS };
+  mergedPS[user.uid] = { integerValue: String(seatsRequested) };
+
+  // Build passengerPickups map
+  const existingPP = fields.passengerPickups?.mapValue?.fields ?? {};
+  const mergedPP: Record<string, unknown> = { ...existingPP };
+  if (passengerLocation) {
+    mergedPP[user.uid] = {
+      geoPointValue: {
+        latitude: passengerLocation.latitude,
+        longitude: passengerLocation.longitude,
+      },
+    };
+  }
+
+  // Build passengerDropoffs map
+  const existingPD = fields.passengerDropoffs?.mapValue?.fields ?? {};
+  const mergedPD: Record<string, unknown> = { ...existingPD };
+  if (dropoff) {
+    mergedPD[user.uid] = {
+      geoPointValue: {
+        latitude: dropoff.latitude,
+        longitude: dropoff.longitude,
+      },
+    };
+  }
+
   const patchUrl = withFirebaseApiKey(
-    `${BASE_URL}/${rideId}?updateMask.fieldPaths=passengers&updateMask.fieldPaths=seatsAvailable`,
+    `${BASE_URL}/${rideId}?updateMask.fieldPaths=passengers&updateMask.fieldPaths=seatsAvailable&updateMask.fieldPaths=passengerSeats&updateMask.fieldPaths=passengerPickups&updateMask.fieldPaths=passengerDropoffs`,
   );
   const updateDoc = {
     fields: {
       passengers: {
         arrayValue: { values: currentPassengers.map((id: string) => ({ stringValue: id })) },
       },
-      seatsAvailable: { integerValue: Math.max(0, seats - 1) },
+      seatsAvailable: { integerValue: Math.max(0, seats - seatsRequested) },
+      passengerSeats: { mapValue: { fields: mergedPS } },
+      passengerPickups: { mapValue: { fields: mergedPP } },
+      passengerDropoffs: { mapValue: { fields: mergedPD } },
     },
   };
 
@@ -846,8 +1273,57 @@ export async function enrollInFutureRide(rideId: string): Promise<void> {
   invalidateRidesCache();
 }
 
-/** Cancel a pending join request (passenger cancels their own request) */
-export async function cancelJoinRequest(rideId: string): Promise<void> {
+/** Mark an expired planned ride — clears passengers and sets status to "expired".
+ *  For abandoned started rides, call cleanupAbandonedStartedRide instead. */
+export async function cleanupExpiredRide(rideId: string): Promise<void> {
+  const patchUrl = withFirebaseApiKey(
+    `${BASE_URL}/${rideId}?updateMask.fieldPaths=status&updateMask.fieldPaths=passengers&updateMask.fieldPaths=joinRequests`,
+  );
+  const updateDoc = {
+    fields: {
+      status: { stringValue: "expired" },
+      passengers: { arrayValue: {} },
+      joinRequests: { mapValue: { fields: {} } },
+    },
+  };
+  const res = await fetch(patchUrl, {
+    method: "PATCH",
+    headers: await getAuthHeaders(true),
+    body: JSON.stringify(updateDoc),
+  });
+  if (!res.ok) {
+    console.warn(`Failed to cleanup expired ride ${rideId}`);
+  }
+  invalidateRidesCache();
+}
+
+/** Mark a started ride that's been abandoned (>3h without completion) as expired.
+ *  Preserves passengers list for history / future payment reconciliation. */
+export async function cleanupAbandonedStartedRide(rideId: string): Promise<void> {
+  const patchUrl = withFirebaseApiKey(
+    `${BASE_URL}/${rideId}?updateMask.fieldPaths=status`,
+  );
+  const updateDoc = {
+    fields: {
+      status: { stringValue: "expired" },
+    },
+  };
+  const res = await fetch(patchUrl, {
+    method: "PATCH",
+    headers: await getAuthHeaders(true),
+    body: JSON.stringify(updateDoc),
+  });
+  if (!res.ok) {
+    console.warn(`Failed to cleanup abandoned started ride ${rideId}`);
+  }
+  invalidateRidesCache();
+}
+
+/** Cancel a pending join request (passenger cancels their own request).
+ *  Applies `passengerCancelCents` to the user's pendingChargeCents unless
+ *  they're still inside the grace window since they requested.
+ *  Returns the fee applied (0 if within grace). */
+export async function cancelJoinRequest(rideId: string): Promise<number> {
   const auth = getAuth();
   const user = auth.currentUser;
   if (!user) throw new Error("Not authenticated");
@@ -858,6 +1334,15 @@ export async function cancelJoinRequest(rideId: string): Promise<void> {
   if (!rideRes.ok) await throwFetchError(rideRes, "Failed to fetch ride");
   const rideData = await rideRes.json();
   const existingJR = rideData.fields?.joinRequests?.mapValue?.fields ?? {};
+  const existingEntry = (existingJR as Record<string, any>)[user.uid]?.mapValue?.fields ?? {};
+  const requestedAt = readString(
+    isRecord(existingEntry.requestedAt) ? existingEntry.requestedAt.stringValue : "",
+    "",
+  );
+  const prevStatus = readString(
+    isRecord(existingEntry.status) ? existingEntry.status.stringValue : "",
+    "",
+  );
 
   const mergedJR: Record<string, unknown> = { ...existingJR };
   mergedJR[user.uid] = {
@@ -884,4 +1369,129 @@ export async function cancelJoinRequest(rideId: string): Promise<void> {
     body: JSON.stringify(updateDoc),
   });
   if (!res.ok) await throwFetchError(res, "Failed to cancel request");
+  invalidateRidesCache();
+
+  // Only charge if passenger was actually pending/accepted AND outside grace.
+  const shouldCharge =
+    (prevStatus === "pending" || prevStatus === "accepted") &&
+    !isWithinGraceWindow(requestedAt);
+  if (!shouldCharge) return 0;
+
+  await applyCancellationChargeToUser(
+    user.uid,
+    CANCELLATION_FEES.passengerCancelCents,
+  );
+  return CANCELLATION_FEES.passengerCancelCents;
+}
+
+/** Passenger quits an accepted ride — removes them from passengers[] and applies fee. */
+export async function quitRide(rideId: string): Promise<number> {
+  const auth = getAuth();
+  const user = auth.currentUser;
+  if (!user) throw new Error("Not authenticated");
+
+  const getUrl = withFirebaseApiKey(`${BASE_URL}/${rideId}`);
+  const rideRes = await fetch(getUrl, { headers: await getAuthHeaders() });
+  if (!rideRes.ok) await throwFetchError(rideRes, "Failed to fetch ride");
+  const rideData = await rideRes.json();
+  const fields = rideData.fields ?? {};
+
+  const currentPassengers: string[] =
+    fields.passengers?.arrayValue?.values?.map((v: any) => v.stringValue) ?? [];
+  if (!currentPassengers.includes(user.uid)) return 0;
+
+  const remaining = currentPassengers.filter((id) => id !== user.uid);
+
+  const existingPS = fields.passengerSeats?.mapValue?.fields ?? {};
+  const seatsFreed = Number(
+    existingPS[user.uid]?.integerValue ?? 1,
+  );
+  const currentSeats = Number(fields.seatsAvailable?.integerValue ?? 0);
+
+  const mergedPS: Record<string, unknown> = { ...existingPS };
+  delete mergedPS[user.uid];
+
+  const existingPP = fields.passengerPickups?.mapValue?.fields ?? {};
+  const mergedPP: Record<string, unknown> = { ...existingPP };
+  delete mergedPP[user.uid];
+
+  const existingPD = fields.passengerDropoffs?.mapValue?.fields ?? {};
+  const mergedPD: Record<string, unknown> = { ...existingPD };
+  delete mergedPD[user.uid];
+
+  const patchUrl = withFirebaseApiKey(
+    `${BASE_URL}/${rideId}?updateMask.fieldPaths=passengers&updateMask.fieldPaths=seatsAvailable&updateMask.fieldPaths=passengerSeats&updateMask.fieldPaths=passengerPickups&updateMask.fieldPaths=passengerDropoffs`,
+  );
+  const updateDoc = {
+    fields: {
+      passengers: {
+        arrayValue: { values: remaining.map((id: string) => ({ stringValue: id })) },
+      },
+      seatsAvailable: { integerValue: String(currentSeats + seatsFreed) },
+      passengerSeats: { mapValue: { fields: mergedPS } },
+      passengerPickups: { mapValue: { fields: mergedPP } },
+      passengerDropoffs: { mapValue: { fields: mergedPD } },
+    },
+  };
+  const res = await fetch(patchUrl, {
+    method: "PATCH",
+    headers: await getAuthHeaders(true),
+    body: JSON.stringify(updateDoc),
+  });
+  if (!res.ok) await throwFetchError(res, "Failed to quit ride");
+  invalidateRidesCache();
+
+  // Past grace — quitting an accepted ride always charges.
+  await applyCancellationChargeToUser(
+    user.uid,
+    CANCELLATION_FEES.passengerCancelCents,
+  );
+  return CANCELLATION_FEES.passengerCancelCents;
+}
+
+/** Driver cancels their own ride — deletes it and applies driver fee unless
+ *  still inside the grace window after creation. Returns the fee applied. */
+export async function cancelRideAsDriver(rideId: string): Promise<number> {
+  const auth = getAuth();
+  const user = auth.currentUser;
+  if (!user) throw new Error("Not authenticated");
+
+  const getUrl = withFirebaseApiKey(`${BASE_URL}/${rideId}`);
+  const rideRes = await fetch(getUrl, { headers: await getAuthHeaders() });
+  if (!rideRes.ok) await throwFetchError(rideRes, "Failed to fetch ride");
+  const rideData = await rideRes.json();
+  const fields = rideData.fields ?? {};
+
+  if (readString(isRecord(fields.driverId) ? fields.driverId.stringValue : "") !== user.uid) {
+    throw new Error("Only the driver can cancel this ride.");
+  }
+
+  const createdAt = readString(rideData.createTime, "");
+
+  // Mark as cancelled — Firestore rules block hard deletes from the client.
+  const patchUrl = withFirebaseApiKey(
+    `${BASE_URL}/${rideId}?updateMask.fieldPaths=status&updateMask.fieldPaths=passengers&updateMask.fieldPaths=joinRequests`,
+  );
+  const patchRes = await fetch(patchUrl, {
+    method: "PATCH",
+    headers: await getAuthHeaders(true),
+    body: JSON.stringify({
+      fields: {
+        status: { stringValue: "cancelled" },
+        passengers: { arrayValue: {} },
+        joinRequests: { mapValue: { fields: {} } },
+      },
+    }),
+  });
+  if (!patchRes.ok) await throwFetchError(patchRes, "Failed to cancel ride");
+  invalidateRidesCache();
+
+  const shouldCharge = !isWithinGraceWindow(createdAt);
+  if (!shouldCharge) return 0;
+
+  await applyCancellationChargeToUser(
+    user.uid,
+    CANCELLATION_FEES.driverCancelCents,
+  );
+  return CANCELLATION_FEES.driverCancelCents;
 }

@@ -1,5 +1,5 @@
-import React, { useCallback, useMemo } from "react";
-import { FlatList, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import React, { useCallback, useMemo, useState } from "react";
+import { FlatList, StyleSheet, Text, View, Pressable } from "react-native";
 import type { Ride } from "@/types/models";
 import { useLanguage } from "@/context/LanguageContext";
 import type { Language } from "@/constants/translations";
@@ -24,7 +24,6 @@ const C = {
 type PassengerRidesListProps = {
   rides: Ride[];
   userId: string;
-  onEnterRide: (ride: Ride) => void;
 };
 
 function formatDate(iso: string, language: Language): { weekday: string; date: string; time: string } {
@@ -37,33 +36,43 @@ function formatDate(iso: string, language: Language): { weekday: string; date: s
   };
 }
 
-export function PassengerRidesList({ rides, userId, onEnterRide }: PassengerRidesListProps) {
+export function PassengerRidesList({ rides, userId }: PassengerRidesListProps) {
   const { t, language } = useLanguage();
+  const [expanded, setExpanded] = useState(false);
 
   const passengerRides = useMemo(
     () =>
-      rides.filter(
-        (ride) =>
-          ride.passengers.includes(userId) &&
-          ride.driverId !== userId &&
-          ride.status !== "completed",
-      ),
+      rides
+        .filter(
+          (ride) =>
+            ride.passengers.includes(userId) &&
+            ride.driverId !== userId &&
+            ride.status === "completed",
+        )
+        .sort((a, b) => {
+          const dateA = a.date ?? a.startedAt ?? "";
+          const dateB = b.date ?? b.startedAt ?? "";
+          return dateB.localeCompare(dateA);
+        }),
     [rides, userId],
   );
+
+  const displayedRides = expanded ? passengerRides : passengerRides.slice(0, 3);
 
   const keyExtractor = useCallback((item: Ride) => item.id, []);
 
   const renderItem = useCallback(
     ({ item, index }: { item: Ride; index: number }) => {
       const formatted = item.date ? formatDate(item.date, language) : null;
-      const isStarted = item.status === "started";
       const isFirst = index === 0;
+      const passengerCount = item.passengers?.length ?? 0;
+      const totalSeats = passengerCount + item.seatsAvailable;
 
       return (
         <View style={styles.row}>
           {/* Timeline dot */}
           <View style={styles.timeline}>
-            <View style={[styles.dot, isStarted && styles.dotActive]} />
+            <View style={[styles.dot, styles.dotCompleted]} />
             <View style={styles.line} />
           </View>
 
@@ -82,16 +91,9 @@ export function PassengerRidesList({ rides, userId, onEnterRide }: PassengerRide
                 )}
               </View>
 
-              {isStarted ? (
-                <View style={styles.startedBadge}>
-                  <View style={styles.startedDot} />
-                  <Text style={styles.startedBadgeText}>{t("rides.rideStarted")}</Text>
-                </View>
-              ) : (
-                <View style={styles.waitingBadge}>
-                  <Text style={styles.waitingBadgeText}>{t("rides.waitingToStart")}</Text>
-                </View>
-              )}
+              <View style={styles.completedBadge}>
+                <Text style={styles.completedBadgeText}>{t("rides.rideCompleted")}</Text>
+              </View>
             </View>
 
             {/* Destination */}
@@ -119,27 +121,15 @@ export function PassengerRidesList({ rides, userId, onEnterRide }: PassengerRide
               <View style={styles.metaChip}>
                 <Text style={{ fontSize: 10 }}>👥</Text>
                 <Text style={styles.metaText}>
-                  {t("rides.seatsLeft", { count: item.seatsAvailable })}
+                  {t("rides.passengersCount", { current: passengerCount, total: totalSeats })}
                 </Text>
               </View>
             </View>
-
-            {/* Enter Ride button — only when started */}
-            {isStarted && (
-              <TouchableOpacity
-                style={styles.enterBtn}
-                onPress={() => onEnterRide(item)}
-                activeOpacity={0.8}
-              >
-                <Text style={{ fontSize: 12 }}>▶</Text>
-                <Text style={styles.enterBtnText}>{t("rides.enterRide")}</Text>
-              </TouchableOpacity>
-            )}
           </View>
         </View>
       );
     },
-    [onEnterRide, t, language],
+    [t, language],
   );
 
   if (passengerRides.length === 0) {
@@ -155,17 +145,29 @@ export function PassengerRidesList({ rides, userId, onEnterRide }: PassengerRide
   }
 
   return (
-    <FlatList
-      data={passengerRides}
-      keyExtractor={keyExtractor}
-      renderItem={renderItem}
-      contentContainerStyle={{ paddingBottom: 24 }}
-      scrollEnabled={false}
-      removeClippedSubviews
-      initialNumToRender={4}
-      maxToRenderPerBatch={8}
-      windowSize={5}
-    />
+    <View>
+      <FlatList
+        data={displayedRides}
+        keyExtractor={keyExtractor}
+        renderItem={renderItem}
+        contentContainerStyle={{ paddingBottom: 24 }}
+        scrollEnabled={false}
+        removeClippedSubviews
+        initialNumToRender={4}
+        maxToRenderPerBatch={8}
+        windowSize={5}
+      />
+      {passengerRides.length > 3 && !expanded && (
+        <Pressable
+          onPress={() => setExpanded(true)}
+          style={styles.seeMoreBtn}
+        >
+          <Text style={styles.seeMoreText}>
+            {t("rides.seeMore", { count: passengerRides.length - 3 })}
+          </Text>
+        </Pressable>
+      )}
+    </View>
   );
 }
 
@@ -192,6 +194,10 @@ const styles = StyleSheet.create({
   dotActive: {
     backgroundColor: C.green,
     borderColor: C.greenFaint,
+  },
+  dotCompleted: {
+    backgroundColor: C.purple,
+    borderColor: C.purpleFaint,
   },
   line: {
     flex: 1,
@@ -237,38 +243,16 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700",
   },
-  startedBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    backgroundColor: C.greenFaint,
+  completedBadge: {
+    backgroundColor: C.purpleFaint,
     borderRadius: 20,
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderWidth: 1,
-    borderColor: "rgba(16,185,129,0.25)",
+    borderColor: C.border,
   },
-  startedDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: C.green,
-  },
-  startedBadgeText: {
-    color: C.green,
-    fontSize: 11,
-    fontWeight: "700",
-  },
-  waitingBadge: {
-    backgroundColor: "rgba(251,191,36,0.08)",
-    borderRadius: 20,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderWidth: 1,
-    borderColor: "rgba(251,191,36,0.25)",
-  },
-  waitingBadgeText: {
-    color: C.gold,
+  completedBadgeText: {
+    color: C.purpleLight,
     fontSize: 11,
     fontWeight: "600",
   },
@@ -316,25 +300,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
   },
 
-  // ── Enter button ─────────────────────────────────────────────────────────
-  enterBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    backgroundColor: C.greenFaint,
-    borderWidth: 1,
-    borderColor: "rgba(16,185,129,0.3)",
-    borderRadius: 9,
-    paddingVertical: 9,
-    marginTop: 2,
-  },
-  enterBtnText: {
-    color: C.green,
-    fontSize: 13,
-    fontWeight: "700",
-  },
-
   // ── Empty state ──────────────────────────────────────────────────────────
   empty: {
     alignItems: "center",
@@ -360,5 +325,23 @@ const styles = StyleSheet.create({
   emptySubtext: {
     color: C.dim,
     fontSize: 13,
+  },
+
+  // ── See More Button ──────────────────────────────────────────────────────
+  seeMoreBtn: {
+    alignItems: "center",
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    marginHorizontal: 28,
+    marginBottom: 24,
+    backgroundColor: C.purpleFaint,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  seeMoreText: {
+    color: C.purpleLight,
+    fontSize: 13,
+    fontWeight: "600",
   },
 });

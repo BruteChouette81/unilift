@@ -1,9 +1,11 @@
 import { firestoreDocumentUrl } from "@/constants/runtime-config";
 import type { FavoriteRoute as FavoriteRouteFormData } from "@/components/favoriteForm";
 import { useUserProfile } from "@/context/UserProfileContext";
+import { geoSuggestion, type LocationResult } from "@/services/rideServices";
 import type { FavoriteRoute, UserProfile } from "@/types/models";
 import type { User } from "firebase/auth";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 
 type Params = {
   user: User | null;
@@ -23,7 +25,41 @@ export function useProfileFavorites({ user, userData }: Params) {
   const [modifyFavorite, setModifyFavorite] = useState(false);
   const [initialData, setInitialData] = useState<FavoriteRouteFormData | undefined>(undefined);
   const [homeAddress, setHomeAddress] = useState("");
+  const [homeAddressCoords, setHomeAddressCoords] = useState<{ latitude: number; longitude: number } | null>(null);
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
+
+  // ── Home address suggestions ──────────────────────────────────────────────
+  const [homeSuggestions, setHomeSuggestions] = useState<LocationResult[]>([]);
+  const [showHomeSuggestions, setShowHomeSuggestions] = useState(false);
+  const suppressHomeSuggestionsRef = useRef(false);
+  const debouncedHomeAddress = useDebouncedValue(homeAddress, 700);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (suppressHomeSuggestionsRef.current) { suppressHomeSuggestionsRef.current = false; return; }
+      if (debouncedHomeAddress.length < 3) { setShowHomeSuggestions(false); return; }
+      const results = await geoSuggestion(debouncedHomeAddress.trim());
+      if (cancelled) return;
+      setHomeSuggestions(results ?? []);
+      setShowHomeSuggestions((results?.length ?? 0) > 0);
+    };
+    void run();
+    return () => { cancelled = true; };
+  }, [debouncedHomeAddress]);
+
+  const onHomeAddressChange = useCallback((text: string) => {
+    suppressHomeSuggestionsRef.current = false;
+    setHomeAddress(text);
+    setHomeAddressCoords(null);
+  }, []);
+
+  const onSelectHomeSuggestion = useCallback((item: LocationResult) => {
+    suppressHomeSuggestionsRef.current = true;
+    setHomeAddress(item.displayName);
+    setHomeAddressCoords({ latitude: parseFloat(item.lat), longitude: parseFloat(item.lon) });
+    setShowHomeSuggestions(false);
+  }, []);
 
   const toFavoriteRoutes = (records: FavoriteGeoRecord[]): FavoriteRoute[] =>
     records.map((r) => ({
@@ -137,9 +173,22 @@ export function useProfileFavorites({ user, userData }: Params) {
     if (!user) return;
     try {
       const token = await user.getIdToken();
-      const docPath =
-        firestoreDocumentUrl("users", user.uid) +
-        "?updateMask.fieldPaths=homeAddress";
+
+      const fieldPaths = ["homeAddress", "homeAddressCoords"];
+      const mask = fieldPaths.map((f) => `updateMask.fieldPaths=${f}`).join("&");
+      const docPath = `${firestoreDocumentUrl("users", user.uid)}?${mask}`;
+
+      const fields: Record<string, unknown> = {
+        homeAddress: { stringValue: homeAddress },
+      };
+      if (homeAddressCoords) {
+        fields.homeAddressCoords = {
+          geoPointValue: {
+            latitude: homeAddressCoords.latitude,
+            longitude: homeAddressCoords.longitude,
+          },
+        };
+      }
 
       const res = await fetch(docPath, {
         method: "PATCH",
@@ -147,11 +196,7 @@ export function useProfileFavorites({ user, userData }: Params) {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({
-          fields: {
-            homeAddress: { stringValue: homeAddress },
-          },
-        }),
+        body: JSON.stringify({ fields }),
       });
 
       if (!res.ok) {
@@ -160,10 +205,11 @@ export function useProfileFavorites({ user, userData }: Params) {
       }
 
       alert("Updated your home address!");
+      updateUserData({ homeAddress, homeAddressCoords });
       setHomeAddress("");
-      updateUserData({ homeAddress });
+      setHomeAddressCoords(null);
     } catch (error: unknown) {
-      console.error("❌ Error uploading user data:", error);
+      console.error("Error uploading user data:", error);
       setErrors({
         startAddress:
           error instanceof Error ? error.message : "Failed to update home address",
@@ -177,7 +223,10 @@ export function useProfileFavorites({ user, userData }: Params) {
     initialData,
     setInitialData,
     homeAddress,
-    setHomeAddress,
+    onHomeAddressChange,
+    onSelectHomeSuggestion,
+    homeSuggestions,
+    showHomeSuggestions,
     errors,
     handleNewHomeAddress,
     handleFavoriteSubmit,

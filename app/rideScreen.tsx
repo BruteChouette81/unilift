@@ -8,21 +8,15 @@
 import { UserRideMapView } from '@/components/mapview';
 import QrScanner from '@/components/QrScanner';
 import RatingScreen from '@/components/ratings';
+import { CANCELLATION_FEES } from "@/constants/cancellation";
+import { formatCentsAsDollars } from "@/constants/pricing";
+import { calculateAgeFromBirthDate } from '@/components/userHelper';
 import { useActiveRide } from '@/context/ActiveRideContext';
 import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
+import { BlurView } from 'expo-blur';
+import { Image as ExpoImage } from 'expo-image';
 import { useAdaptivePolling } from '@/hooks/use-adaptive-polling';
-import { useKeepAwake } from 'expo-keep-awake';
-import { LinearGradient } from 'expo-linear-gradient';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import {
-  firestoreDocumentUrl,
-  withFirebaseApiKey,
-} from "@/constants/runtime-config";
 import { validateAndBoardPassenger } from '@/services/paymentService';
 import {
   cancelJoinRequest,
@@ -31,6 +25,14 @@ import {
   updateRatings,
   updateXP,
 } from '@/services/rideServices';
+import { fetchUserDocument } from '@/services/userService';
+import { useKeepAwake } from 'expo-keep-awake';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { getAuth } from 'firebase/auth';
+import { StatusBar } from 'expo-status-bar';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const C = {
   bg: "#080810", surface: "#0f0f1e", surfaceAlt: "#13132a",
@@ -39,8 +41,6 @@ const C = {
   danger: "#f87171", gold: "#fbbf24", success: "#34d399",
   border: "rgba(137, 56, 213, 0.22)", borderFaint: "rgba(255, 255, 255, 0.06)",
 };
-const BUTTON_GRADIENT = ["#FD165A", "#8938D5"] as const;
-const BANNER_GRADIENT = ["#2d0015", "#1c0038"] as const;
 
 type RideParams = {
   rideId: string;
@@ -57,18 +57,245 @@ const toSafeNumber = (value: string, fallback = 0): number => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+type DriverProfile = {
+  uid: string;
+  name: string;
+  xp: number;
+  rating: number;
+  avatar: string | null;
+  ridesCompleted: number;
+  school?: string;
+  age?: number;
+  instagramHandle?: string;
+};
+
+function extractDriverProfile(uid: string, doc: { fields?: Record<string, unknown> }): DriverProfile {
+  const fields = doc?.fields ?? {};
+  const str = (key: string): string => {
+    const v = fields[key] as Record<string, unknown> | undefined;
+    return typeof v?.stringValue === "string" ? v.stringValue : "";
+  };
+  const num = (key: string): number => {
+    const v = fields[key] as Record<string, unknown> | undefined;
+    return Number(v?.integerValue ?? v?.doubleValue ?? 0);
+  };
+  const email = str("email");
+  const name = str("name") || email.split("@")[0] || "Driver";
+  const birthDate = str("birthDate");
+  const storedAge = num("age");
+  const age = birthDate ? calculateAgeFromBirthDate(birthDate) : (storedAge > 0 ? storedAge : undefined);
+  return {
+    uid,
+    name,
+    xp: num("xp"),
+    rating: num("rating"),
+    avatar: str("avatar") || null,
+    ridesCompleted: num("ridesCompleted"),
+    school: str("school") || undefined,
+    age: typeof age === "number" && age > 0 ? age : undefined,
+    instagramHandle: str("instagramHandle") || undefined,
+  };
+}
+
 type PassengerState = "pending" | "accepted" | "rejected" | "started" | "boarded" | "completed";
 
+type TFn = (key: string, params?: any) => string;
+
+function getStatusInfo(passengerState: PassengerState, t: TFn): { label: string; color: string; icon: string } {
+  switch (passengerState) {
+    case "pending":
+      return { label: t("passengerRide.statusPending"), color: C.gold, icon: "⏱" };
+    case "accepted":
+      return { label: t("passengerRide.statusAccepted"), color: C.success, icon: "✅" };
+    case "started":
+      return { label: t("passengerRide.statusStarted"), color: C.purpleLight, icon: "🧭" };
+    case "boarded":
+      return { label: t("passengerRide.statusBoarded"), color: C.success, icon: "✅" };
+    default:
+      return { label: t("passengerRide.statusJoined"), color: C.success, icon: "✅" };
+  }
+}
+
+// ─── Memoized header ─────────────────────────────────────────────────────────
+type RideHeaderProps = {
+  passengerState: PassengerState;
+  boarded: boolean;
+  rideIdShort: string;
+  topInset: number;
+  t: TFn;
+};
+
+const RideHeader = React.memo(function RideHeader({
+  passengerState, boarded, rideIdShort, topInset, t,
+}: RideHeaderProps) {
+  const statusInfo = getStatusInfo(passengerState, t);
+  return (
+    <View style={[styles.header, { paddingTop: topInset + 12 }]}>
+      <BlurView intensity={40} tint="dark" experimentalBlurMethod="dimezisBlurView" style={StyleSheet.absoluteFill} pointerEvents="none" />
+      <View style={styles.headerScrim} pointerEvents="none" />
+      <View style={styles.headerLeft}>
+        <View style={[styles.liveDot, { backgroundColor: statusInfo.color }]} />
+        <Text style={styles.headerTitle}>
+          {passengerState === "pending"
+            ? t("passengerRide.joinRequestHeader")
+            : passengerState === "accepted"
+              ? t("passengerRide.waitingForDriverHeader")
+              : t("passengerRide.rideInProgressHeader")}
+        </Text>
+      </View>
+      <Text style={styles.rideIdBadge}>#{rideIdShort}</Text>
+    </View>
+  );
+}, (prev, next) => (
+  prev.passengerState === next.passengerState &&
+  prev.boarded === next.boarded &&
+  prev.rideIdShort === next.rideIdShort &&
+  prev.topInset === next.topInset &&
+  prev.t === next.t
+));
+
+// ─── Memoized bottom panel ───────────────────────────────────────────────────
+type BottomPanelProps = {
+  passengerState: PassengerState;
+  boarded: boolean;
+  loading: boolean;
+  hasDriverLocation: boolean;
+  bottomInset: number;
+  driverName?: string;
+  driverAvatar?: string | null;
+  onScan: () => void;
+  onQuit: () => void;
+  onViewDriver: () => void;
+  t: TFn;
+};
+
+const BottomPanel = React.memo(function BottomPanel({
+  passengerState, boarded, loading, hasDriverLocation, bottomInset,
+  driverName, driverAvatar, onScan, onQuit, onViewDriver, t,
+}: BottomPanelProps) {
+  const statusInfo = getStatusInfo(passengerState, t);
+  return (
+    <View style={[styles.panel, { paddingBottom: bottomInset + 12 }]}>
+      <BlurView intensity={55} tint="dark" experimentalBlurMethod="dimezisBlurView" style={styles.panelGlass} pointerEvents="none" />
+      <View style={styles.panelScrim} pointerEvents="none" />
+
+      {/* Driver card — read-only, tappable to view full profile */}
+      {driverName != null && (
+        <TouchableOpacity style={styles.driverCard} onPress={onViewDriver} activeOpacity={0.75}>
+          {driverAvatar ? (
+            <ExpoImage source={{ uri: driverAvatar }} style={styles.driverAvatar} contentFit="cover" cachePolicy="memory-disk" />
+          ) : (
+            <View style={[styles.driverAvatar, styles.driverAvatarFallback]}>
+              <Text style={{ fontSize: 18 }}>🚗</Text>
+            </View>
+          )}
+          <View style={{ flex: 1 }}>
+            <Text style={styles.driverName} numberOfLines={1}>{driverName}</Text>
+            <Text style={styles.driverSub}>{t("passengerRide.viewDriverProfile")}</Text>
+          </View>
+          <Text style={{ fontSize: 16, color: "#9ca3af" }}>›</Text>
+        </TouchableOpacity>
+      )}
+
+      <View style={styles.card}>
+        <View style={styles.cardRow}>
+          <View style={styles.sectionIconBox}>
+            <Text style={{ fontSize: 14 }}>{statusInfo.icon}</Text>
+          </View>
+          <Text style={styles.cardLabel}>{t("passengerRide.statusLabel")}</Text>
+          <View style={[styles.statusBadge, { backgroundColor: `${statusInfo.color}22` }]}>
+            <Text style={[styles.statusBadgeText, { color: statusInfo.color }]}>
+              {statusInfo.label}
+            </Text>
+          </View>
+        </View>
+
+        {passengerState !== "pending" && (
+          <View style={[styles.cardRow, { marginTop: 12 }]}>
+            <View style={styles.sectionIconBox}>
+              <Text style={{ fontSize: 14 }}>📱</Text>
+            </View>
+            <Text style={styles.cardLabel}>{t("passengerRide.boardingLabel")}</Text>
+            {boarded ? (
+              <View style={styles.boardedBadge}>
+                <Text style={styles.boardedBadgeText}>{t("passengerRide.boarded")}</Text>
+              </View>
+            ) : (
+              <View style={styles.notBoardedBadge}>
+                <Text style={styles.notBoardedBadgeText}>{t("passengerRide.scanDriverQr")}</Text>
+              </View>
+            )}
+          </View>
+        )}
+
+        {hasDriverLocation && boarded && (
+          <View style={[styles.cardRow, { marginTop: 12 }]}>
+            <View style={styles.sectionIconBox}>
+              <Text style={{ fontSize: 14 }}>🚗</Text>
+            </View>
+            <Text style={styles.cardLabel}>{t("passengerRide.driverLabel")}</Text>
+            <View style={styles.trackingBadge}>
+              <Text style={styles.trackingBadgeText}>{t("passengerRide.liveTracking")}</Text>
+            </View>
+          </View>
+        )}
+      </View>
+
+      {/* Accepted but the driver hasn't started yet — show a reassuring waiting
+          card instead of the (premature) scan button. */}
+      {passengerState === "accepted" && !boarded && (
+        <View style={styles.waitingCard}>
+          <Text style={styles.waitingTitle}>{t("passengerRide.driverConfirmedTitle")}</Text>
+          <Text style={styles.waitingMsg}>{t("passengerRide.waitingForStartMsg")}</Text>
+        </View>
+      )}
+
+      {passengerState === "started" && !boarded && (
+        <TouchableOpacity onPress={onScan} style={styles.primaryBtn} activeOpacity={0.8}>
+          <Text style={[{ fontSize: 16 }, { marginRight: 6 }]}>📱</Text>
+          <Text style={styles.btnText}>{t("passengerRide.scanQrBtn")}</Text>
+        </TouchableOpacity>
+      )}
+
+      {passengerState === "pending" && (
+        <TouchableOpacity
+          style={[styles.dangerBtn, loading && styles.btnDisabled]}
+          onPress={onQuit}
+          disabled={loading}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.btnText}>{t("passengerRide.cancelRequest")}</Text>
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+}, (prev, next) => (
+  prev.passengerState === next.passengerState &&
+  prev.boarded === next.boarded &&
+  prev.loading === next.loading &&
+  prev.hasDriverLocation === next.hasDriverLocation &&
+  prev.bottomInset === next.bottomInset &&
+  prev.driverName === next.driverName &&
+  prev.driverAvatar === next.driverAvatar &&
+  prev.onScan === next.onScan &&
+  prev.onQuit === next.onQuit &&
+  prev.onViewDriver === next.onViewDriver &&
+  prev.t === next.t
+));
+
 export default function RideScreen() {
+  const insets = useSafeAreaInsets();
   const { rideId, Originlat, OriginLng, DestinationLat, DestinationLng, pending } = useLocalSearchParams<RideParams>();
   const [originCoords, setOriginCoords] = useState<{ latitude: number; longitude: number }>({ latitude: 0, longitude: 0 });
   const [destinationCoords, setDestinationCoords] = useState<{ latitude: number; longitude: number }>({ latitude: 0, longitude: 0 });
-  const [driverLocation, setDriverLocation] = useState<{ latitude: number; longitude: number } | undefined>();
   const [passengerState, setPassengerState] = useState<PassengerState>(pending === "true" ? "pending" : "accepted");
   const [loading, setLoading] = useState(false);
   const [boarded, setBoarded] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
-  const [rideStatus, setRideStatus] = useState<string>("planned");
+  const [pollingActive, setPollingActive] = useState(true);
+  const [driverProfile, setDriverProfile] = useState<DriverProfile | null>(null);
+  const [showDriverModal, setShowDriverModal] = useState(false);
+  const driverFetchedRef = useRef(false);
 
   useKeepAwake();
   const router = useRouter();
@@ -101,15 +328,72 @@ export default function RideScreen() {
 
   const hasNavigatedAwayRef = useRef(false);
 
-  // Poll ride document for state changes
+  // Poll ride document for state changes.
+  //
+  // Two distinct phases:
+  //   • BEFORE boarded — watch for accept/reject/cancel/start.
+  //   • AFTER boarded — ONLY watch for the driver dropping this passenger.
+  //     We deliberately do not call any setState while boarded (no driver
+  //     location updates, no status updates), so the screen stays frozen
+  //     showing "Boarded / In ride" until the driver drops the passenger.
   useAdaptivePolling(
     async () => {
       try {
         const ride = await fetchRideById(rideId);
         if (!ride) {
-          // Ride deleted (cancelled by driver)
+          // Transient fetch failure — keep polling, do not navigate away.
+          return true;
+        }
+        const uid = user?.uid ?? "";
+
+        // Fetch full driver profile once on first successful ride fetch.
+        if (!driverFetchedRef.current && ride.driverId) {
+          driverFetchedRef.current = true;
+          // Seed with embedded data immediately so the card shows right away.
+          setDriverProfile({
+            uid: ride.driverId,
+            name: ride.driverName ?? "Driver",
+            avatar: ride.driverAvatar ?? null,
+            xp: 0, rating: 0, ridesCompleted: 0,
+          });
+          // Then fetch the full profile in the background.
+          getAuth().currentUser?.getIdToken().then((token) =>
+            fetchUserDocument(ride.driverId, token)
+          ).then((doc) => {
+            if (doc) setDriverProfile(extractDriverProfile(ride.driverId, doc));
+          }).catch(() => {});
+        }
+
+        // ── Frozen post-boarded path ─────────────────────────────────────────
+        // Once boarded, the ONLY thing we care about is the driver dropping
+        // this passenger. Anything else (driver position, ride status changes,
+        // other passengers) is intentionally ignored to keep the UI stable.
+        if (boarded) {
+          if (ride.droppedPassengers?.includes(uid)) {
+            const isConfirmed = ride.confirmedDropoffPassengers?.includes(uid) ?? false;
+            const alreadyRated = ride.ratingsSubmitted?.includes(uid) ?? false;
+            // Stop polling first — the ride is over for this passenger regardless
+            // of the confirmed/unconfirmed path. clearActiveRide() is called now
+            // so the home screen's syncRides doesn't re-push the ride screen.
+            setPollingActive(false);
+            clearActiveRide();
+            hasNavigatedAwayRef.current = true;
+            if (isConfirmed && !alreadyRated) {
+              setPassengerState("completed");
+            } else {
+              Alert.alert(t("passengerRide.droppedOffTitle"), t("passengerRide.droppedOffMsg"));
+              router.replace("/");
+            }
+            return false;
+          }
+          return true;
+        }
+
+        // ── Pre-boarded path ─────────────────────────────────────────────────
+        if (ride.status === "cancelled") {
           if (!hasNavigatedAwayRef.current) {
             hasNavigatedAwayRef.current = true;
+            setPollingActive(false);
             clearActiveRide();
             Alert.alert(t("passengerRide.rideCancelledTitle"), t("passengerRide.rideCancelledMsg"));
             router.push('/(tabs)');
@@ -117,64 +401,71 @@ export default function RideScreen() {
           return false;
         }
 
-        setRideStatus(ride.status as string);
-
-        // Update driver location if available
-        if (ride.driverLocation) {
-          setDriverLocation(ride.driverLocation);
-        }
-
-        // Check boarded status
-        if (ride.boardedPassengers?.includes(user?.uid ?? "")) {
+        // Sticky boarded check — once true, never regresses to false.
+        const currentBoarded = ride.boardedPassengers?.includes(uid) ?? false;
+        if (currentBoarded) {
           setBoarded(true);
+          setPassengerState("boarded");
+          return true;
         }
 
-        // State machine
+        // Per-passenger dropoff edge case (e.g. dropped before boarding)
+        if (ride.droppedPassengers?.includes(uid)) {
+          const isConfirmed = ride.confirmedDropoffPassengers?.includes(uid) ?? false;
+          const alreadyRated = ride.ratingsSubmitted?.includes(uid) ?? false;
+          setPollingActive(false);
+          clearActiveRide();
+          hasNavigatedAwayRef.current = true;
+          if (isConfirmed && !alreadyRated) {
+            setPassengerState("completed");
+          } else {
+            Alert.alert(t("passengerRide.droppedOffTitle"), t("passengerRide.droppedOffMsg"));
+            router.replace("/");
+          }
+          return false;
+        }
+
         if (ride.status === "completed") {
-          // Ride ended — check if we need to rate
-          const needsRating = ride.pendingRatings?.includes(user?.uid ?? "") &&
-            !ride.ratingsSubmitted?.includes(user?.uid ?? "");
+          const needsRating = ride.pendingRatings?.includes(uid) &&
+            !ride.ratingsSubmitted?.includes(uid);
+          setPollingActive(false);
+          clearActiveRide();
+          hasNavigatedAwayRef.current = true;
           if (needsRating) {
             setPassengerState("completed");
-          } else if (!hasNavigatedAwayRef.current) {
-            // Either already rated or not required to rate — go home
-            hasNavigatedAwayRef.current = true;
-            clearActiveRide();
+          } else {
             router.replace("/");
           }
           return false;
         }
 
         if (passengerState === "pending") {
-          // Check if we've been accepted (we're in passengers[])
-          if (ride.passengers.includes(user?.uid ?? "")) {
+          if (ride.passengers.includes(uid)) {
             setPassengerState(ride.status === "started" ? "started" : "accepted");
             Alert.alert(t("passengerRide.requestAcceptedTitle"), t("passengerRide.requestAcceptedMsg"));
           }
-
-          // Check if rejected
-          const myRequest = ride.joinRequests?.[user?.uid ?? ""];
+          const myRequest = ride.joinRequests?.[uid];
           if (myRequest?.status === "rejected") {
             if (!hasNavigatedAwayRef.current) {
               hasNavigatedAwayRef.current = true;
+              setPollingActive(false);
               clearActiveRide();
               Alert.alert(t("passengerRide.requestRejectedTitle"), t("passengerRide.requestRejectedMsg"));
               router.push('/(tabs)');
             }
             return false;
           }
-
-          return true; // Keep polling
+          return true;
         }
 
-        // If accepted and ride starts
-        if ((passengerState === "accepted" || passengerState === "started") && ride.status === "started") {
-          setPassengerState(boarded ? "boarded" : "started");
+        // accepted → started transition (still not boarded)
+        if (passengerState === "accepted" && ride.status === "started") {
+          setPassengerState("started");
         }
 
-        // Check if removed from ride
-        if (!ride.passengers.includes(user?.uid ?? "") && !hasNavigatedAwayRef.current) {
+        if (!ride.passengers.includes(uid) && !hasNavigatedAwayRef.current) {
           hasNavigatedAwayRef.current = true;
+          setPollingActive(false);
           clearActiveRide();
           Alert.alert(t("passengerRide.removedTitle"), t("passengerRide.removedMsg"));
           router.push('/(tabs)');
@@ -184,95 +475,40 @@ export default function RideScreen() {
         return true;
       } catch (error) {
         console.error("Error checking ride status:", error);
-        return false;
+        return true;
       }
     },
     {
-      enabled: Boolean(rideId && user?.uid),
-      // Fast polling when ride is started (tracking driver), slower otherwise
-      initialDelayMs: rideStatus === "started" ? 3000 : 2500,
-      maxDelayMs: rideStatus === "started" ? 6000 : 20000,
-      backoffFactor: rideStatus === "started" ? 1.0 : 1.5,
+      enabled: Boolean(rideId && user?.uid) && pollingActive,
+      initialDelayMs: 8000,
+      maxDelayMs: 30000,
+      backoffFactor: 1.5,
     },
   );
 
-  const quitRide = async () => {
+  const quitRide = useCallback(async () => {
     if (!user) return;
 
-    if (passengerState === "pending") {
-      // Cancel join request
-      Alert.alert(
-        t("passengerRide.cancelRequestTitle"),
-        t("passengerRide.cancelRequestMsg"),
-        [
-          { text: t("common.no"), style: "cancel" },
-          {
-            text: t("passengerRide.cancelRequestBtn"),
-            style: "destructive",
-            onPress: async () => {
-              setLoading(true);
-              try {
-                await cancelJoinRequest(rideId);
-                clearActiveRide();
-                router.push('/(tabs)');
-              } catch (e) {
-                Alert.alert(t("common.error"), t("passengerRide.failedCancelRequest"));
-              } finally {
-                setLoading(false);
-              }
-            },
-          },
-        ]
-      );
-      return;
-    }
+    const passengerFee = formatCentsAsDollars(CANCELLATION_FEES.passengerCancelCents);
 
+    // Only pending requests can be cancelled — once accepted, the passenger
+    // is committed to the ride.
     Alert.alert(
-      t("passengerRide.leaveRideTitle"),
-      boarded
-        ? t("passengerRide.leaveRideMsgBoarded")
-        : t("passengerRide.leaveRideMsg"),
+      t("cancellation.passengerConfirmTitle"),
+      t("cancellation.passengerFeeMsg", { fee: passengerFee }),
       [
-        { text: t("common.cancel"), style: "cancel" },
+        { text: t("common.no"), style: "cancel" },
         {
-          text: t("passengerRide.leave"),
+          text: t("cancellation.passengerConfirmBtn"),
           style: "destructive",
           onPress: async () => {
             setLoading(true);
             try {
-              const rideUrl = withFirebaseApiKey(
-                `${firestoreDocumentUrl("rides", rideId)}?updateMask.fieldPaths=passengers&updateMask.fieldPaths=seatsAvailable`,
-              );
-
-              const rideRes = await fetch(rideUrl);
-              const rideData = await rideRes.json();
-
-              const currentPassengers =
-                rideData.fields.passengers.arrayValue?.values?.map((v: any) => v.stringValue) || [];
-              const newPassengers = currentPassengers.filter((pid: string) => pid !== user?.uid);
-
-              const updateDoc = {
-                fields: {
-                  passengers: {
-                    arrayValue: { values: newPassengers.map((id: string) => ({ stringValue: id })) },
-                  },
-                  seatsAvailable: {
-                    integerValue: Number(rideData.fields.seatsAvailable.integerValue) + 1,
-                  },
-                },
-              };
-
-              const updateRes = await fetch(rideUrl, {
-                method: "PATCH",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(updateDoc),
-              });
-
-              if (!updateRes.ok) throw new Error("Failed to leave ride");
+              await cancelJoinRequest(rideId);
               clearActiveRide();
               router.push('/(tabs)');
             } catch (e) {
-              Alert.alert(t("common.error"), t("passengerRide.failedLeaveRide"));
+              Alert.alert(t("common.error"), t("passengerRide.failedCancelRequest"));
             } finally {
               setLoading(false);
             }
@@ -280,9 +516,11 @@ export default function RideScreen() {
         },
       ]
     );
-  };
+  }, [user, t, rideId, clearActiveRide, router]);
 
-  const handleQrScan = async (payload: string) => {
+  const openScanner = useCallback(() => setShowScanner(true), []);
+
+  const handleQrScan = useCallback(async (payload: string) => {
     setShowScanner(false);
     try {
       if (!user) throw new Error("Not authenticated");
@@ -293,7 +531,9 @@ export default function RideScreen() {
     } catch (e: any) {
       Alert.alert(t("passengerRide.verificationFailedTitle"), e.message ?? t("passengerRide.verificationFailedTitle"));
     }
-  };
+  }, [user, rideId, t]);
+
+  const closeScanner = useCallback(() => setShowScanner(false), []);
 
   const handleRatingSubmitted = async (rating: number) => {
     if (!user) return;
@@ -303,8 +543,8 @@ export default function RideScreen() {
       await submitRating(rideId, user.uid);
       hasNavigatedAwayRef.current = true;
       clearActiveRide();
-      Alert.alert("Thank you!", `You submitted a ${rating}/5 rating.`, [
-        { text: "OK", onPress: () => router.replace("/") },
+      Alert.alert(t("ratings.thankYou"), t("ratings.thankYouMsg", { count: rating }), [
+        { text: t("common.ok"), onPress: () => router.replace("/") },
       ]);
     } catch (e) {
       Alert.alert(t("common.error"), t("passengerRide.failedRating"));
@@ -321,152 +561,156 @@ export default function RideScreen() {
     );
   }
 
-  // ── Status badge info ──
-  const getStatusInfo = (): { label: string; color: string; icon: string } => {
-    switch (passengerState) {
-      case "pending":
-        return { label: t("passengerRide.statusPending"), color: C.gold, icon: "⏱" };
-      case "accepted":
-        return { label: t("passengerRide.statusAccepted"), color: C.success, icon: "✅" };
-      case "started":
-        return { label: t("passengerRide.statusStarted"), color: C.purpleLight, icon: "🧭" };
-      case "boarded":
-        return { label: t("passengerRide.statusBoarded"), color: C.success, icon: "✅" };
-      default:
-        return { label: t("passengerRide.statusJoined"), color: C.success, icon: "✅" };
-    }
-  };
-
-  const statusInfo = getStatusInfo();
-
   return (
-    <SafeAreaView style={styles.root}>
+    <View style={styles.root}>
       <StatusBar style="light" />
 
-      {/* Header */}
-      <LinearGradient colors={BANNER_GRADIENT} style={styles.header}>
-        <View style={styles.headerLeft}>
-          <View style={[styles.liveDot, { backgroundColor: statusInfo.color }]} />
-          <Text style={styles.headerTitle}>
-            {passengerState === "pending" ? t("passengerRide.joinRequestHeader") : t("passengerRide.rideInProgressHeader")}
-          </Text>
-        </View>
-        <Text style={styles.rideIdBadge}>#{rideId?.slice(-6)}</Text>
-      </LinearGradient>
-
-      {/* Map */}
+      {/* Map base layer — full-bleed so it reaches the very top of the screen,
+          with the glass header + panel floating over it. Driver location is
+          intentionally not tracked to keep the screen stable. */}
       <View style={styles.mapContainer}>
         <UserRideMapView
           origin={originCoords}
           destination={destinationCoords}
-          driverLocation={driverLocation}
+          driverLocation={undefined}
         />
       </View>
 
-      {/* Bottom panel */}
-      <View style={styles.panel}>
-        {/* Status card */}
-        <View style={styles.card}>
-          <View style={styles.cardRow}>
-            <View style={styles.sectionIconBox}>
-              <Text style={{fontSize: 14}}>{statusInfo.icon}</Text>
-            </View>
-            <Text style={styles.cardLabel}>{t("passengerRide.statusLabel")}</Text>
-            <View style={[styles.statusBadge, { backgroundColor: `${statusInfo.color}22` }]}>
-              <Text style={[styles.statusBadgeText, { color: statusInfo.color }]}>
-                {statusInfo.label}
-              </Text>
-            </View>
-          </View>
+      {/* Header — memoized so the per-second parent re-render doesn't repaint it */}
+      <RideHeader
+        passengerState={passengerState}
+        boarded={boarded}
+        rideIdShort={rideId?.slice(-6) ?? ""}
+        topInset={insets.top}
+        t={t}
+      />
 
-          {/* Boarding status (only show after accepted) */}
-          {passengerState !== "pending" && (
-            <View style={[styles.cardRow, { marginTop: 12 }]}>
-              <View style={styles.sectionIconBox}>
-                <Text style={{fontSize: 14}}>📱</Text>
-              </View>
-              <Text style={styles.cardLabel}>{t("passengerRide.boardingLabel")}</Text>
-              {boarded ? (
-                <View style={styles.boardedBadge}>
-                  <Text style={styles.boardedBadgeText}>{t("passengerRide.boarded")}</Text>
-                </View>
-              ) : (
-                <View style={styles.notBoardedBadge}>
-                  <Text style={styles.notBoardedBadgeText}>{t("passengerRide.scanDriverQr")}</Text>
-                </View>
-              )}
-            </View>
-          )}
-
-          {/* Driver location indicator */}
-          {driverLocation && passengerState === "started" && (
-            <View style={[styles.cardRow, { marginTop: 12 }]}>
-              <View style={styles.sectionIconBox}>
-                <Text style={{fontSize: 14}}>🚗</Text>
-              </View>
-              <Text style={styles.cardLabel}>{t("passengerRide.driverLabel")}</Text>
-              <View style={styles.trackingBadge}>
-                <Text style={styles.trackingBadgeText}>{t("passengerRide.liveTracking")}</Text>
-              </View>
-            </View>
-          )}
-        </View>
-
-        {/* Scan QR Code button (only when ride is started and not yet boarded) */}
-        {(passengerState === "started" || passengerState === "accepted") && !boarded && (
-          <TouchableOpacity
-            onPress={() => setShowScanner(true)}
-            activeOpacity={0.8}
-          >
-            <LinearGradient
-              colors={BUTTON_GRADIENT}
-              style={styles.primaryBtn}
-            >
-              <Text style={[{fontSize: 16}, { marginRight: 6 }]}>📱</Text>
-              <Text style={styles.btnText}>{t("passengerRide.scanQrBtn")}</Text>
-            </LinearGradient>
-          </TouchableOpacity>
-        )}
-
-        {/* Quit / Cancel button */}
-        {!boarded && (
-          <TouchableOpacity
-            style={[styles.dangerBtn, loading && styles.btnDisabled]}
-            onPress={quitRide}
-            disabled={loading}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.btnText}>
-              {passengerState === "pending" ? t("passengerRide.cancelRequest") : t("passengerRide.quitRide")}
-            </Text>
-          </TouchableOpacity>
-        )}
-      </View>
+      {/* Bottom panel — memoized; props are stable so there is zero visible
+          refresh from parent re-renders (e.g. the countdown tick). */}
+      <BottomPanel
+        passengerState={passengerState}
+        boarded={boarded}
+        loading={loading}
+        hasDriverLocation={false}
+        bottomInset={insets.bottom}
+        driverName={driverProfile?.name}
+        driverAvatar={driverProfile?.avatar}
+        onScan={openScanner}
+        onQuit={quitRide}
+        onViewDriver={() => setShowDriverModal(true)}
+        t={t}
+      />
 
       {/* QR Scanner Modal */}
       <Modal
         visible={showScanner}
         animationType="slide"
-        onRequestClose={() => setShowScanner(false)}
+        onRequestClose={closeScanner}
       >
         <QrScanner
           onScanned={handleQrScan}
-          onClose={() => setShowScanner(false)}
+          onClose={closeScanner}
         />
       </Modal>
-    </SafeAreaView>
+
+      {/* Driver Profile Modal — read-only */}
+      <Modal
+        visible={showDriverModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowDriverModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.profileBackdrop}
+          activeOpacity={1}
+          onPress={() => setShowDriverModal(false)}
+        >
+          <TouchableOpacity activeOpacity={1} style={styles.profileSheet}>
+            {driverProfile ? (
+              <>
+                {/* Read-only badge */}
+                <View style={styles.profileReadOnlyBadge}>
+                  <Text style={{ fontSize: 12 }}>🔒</Text>
+                  <Text style={styles.profileReadOnlyText}>{t("passengerRide.readOnly")}</Text>
+                </View>
+
+                <View style={styles.profileAvatarWrap}>
+                  {driverProfile.avatar ? (
+                    <ExpoImage source={{ uri: driverProfile.avatar }} style={styles.profileAvatar} contentFit="cover" cachePolicy="memory-disk" />
+                  ) : (
+                    <View style={[styles.profileAvatar, styles.profileAvatarFallback]}>
+                      <Text style={{ fontSize: 32 }}>🚗</Text>
+                    </View>
+                  )}
+                </View>
+
+                <Text style={styles.profileDriverName}>{driverProfile.name}</Text>
+
+                <View style={styles.profileXpRow}>
+                  <Text style={styles.profileXpText}>⚡ {driverProfile.xp} XP</Text>
+                  {driverProfile.rating > 0 && (
+                    <Text style={styles.profileRatingText}>⭐ {driverProfile.rating.toFixed(1)}</Text>
+                  )}
+                </View>
+
+                <View style={styles.profileStatsRow}>
+                  <View style={styles.profileStat}>
+                    <Text style={styles.profileStatVal}>{driverProfile.ridesCompleted}</Text>
+                    <Text style={styles.profileStatLabel}>{t("driverRide.profileRides")}</Text>
+                  </View>
+                </View>
+
+                <View style={styles.profileInfoList}>
+                  {driverProfile.school ? (
+                    <View style={styles.profileInfoRow}>
+                      <Text style={styles.profileInfoIcon}>🎓</Text>
+                      <Text style={styles.profileInfoText}>{driverProfile.school}</Text>
+                    </View>
+                  ) : null}
+                  {driverProfile.age ? (
+                    <View style={styles.profileInfoRow}>
+                      <Text style={styles.profileInfoIcon}>🎂</Text>
+                      <Text style={styles.profileInfoText}>{t("driverRide.profileAge", { age: driverProfile.age })}</Text>
+                    </View>
+                  ) : null}
+                  {driverProfile.instagramHandle ? (
+                    <View style={styles.profileInfoRow}>
+                      <Text style={styles.profileInfoIcon}>📷</Text>
+                      <Text style={styles.profileInfoText}>@{driverProfile.instagramHandle}</Text>
+                    </View>
+                  ) : null}
+                </View>
+
+                <TouchableOpacity style={styles.profileCloseBtn} onPress={() => setShowDriverModal(false)}>
+                  <Text style={styles.profileCloseBtnText}>{t("common.close")}</Text>
+                </TouchableOpacity>
+              </>
+            ) : null}
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
   header: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 10,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingBottom: 14,
+    overflow: "hidden",
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.10)",
   },
+  headerScrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(10,8,18,0.86)" },
   headerLeft: {
     flexDirection: "row",
     alignItems: "center",
@@ -491,20 +735,50 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 20,
   },
-  mapContainer: { flex: 1 },
+  mapContainer: { ...StyleSheet.absoluteFillObject },
   panel: {
-    backgroundColor: C.surface,
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 10,
+    backgroundColor: "transparent",
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
     borderTopWidth: 1,
-    borderTopColor: C.border,
+    borderTopColor: "rgba(255,255,255,0.14)",
+    overflow: "hidden",
     padding: 16,
     gap: 10,
   },
+  waitingCard: {
+    backgroundColor: "rgba(52,211,153,0.10)",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(52,211,153,0.30)",
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+    gap: 6,
+  },
+  waitingTitle: {
+    color: C.success,
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  waitingMsg: {
+    color: C.muted,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  // Frosted blur + dark scrim guarantee text contrast over any map content.
+  panelGlass: { ...StyleSheet.absoluteFillObject },
+  panelScrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(10,8,18,0.78)" },
   card: {
-    backgroundColor: C.surfaceAlt,
+    backgroundColor: "rgba(255,255,255,0.06)",
     borderRadius: 14,
     padding: 14,
     borderWidth: 1,
-    borderColor: C.borderFaint,
+    borderColor: "rgba(255,255,255,0.10)",
   },
   cardRow: {
     flexDirection: "row",
@@ -570,16 +844,22 @@ const styles = StyleSheet.create({
   },
   dangerBtn: {
     backgroundColor: "#ef4444",
-    borderRadius: 10,
-    paddingVertical: 14,
+    borderRadius: 16,
+    paddingVertical: 18,
     alignItems: "center",
   },
   primaryBtn: {
-    borderRadius: 10,
-    paddingVertical: 14,
+    backgroundColor: C.purple,
+    borderRadius: 16,
+    paddingVertical: 18,
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
+    shadowColor: C.purple,
+    shadowOpacity: 0.5,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
   },
   btnText: {
     color: "#fff",
@@ -589,4 +869,117 @@ const styles = StyleSheet.create({
   btnDisabled: {
     opacity: 0.5,
   },
+
+  // ── Driver card (read-only, passenger view) ──────────────────────────────
+  driverCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: "rgba(137,56,213,0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(137,56,213,0.25)",
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  },
+  driverAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+  },
+  driverAvatarFallback: {
+    backgroundColor: "rgba(137,56,213,0.15)",
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+  },
+  driverName: {
+    color: "#f3f4f6",
+    fontSize: 15,
+    fontWeight: "700" as const,
+  },
+  driverSub: {
+    color: "#9ca3af",
+    fontSize: 11,
+    marginTop: 1,
+  },
+
+  // ── Driver profile modal ─────────────────────────────────────────────────
+  profileBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.65)",
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 24,
+  },
+  profileSheet: {
+    width: "100%" as const,
+    backgroundColor: "#13132a",
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "rgba(137,56,213,0.3)",
+    padding: 24,
+    alignItems: "center" as const,
+    gap: 12,
+  },
+  profileLoadingWrap: { paddingVertical: 40, alignItems: "center" as const },
+  profileAvatarWrap: { marginBottom: 4 },
+  profileAvatar: { width: 80, height: 80, borderRadius: 40 },
+  profileAvatarFallback: {
+    backgroundColor: "rgba(137,56,213,0.15)",
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+  },
+  profileReadOnlyBadge: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    gap: 5,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.10)",
+  },
+  profileReadOnlyText: { color: "#9ca3af", fontSize: 11, fontWeight: "500" as const },
+  profileDriverName: { color: "#f3f4f6", fontSize: 18, fontWeight: "700" as const, textAlign: "center" as const },
+  profileXpRow: { flexDirection: "row" as const, gap: 12, alignItems: "center" as const },
+  profileXpText: { color: "#a78bfa", fontSize: 13, fontWeight: "600" as const },
+  profileRatingText: { color: "#fbbf24", fontSize: 13, fontWeight: "600" as const },
+  profileStatsRow: {
+    flexDirection: "row" as const,
+    gap: 20,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderRadius: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
+    width: "100%" as const,
+    justifyContent: "center" as const,
+  },
+  profileStat: { alignItems: "center" as const, gap: 2 },
+  profileStatVal: { color: "#f3f4f6", fontSize: 18, fontWeight: "700" as const },
+  profileStatLabel: { color: "#9ca3af", fontSize: 11 },
+  profileInfoList: { width: "100%" as const, gap: 8 },
+  profileInfoRow: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    gap: 10,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  profileInfoIcon: { fontSize: 15 },
+  profileInfoText: { color: "#d1d5db", fontSize: 13, fontWeight: "500" as const, flex: 1 },
+  profileCloseBtn: {
+    marginTop: 4,
+    paddingVertical: 10,
+    paddingHorizontal: 32,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(137,56,213,0.4)",
+    backgroundColor: "rgba(137,56,213,0.1)",
+  },
+  profileCloseBtnText: { color: "#a78bfa", fontSize: 14, fontWeight: "600" as const },
 });

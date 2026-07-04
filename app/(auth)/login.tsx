@@ -16,11 +16,13 @@ import {
   View,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { authColors } from "@/constants/auth-theme";
 import { useAuth } from "@/context/AuthContext";
 import { useLanguage } from "@/context/LanguageContext";
 import { firestoreDocumentUrl } from "@/constants/runtime-config";
 import { normalizeAuthError, resetPassword } from "@/services/authService";
+import LanguageToggle from "@/components/language-toggle";
 
 const MAX_ATTEMPTS      = 5;
 const LOCKOUT_MS        = 30 * 1000; // 30 seconds
@@ -49,6 +51,7 @@ export default function LoginScreen() {
   const router = useRouter();
   const { signIn, signInWithApple, authActionLoading } = useAuth();
   const { t } = useLanguage();
+  const insets = useSafeAreaInsets();
 
   const [email, setEmail]               = useState("");
   const [password, setPassword]         = useState("");
@@ -123,7 +126,7 @@ export default function LoginScreen() {
       }
       await signIn(email, password);
       await clearRateLimit();
-      router.replace("/(tabs)");
+      router.replace("/");
     } catch (err) {
       await recordFailedAttempt();
       const authError = normalizeAuthError(err, t("auth.login.loginFailed"));
@@ -146,23 +149,25 @@ export default function LoginScreen() {
       setSubmitting(true);
       const cred = await signInWithApple();
       const token = await cred.user.getIdToken();
-      void fetch(
+      // Await the upsert so the home screen doesn't render before the profile
+      // doc exists. PATCH with updateMask is upsert on Firestore REST — safe
+      // for both first-time Apple logins and returning users.
+      await fetch(
         firestoreDocumentUrl("users", cred.user.uid) +
-          "?updateMask.fieldPaths=name&updateMask.fieldPaths=email&updateMask.fieldPaths=createdAt",
+          "?updateMask.fieldPaths=name&updateMask.fieldPaths=email",
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify({
             fields: {
-              name:      { stringValue: cred.user.displayName ?? "" },
-              email:     { stringValue: cred.user.email ?? "" },
-              createdAt: { stringValue: new Date().toISOString() },
+              name:  { stringValue: cred.user.displayName ?? "" },
+              email: { stringValue: cred.user.email ?? "" },
             },
           }),
         },
-      );
+      ).catch(() => { /* non-fatal: home screen will refetch */ });
       await clearRateLimit();
-      router.replace("/(tabs)");
+      router.replace("/");
     } catch (err) {
       const authError = normalizeAuthError(err, t("auth.login.appleLoginFailed"));
       Alert.alert(authError.title, authError.message);
@@ -173,15 +178,18 @@ export default function LoginScreen() {
 
   const handleForgotPassword = () => {
     Alert.prompt(
-      "Reset Password",
-      "Enter your email address and we'll send you a reset link.",
+      t("auth.login.forgotPasswordTitle"),
+      t("auth.login.forgotPasswordMsg"),
       async (inputEmail) => {
         if (!inputEmail?.trim()) return;
         try {
           await resetPassword(inputEmail.trim());
-          Alert.alert("Email sent", `A password reset link was sent to ${inputEmail.trim()}.`);
+          Alert.alert(
+            t("auth.login.resetEmailSentTitle"),
+            t("auth.login.resetEmailSentMsg", { email: inputEmail.trim() }),
+          );
         } catch (err) {
-          const authError = normalizeAuthError(err, "Reset failed");
+          const authError = normalizeAuthError(err, t("auth.login.resetFailed"));
           Alert.alert(authError.title, authError.message);
         }
       },
@@ -196,6 +204,11 @@ export default function LoginScreen() {
       style={styles.root}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
+      {/* Language toggle (floats above the header) */}
+      <View style={[styles.languageToggleWrap, { top: insets.top + 8 }]} pointerEvents="box-none">
+        <LanguageToggle />
+      </View>
+
       <ScrollView
         contentContainerStyle={styles.scroll}
         keyboardShouldPersistTaps="handled"
@@ -226,8 +239,8 @@ export default function LoginScreen() {
             <View style={styles.lockBanner}>
               <Text style={styles.lockIcon}>🔒</Text>
               <View style={{ flex: 1 }}>
-                <Text style={styles.lockTitle}>Too many attempts</Text>
-                <Text style={styles.lockSub}>Try again in {lockSecondsLeft}s</Text>
+                <Text style={styles.lockTitle}>{t("auth.login.tooManyAttempts")}</Text>
+                <Text style={styles.lockSub}>{t("auth.login.tryAgainIn", { seconds: lockSecondsLeft })}</Text>
               </View>
             </View>
           )}
@@ -236,7 +249,7 @@ export default function LoginScreen() {
           {!isLocked && attemptsLeft < MAX_ATTEMPTS && attemptsLeft > 0 && (
             <View style={styles.warnBanner}>
               <Text style={styles.warnText}>
-                {attemptsLeft} attempt{attemptsLeft !== 1 ? "s" : ""} remaining before temporary block
+                {t("auth.login.attemptsRemaining", { count: attemptsLeft })}
               </Text>
             </View>
           )}
@@ -279,7 +292,7 @@ export default function LoginScreen() {
 
           {/* Forgot password */}
           <Pressable onPress={handleForgotPassword} style={styles.forgotRow}>
-            <Text style={styles.forgotText}>Forgot password?</Text>
+            <Text style={styles.forgotText}>{t("auth.login.forgotPasswordLink")}</Text>
           </Pressable>
 
           {/* Login button */}
@@ -296,7 +309,7 @@ export default function LoginScreen() {
                   <Text style={[styles.buttonText, { marginLeft: 8 }]}>{t("auth.login.loggingIn")}</Text>
                 </View>
               ) : isLocked ? (
-                <Text style={styles.buttonText}>Locked — {lockSecondsLeft}s</Text>
+                <Text style={styles.buttonText}>{t("auth.login.lockedButton", { seconds: lockSecondsLeft })}</Text>
               ) : (
                 <Text style={styles.buttonText}>{t("auth.login.loginBtn")}</Text>
               )}
@@ -314,7 +327,7 @@ export default function LoginScreen() {
           {Platform.OS === "ios" && (
             <AppleAuthentication.AppleAuthenticationButton
               buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
-              buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+              buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
               cornerRadius={13}
               style={styles.appleButton}
               onPress={handleAppleLogin}
@@ -464,5 +477,12 @@ const styles = StyleSheet.create({
     color: authColors.purpleLight,
     marginTop: 16,
     fontSize: 14,
+  },
+
+  // ── Language toggle ──────────────────────────────────────────────────────────
+  languageToggleWrap: {
+    position: "absolute",
+    right: 16,
+    zIndex: 20,
   },
 });

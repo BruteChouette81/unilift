@@ -1,11 +1,13 @@
 import { useAuth } from "@/context/AuthContext";
 import { useUserProfile } from "@/context/UserProfileContext";
+import { useLanguage } from "@/context/LanguageContext";
 import { firestoreDocumentUrl } from "@/constants/runtime-config";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { geoSuggestion } from "@/services/rideServices";
 import type { FavoriteRoute } from "@/types/models";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
+import { Ionicons } from "@expo/vector-icons";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -43,6 +45,7 @@ export default function FavoriteScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const { userData, updateUserData } = useUserProfile();
+  const { t } = useLanguage();
 
   const params = useLocalSearchParams<{
     id: string;
@@ -121,7 +124,7 @@ export default function FavoriteScreen() {
   };
 
   const handleSave = async () => {
-    if (!endAddress.trim()) { setError("Destination is required."); return; }
+    if (!endAddress.trim()) { setError(t("favorites.destinationRequired")); return; }
     if (!user) return;
     setError("");
     setSaving(true);
@@ -141,7 +144,7 @@ export default function FavoriteScreen() {
       updateUserData({ favorite: updated });
       router.back();
     } catch {
-      Alert.alert("Save failed", "Could not save your favorite. Please try again.");
+      Alert.alert(t("favorites.saveFailed"), t("favorites.saveFailedMsg"));
     } finally {
       setSaving(false);
     }
@@ -149,10 +152,10 @@ export default function FavoriteScreen() {
 
   const handleDelete = async () => {
     if (!user || !isEditing) return;
-    Alert.alert("Delete favorite", "Remove this favorite route?", [
-      { text: "Cancel", style: "cancel" },
+    Alert.alert(t("favorites.deleteConfirm"), t("favorites.deleteConfirmMsg"), [
+      { text: t("common.cancel"), style: "cancel" },
       {
-        text: "Delete", style: "destructive",
+        text: t("common.delete"), style: "destructive",
         onPress: async () => {
           setSaving(true);
           try {
@@ -163,7 +166,7 @@ export default function FavoriteScreen() {
             updateUserData({ favorite: updated });
             router.back();
           } catch {
-            Alert.alert("Delete failed", "Could not delete this favorite. Please try again.");
+            Alert.alert(t("favorites.deleteFailed"), t("favorites.deleteFailedMsg"));
           } finally {
             setSaving(false);
           }
@@ -180,10 +183,12 @@ export default function FavoriteScreen() {
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={8}>
-          <Text style={{ fontSize: 20 }}>←</Text>
+          <LinearGradient colors={["#FD165A", "#8938D5"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.backBtnGrad}>
+            <Ionicons name="arrow-back" size={18} color="#fff" />
+          </LinearGradient>
         </Pressable>
         <Text style={styles.headerTitle}>
-          {isEditing ? "Edit Favorite" : "New Favorite"}
+          {isEditing ? t("favorites.editTitle") : t("favorites.newTitle")}
         </Text>
         <View style={{ width: 38 }} />
       </View>
@@ -194,14 +199,14 @@ export default function FavoriteScreen() {
         showsVerticalScrollIndicator={false}
       >
         {/* ── Destination ──────────────────────────────────────────────────── */}
-        <Text style={styles.label}>Destination</Text>
+        <Text style={styles.label}>{t("favorites.destination")}</Text>
         <View style={[styles.inputRow, inputFocused && styles.inputRowFocused, !!error && styles.inputRowError]}>
           <Text style={[{ fontSize: 16 }, styles.inputIcon]}>📍</Text>
           <TextInput
             style={styles.textInput}
             value={endAddress}
             onChangeText={(text) => { setEndAddress(text); setError(""); }}
-            placeholder="Search a destination…"
+            placeholder={t("favorites.searchPlaceholder")}
             placeholderTextColor={C.muted}
             onFocus={() => setInputFocused(true)}
             onBlur={() => setInputFocused(false)}
@@ -241,11 +246,11 @@ export default function FavoriteScreen() {
             {saving ? (
               <View style={styles.saveBtnContent}>
                 <ActivityIndicator color="#fff" size="small" />
-                <Text style={[styles.saveBtnText, { marginLeft: 8 }]}>Saving…</Text>
+                <Text style={[styles.saveBtnText, { marginLeft: 8 }]}>{t("favorites.saving")}</Text>
               </View>
             ) : (
               <Text style={styles.saveBtnText}>
-                {isEditing ? "Save Changes" : "Add Favorite"}
+                {isEditing ? t("favorites.saveChanges") : t("favorites.addFavorite")}
               </Text>
             )}
           </LinearGradient>
@@ -260,7 +265,7 @@ export default function FavoriteScreen() {
             activeOpacity={0.8}
           >
             <Text style={{ fontSize: 13 }}>🗑️</Text>
-            <Text style={styles.deleteText}>Delete Favorite</Text>
+            <Text style={styles.deleteText}>{t("favorites.deleteFavorite")}</Text>
           </TouchableOpacity>
         )}
 
@@ -287,10 +292,13 @@ const styles = StyleSheet.create({
     borderBottomColor: C.border,
   },
   backBtn: {
+    borderRadius: 10,
+    overflow: "hidden",
+  },
+  backBtnGrad: {
     width: 38,
     height: 38,
     borderRadius: 10,
-    backgroundColor: "rgba(224,154,247,0.1)",
     alignItems: "center",
     justifyContent: "center",
   },

@@ -43,8 +43,6 @@ export function useProfileAvatar({ user, onUploaded }: UseProfileAvatarParams) {
       },
     );
 
-    console.log("Resumable upload start response:", startRes);
-
     const uploadUrl = await startRes.headers.get("X-Goog-Upload-URL");
     if (!uploadUrl) return;
 

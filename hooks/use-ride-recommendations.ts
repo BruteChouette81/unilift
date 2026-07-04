@@ -1,4 +1,6 @@
+import { RIDE_SEARCH, isWithinDepartureWindow } from "@/constants/ride-search";
 import type { Ride, ScoredRide, UserProfile } from "@/types/models";
+import { findMatchesForPassenger, MatchResult, PassengerRequest } from "@/utils/matching/matchRide";
 
 // ─── Geometry ────────────────────────────────────────────────────────────────
 
@@ -124,10 +126,33 @@ export type RecommendOptions = {
     preference?: number;
   };
   driverLevelCache?: Map<string, number>;
+  /** When set, only rides whose `departureAt` lies within
+   *  `±departureToleranceMinutes` of this timestamp (ms) are kept.
+   *  Legacy rides without `departureAt` are kept only if the search
+   *  is "leave now" (within legacyLeaveNowToleranceMinutes). */
+  searchDepartureMs?: number;
+  departureToleranceMinutes?: number;
 };
+
+// ─── Detour-Based Matching ───────────────────────────────────────────────────
+
+export type { PassengerRequest, MatchResult };
+
+/**
+ * Returns rides sorted by detour score. Rides whose added detour exceeds
+ * `ride.maxDetourKm` (default 5 km) are excluded.
+ */
+export function useDetourRecommendations(
+  rides: Ride[],
+  passenger: PassengerRequest,
+  maxDetourKmOverride?: number,
+): MatchResult[] {
+  return findMatchesForPassenger(passenger, rides, maxDetourKmOverride);
+}
 
 // ─── Main Export ─────────────────────────────────────────────────────────────
 
+/** @deprecated Use useDetourRecommendations for detour-based matching */
 export function recommendRides(
   rides: Ride[],
   userProfile: UserProfile,
@@ -150,8 +175,23 @@ export function recommendRides(
   const params = getAdaptiveParams(rides.length);
 
   const scored: ScoredRide[] = [];
+  const departureFilterMs = options.searchDepartureMs;
+  const departureTolerance =
+    options.departureToleranceMinutes ?? RIDE_SEARCH.departureToleranceMinutes;
 
   for (const ride of rides) {
+    if (departureFilterMs !== undefined) {
+      if (
+        !isWithinDepartureWindow(
+          ride.departureAt,
+          departureFilterMs,
+          departureTolerance,
+        )
+      ) {
+        continue;
+      }
+    }
+
     const pickupKm = hasUserLoc
       ? haversineKm(userLat!, userLon!, ride.localisation.latitude, ride.localisation.longitude)
       : null;

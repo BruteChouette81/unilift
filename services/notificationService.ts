@@ -51,11 +51,13 @@ export async function registerForPushNotifications(): Promise<string | null> {
     return null;
   }
 
-  const { data: token } = await Notifications.getExpoPushTokenAsync({
-    projectId,
-  });
-
-  return token;
+  try {
+    const { data: token } = await Notifications.getExpoPushTokenAsync({ projectId });
+    return token;
+  } catch (err) {
+    console.warn("Could not fetch Expo push token (non-fatal):", err);
+    return null;
+  }
 }
 
 /**

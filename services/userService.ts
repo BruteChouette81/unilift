@@ -81,8 +81,9 @@ export const updateUserLanguage = async (
   token: string,
   language: Language,
 ): Promise<void> => {
-  const url =
-    firestoreDocumentUrl("users", uid) + "?updateMask.fieldPaths=language";
+  const url = withFirebaseApiKey(
+    firestoreDocumentUrl("users", uid) + "?updateMask.fieldPaths=language",
+  );
   await fetch(url, {
     method: "PATCH",
     headers: {

@@ -4,8 +4,9 @@ import { firestoreDocumentUrl } from "@/constants/runtime-config";
 import { fetchRides } from "@/services/rideServices";
 import type { LocationPoint, Ride, UserProfile } from "@/types/models";
 import * as Location from "expo-location";
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import React from "react";
+import { AppState } from "react-native";
 
 export interface UserProfileContextValue {
   userData: UserProfile | null;
@@ -76,6 +77,23 @@ export function UserProfileProvider({ children }: { children: React.ReactNode })
     void doFetchRides();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.uid]); // only re-run when the actual user identity changes
+
+  const lastForegroundRefreshAt = useRef(0);
+
+  // Re-sync profile + rides when the app returns to the foreground, so
+  // backend-driven and cross-device changes appear without a restart.
+  // Throttled to at most once per 60 seconds to avoid redundant Firestore reads.
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state !== "active" || !user) return;
+      const now = Date.now();
+      if (now - lastForegroundRefreshAt.current < 60000) return;
+      lastForegroundRefreshAt.current = now;
+      void doFetchProfile();
+      void doFetchRides();
+    });
+    return () => sub.remove();
+  }, [user, doFetchProfile, doFetchRides]);
 
   const updateUserData = useCallback((patch: Partial<UserProfile>) => {
     setUserData((prev) => (prev ? { ...prev, ...patch } : prev));

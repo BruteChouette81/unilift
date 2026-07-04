@@ -1,11 +1,17 @@
-import { firestoreDocumentUrl } from "@/constants/runtime-config";
+import { apiFetch, apiBaseUrl, firestoreDocumentUrl } from "@/constants/runtime-config";
+import { signOutUser } from "@/services/authService";
+import { autoFormatDateInput, calculateAgeFromBirthDate, formatBirthDateForDisplay, parseBirthDateInput } from "@/components/userHelper";
 import { useAuth } from "@/context/AuthContext";
+import { useLanguage } from "@/context/LanguageContext";
+import { useUserProfile } from "@/context/UserProfileContext";
 import { LinearGradient } from "expo-linear-gradient";
+import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -31,78 +37,158 @@ const C = {
   inputFocus:  "rgba(137, 56, 213, 0.7)",
 };
 
-const PREFERENCE_OPTIONS: { key: string; label: string }[] = [
-  { key: "no_smoking",  label: "No Smoking"  },
-  { key: "music_ok",   label: "Music OK"    },
-  { key: "quiet_ride", label: "Quiet Ride"  },
-  { key: "pets_ok",    label: "Pets OK"     },
-  { key: "chatty",     label: "Chatty"      },
-  { key: "fast_driver",label: "Fast Driver" },
+const SCHOOLS = [
+  'Cégep St-Foy',
+  'Cégep Garneau',
+  'Cégep Champlain St-Lawrence',
+  'Cégep de Lévis',
+  'Université Laval',
+  'UQAR',
 ];
+
 
 export default function ProfileSettingsScreen() {
   const router = useRouter();
   const { user } = useAuth();
+  const { t } = useLanguage();
+  const { updateUserData } = useUserProfile();
   const params = useLocalSearchParams<{
     name: string;
-    age: string;
+    birthDate: string;
     school: string;
     prefs: string;
   }>();
 
-  const [name, setName]       = useState(params.name ?? "");
-  const [age, setAge]         = useState(params.age ?? "");
-  const [school, setSchool]   = useState(params.school ?? "");
-  const [preferences, setPreferences] = useState<string[]>(
-    params.prefs ? params.prefs.split(",").filter(Boolean) : [],
-  );
+  const [name, setName]           = useState(params.name ?? "");
+  const [birthDate, setBirthDate] = useState(formatBirthDateForDisplay(params.birthDate ?? ""));
+  const [school, setSchool]       = useState(params.school ?? "");
+  const [showSchoolDropdown, setShowSchoolDropdown] = useState(false);
+  const preferences = params.prefs ? params.prefs.split(",").filter(Boolean) : [];
 
-  const [nameFocused,   setNameFocused]   = useState(false);
-  const [ageFocused,    setAgeFocused]    = useState(false);
-  const [schoolFocused, setSchoolFocused] = useState(false);
+  const [nameFocused,       setNameFocused]       = useState(false);
+  const [birthDateFocused,  setBirthDateFocused]  = useState(false);
+  const [schoolFocused,     setSchoolFocused]      = useState(false);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
-  const togglePreference = (key: string) => {
-    setPreferences((prev) =>
-      prev.includes(key) ? prev.filter((p) => p !== key) : [...prev, key],
-    );
-  };
+  const filteredSchools = useMemo(() => {
+    if (!school.trim()) return SCHOOLS;
+    const lower = school.toLowerCase();
+    return SCHOOLS.filter(s => s.toLowerCase().includes(lower));
+  }, [school]);
 
   const handleSave = async () => {
     if (!user || saving) return;
     try {
       setSaving(true);
-      const token = await user.getIdToken();
+      const token = await user.getIdToken(true);
+
+      const parsedBirthDate = parseBirthDateInput(birthDate);
+
+      const maskFields = ["name", "school", "preferences"];
+      const fields: Record<string, unknown> = {
+        name:   { stringValue: name.trim() },
+        school: { stringValue: school.trim() },
+        preferences: {
+          arrayValue: {
+            values: preferences.map((p: string) => ({ stringValue: p })),
+          },
+        },
+      };
+
+      if (parsedBirthDate) {
+        maskFields.push("birthDate");
+        fields.birthDate = { stringValue: parsedBirthDate };
+      }
+
+      const maskQuery = maskFields
+        .map((f) => `updateMask.fieldPaths=${encodeURIComponent(f)}`)
+        .join("&");
+
       const res = await fetch(
-        firestoreDocumentUrl("users", user.uid) +
-          "?updateMask.fieldPaths=name&updateMask.fieldPaths=age&updateMask.fieldPaths=school&updateMask.fieldPaths=preferences",
+        `${firestoreDocumentUrl("users", user.uid)}?${maskQuery}`,
         {
           method: "PATCH",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({
-            fields: {
-              name:        { stringValue: name.trim() },
-              age:         { integerValue: parseInt(age) || 0 },
-              school:      { stringValue: school.trim() },
-              preferences: {
-                arrayValue: {
-                  values: preferences.map((p) => ({ stringValue: p })),
-                },
-              },
-            },
-          }),
+          body: JSON.stringify({ fields }),
         },
       );
 
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error("[profileSettings] Firestore PATCH failed:", res.status, errText);
+        throw new Error(errText);
+      }
+
+      // Update the in-memory cache so the profile screen reflects changes immediately.
+      const patch: Record<string, unknown> = { name: name.trim(), school: school.trim() };
+      if (parsedBirthDate) {
+        patch.birthDate = parsedBirthDate;
+        patch.age = calculateAgeFromBirthDate(parsedBirthDate);
+      }
+      updateUserData(patch);
+
       router.back();
-    } catch {
-      Alert.alert("Save failed", "Could not save your profile. Please try again.");
+    } catch (err) {
+      console.error("[profileSettings] handleSave error:", err);
+      Alert.alert(t("profileSettings.saveFailed"), t("profileSettings.saveFailedMsg"));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      t("profileSettings.deleteConfirm1Title"),
+      t("profileSettings.deleteConfirm1Msg"),
+      [
+        { text: t("profileSettings.deleteConfirm1Keep"), style: "cancel" },
+        {
+          text: t("profileSettings.deleteConfirm1Continue"),
+          style: "destructive",
+          onPress: () => {
+            Alert.alert(
+              t("profileSettings.deleteConfirm2Title"),
+              t("profileSettings.deleteConfirm2Msg"),
+              [
+                { text: t("profileSettings.deleteConfirm2Cancel"), style: "cancel" },
+                {
+                  text: t("profileSettings.deleteConfirm2Confirm"),
+                  style: "destructive",
+                  onPress: confirmDelete,
+                },
+              ],
+            );
+          },
+        },
+      ],
+    );
+  };
+
+  const confirmDelete = async () => {
+    if (!user || deleting) return;
+    try {
+      setDeleting(true);
+      const token = await user.getIdToken();
+      const res = await apiFetch(`${apiBaseUrl}/account/delete`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? "Unknown error");
+      }
+      await signOutUser();
+    } catch {
+      Alert.alert(
+        t("profileSettings.deleteErrorTitle"),
+        t("profileSettings.deleteErrorMsg"),
+      );
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -114,9 +200,11 @@ export default function ProfileSettingsScreen() {
       {/* Header */}
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={8}>
-          <Text style={{fontSize: 20}}>←</Text>
+          <LinearGradient colors={["#FD165A", "#8938D5"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.backBtnGrad}>
+            <Ionicons name="arrow-back" size={18} color="#fff" />
+          </LinearGradient>
         </Pressable>
-        <Text style={styles.headerTitle}>My Profile</Text>
+        <Text style={styles.headerTitle}>{t("profile.settings.myProfile")}</Text>
         <View style={{ width: 38 }} />
       </View>
 
@@ -126,69 +214,82 @@ export default function ProfileSettingsScreen() {
         showsVerticalScrollIndicator={false}
       >
         {/* Name */}
-        <Text style={styles.label}>Name</Text>
+        <Text style={styles.label}>{t("profileSettings.nameLabel")}</Text>
         <View style={[styles.inputRow, nameFocused && styles.inputRowFocused]}>
-          <Text style={[{fontSize: 16}, styles.inputIcon]}>👤</Text>
+          <Ionicons name="person-outline" size={16} color={C.muted} style={styles.inputIcon} />
           <TextInput
             style={styles.textInput}
             value={name}
             onChangeText={setName}
-            placeholder="Your name"
+            placeholder={t("profileSettings.namePlaceholder")}
             placeholderTextColor={C.muted}
             onFocus={() => setNameFocused(true)}
             onBlur={() => setNameFocused(false)}
           />
         </View>
 
-        {/* Age */}
-        <Text style={styles.label}>Age</Text>
-        <View style={[styles.inputRow, ageFocused && styles.inputRowFocused]}>
-          <Text style={[{fontSize: 16}, styles.inputIcon]}>📅</Text>
+        {/* Birth Date */}
+        <Text style={styles.label}>{t("profileSettings.birthDateLabel")}</Text>
+        <View style={[styles.inputRow, birthDateFocused && styles.inputRowFocused]}>
+          <Ionicons name="calendar-outline" size={16} color={C.muted} style={styles.inputIcon} />
           <TextInput
             style={styles.textInput}
-            value={age}
-            onChangeText={(v) => setAge(v.replace(/[^0-9]/g, "").slice(0, 2))}
-            placeholder="Your age"
+            value={birthDate}
+            onChangeText={(v) => setBirthDate(autoFormatDateInput(v))}
+            placeholder={t("profileSettings.birthDatePlaceholder")}
             placeholderTextColor={C.muted}
             keyboardType="number-pad"
-            maxLength={2}
-            onFocus={() => setAgeFocused(true)}
-            onBlur={() => setAgeFocused(false)}
+            maxLength={10}
+            onFocus={() => setBirthDateFocused(true)}
+            onBlur={() => setBirthDateFocused(false)}
           />
         </View>
 
         {/* School */}
-        <Text style={styles.label}>School</Text>
+        <Text style={styles.label}>{t("profileSettings.schoolLabel")}</Text>
         <View style={[styles.inputRow, schoolFocused && styles.inputRowFocused]}>
-          <Text style={[{fontSize: 16}, styles.inputIcon]}>🎓</Text>
+          <Ionicons name="school-outline" size={16} color={C.muted} style={styles.inputIcon} />
           <TextInput
             style={styles.textInput}
             value={school}
             onChangeText={setSchool}
-            placeholder="University or college"
+            placeholder={t("profileSettings.schoolPlaceholder")}
             placeholderTextColor={C.muted}
-            onFocus={() => setSchoolFocused(true)}
-            onBlur={() => setSchoolFocused(false)}
+            onFocus={() => {
+              setSchoolFocused(true);
+              setShowSchoolDropdown(true);
+            }}
+            onBlur={() => {
+              setSchoolFocused(false);
+              setShowSchoolDropdown(false);
+            }}
           />
         </View>
-
-        {/* Preferences */}
-        <Text style={styles.label}>Ride Preferences</Text>
-        <View style={styles.chipsRow}>
-          {PREFERENCE_OPTIONS.map((opt) => {
-            const selected = preferences.includes(opt.key);
-            return (
+        {showSchoolDropdown && filteredSchools.length > 0 && (
+          <View style={styles.dropdown}>
+            {filteredSchools.map((s, idx) => (
               <Pressable
-                key={opt.key}
-                onPress={() => togglePreference(opt.key)}
-                style={[styles.chip, selected && styles.chipSelected]}
+                key={idx}
+                onPress={() => {
+                  setSchool(s);
+                  setShowSchoolDropdown(false);
+                }}
+                style={({ pressed }) => [styles.dropdownItem, pressed && styles.dropdownItemPressed]}
               >
-                <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
-                  {opt.label}
-                </Text>
+                <Text style={styles.dropdownItemText}>{s}</Text>
               </Pressable>
-            );
-          })}
+            ))}
+          </View>
+        )}
+
+        {/* Preferences — Coming Soon */}
+        <Text style={styles.label}>{t("profileSettings.prefsLabel")}</Text>
+        <View style={styles.comingSoonBox}>
+          <Ionicons name="construct-outline" size={18} color={C.purpleLight} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.comingSoonTitle}>{t("profileSettings.comingSoonTitle")}</Text>
+            <Text style={styles.comingSoonSub}>{t("profileSettings.comingSoonSub")}</Text>
+          </View>
         </View>
 
         {/* Save */}
@@ -202,13 +303,35 @@ export default function ProfileSettingsScreen() {
             {saving ? (
               <View style={styles.saveBtnContent}>
                 <ActivityIndicator color="#fff" size="small" />
-                <Text style={[styles.saveBtnText, { marginLeft: 8 }]}>Saving…</Text>
+                <Text style={[styles.saveBtnText, { marginLeft: 8 }]}>{t("profileSettings.saving")}</Text>
               </View>
             ) : (
-              <Text style={styles.saveBtnText}>Save Changes</Text>
+              <Text style={styles.saveBtnText}>{t("profileSettings.saveChanges")}</Text>
             )}
           </LinearGradient>
         </Pressable>
+
+        {/* Danger Zone */}
+        <View style={styles.dangerZone}>
+          <View style={styles.dangerZoneHeader}>
+            <Ionicons name="warning-outline" size={15} color="#ef4444" />
+            <Text style={styles.dangerZoneLabel}>{t("profileSettings.dangerZone")}</Text>
+          </View>
+          <Pressable
+            onPress={handleDeleteAccount}
+            disabled={deleting}
+            style={({ pressed }) => [styles.deleteBtn, pressed && { opacity: 0.75 }]}
+          >
+            {deleting ? (
+              <ActivityIndicator color="#ef4444" size="small" />
+            ) : (
+              <Ionicons name="trash-outline" size={16} color="#ef4444" />
+            )}
+            <Text style={styles.deleteBtnText}>
+              {deleting ? t("profileSettings.deleting") : t("profileSettings.deleteAccount")}
+            </Text>
+          </Pressable>
+        </View>
 
         <View style={{ height: 40 }} />
       </ScrollView>
@@ -233,10 +356,13 @@ const styles = StyleSheet.create({
     borderBottomColor: C.border,
   },
   backBtn: {
+    borderRadius: 10,
+    overflow: "hidden",
+  },
+  backBtnGrad: {
     width: 38,
     height: 38,
     borderRadius: 10,
-    backgroundColor: "rgba(224,154,247,0.1)",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -306,6 +432,31 @@ const styles = StyleSheet.create({
   chipTextSelected: {
     color: "#fff",
   },
+  comingSoonBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: "rgba(137, 56, 213, 0.06)",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(137, 56, 213, 0.2)",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 4,
+  },
+  comingSoonTitle: {
+    color: "#e09af7",
+    fontSize: 12,
+    fontWeight: "700",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+    marginBottom: 2,
+  },
+  comingSoonSub: {
+    color: "#9ca3af",
+    fontSize: 12,
+    lineHeight: 17,
+  },
   saveBtn: {
     height: 52,
     borderRadius: 13,
@@ -320,5 +471,66 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontWeight: "700",
     fontSize: 16,
+  },
+  dangerZone: {
+    marginTop: 40,
+    borderWidth: 1,
+    borderColor: "rgba(239, 68, 68, 0.25)",
+    borderRadius: 14,
+    overflow: "hidden",
+  },
+  dangerZoneHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: "rgba(239, 68, 68, 0.07)",
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(239, 68, 68, 0.15)",
+  },
+  dangerZoneLabel: {
+    color: "#ef4444",
+    fontSize: 11,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+  },
+  deleteBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 15,
+    paddingHorizontal: 16,
+    backgroundColor: "rgba(239, 68, 68, 0.06)",
+  },
+  deleteBtnText: {
+    color: "#ef4444",
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  dropdown: {
+    backgroundColor: C.surface,
+    borderWidth: 1,
+    borderColor: C.inputFocus,
+    borderRadius: 12,
+    marginBottom: 18,
+    marginTop: -14,
+    paddingVertical: 8,
+    overflow: "hidden",
+  },
+  dropdownItem: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: C.borderFaint,
+  },
+  dropdownItemPressed: {
+    backgroundColor: "rgba(137, 56, 213, 0.1)",
+  },
+  dropdownItemText: {
+    color: C.text,
+    fontSize: 15,
   },
 });

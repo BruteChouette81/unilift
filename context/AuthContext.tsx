@@ -93,8 +93,12 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       sessionCheckInFlightRef.current = true;
 
       try {
-        const isValid = await ensureSessionIsValid();
-        if (isValid) return;
+        const validity = await ensureSessionIsValid();
+        // Only force a sign-out when Firebase definitively rejects the session.
+        // A transient failure ("unknown") — e.g. the network blip that happens
+        // when returning from Google Maps — must NOT log the user out, since the
+        // persisted session is still valid.
+        if (validity !== "invalid") return;
 
         await signOutService();
         setUser(null);

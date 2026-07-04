@@ -1,45 +1,52 @@
 import RideMapView from "@/components/mapview";
-import RideCard, { RideCardSlected } from "@/components/ridecard";
-import { PROMOTED_EVENTS } from "@/constants/events";
+import { RequestLiftSheet } from "@/components/request-lift-sheet";
+import HypeEventCard from "@/components/hype-event-card";
+import { type HypeEvent } from "@/constants/events";
+import { isRideExpired } from "@/utils/ride-lifecycle";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Location from "expo-location";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   Keyboard,
-  Modal,
-  PanResponder,
-  Platform,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
+  type AppStateStatus,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
-  acceptRide,
+  cleanupAbandonedStartedRide,
+  cleanupExpiredRide,
   fetchRides,
   geoCode,
   geoSuggestion,
-  requestToJoinRide,
   type LocationResult,
 } from "../../services/rideServices";
 
+import { useActiveRide } from "@/context/ActiveRideContext";
 import { useAuth } from "@/context/AuthContext";
 import { useLanguage } from "@/context/LanguageContext";
 import { useUserProfile } from "@/context/UserProfileContext";
-import Slider from "@react-native-community/slider";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
-import { recommendRides, type RecommendOptions } from "@/hooks/use-ride-recommendations";
-import type { FavoriteRoute, LocationPoint, Ride, ScoredRide } from "@/types/models";
+import { useSearchHistory } from "@/hooks/use-search-history";
+import { useWallet } from "@/context/WalletContext";
+import { createRideRequest } from "@/services/rideRequestService";
+import { dispatchRideRequest, fetchAvailableDriverCount } from "@/services/driverSessionService";
+import { fetchHypeEvents } from "@/services/eventService";
+import type { FavoriteRoute, LocationPoint, Ride } from "@/types/models";
+import { ensurePaymentMethodOrAlert } from "@/utils/ensurePaymentMethod";
+import { rideErrorMessage } from "@/utils/rideErrors";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { haversineKm } from "@/utils/matching/geometry";
 
-type SuggestionKind = "geo" | "home" | "favorite" | "event";
+type SuggestionKind = "geo" | "home" | "favorite" | "event" | "history";
 type Suggestion = LocationResult & { kind: SuggestionKind };
 
 // ─── Design Tokens ─────────────────────────────────────────────────────────────
@@ -58,85 +65,61 @@ const C = {
   gold:        "#fbbf24",
 };
 
-const BUTTON_GRADIENT = ["#FD165A", "#8938D5"] as const;
-
-function getBoundingBox(lat: number, lng: number, radius: number) {
-  const earthRadius = 6371;
-  const latDelta = (radius / earthRadius) * (180 / Math.PI);
-  const lngDelta =
-    ((radius / earthRadius) * (180 / Math.PI)) / Math.cos((lat * Math.PI) / 180);
-  return {
-    minLat: lat - latDelta,
-    maxLat: lat + latDelta,
-    minLng: lng - lngDelta,
-    maxLng: lng + lngDelta,
-  };
-}
 
 // ─── Main Screen ───────────────────────────────────────────────────────────────
 export default function HomeScreen() {
-  const [selectedRide, setSelectedRide] = useState<any>();
   const [homeLoc, setHomeLoc] = useState<{ lat: number; lng: number } | undefined>();
-  const [filter, setFilter] = useState<{
-    minLat: number;
-    maxLat: number;
-    minLng: number;
-    maxLng: number;
-  }>();
   const [favoriteRoutes, setFavoriteRoutes] = useState<FavoriteRoute[]>([]);
   const [userLocation, setUserLocation] = useState<LocationPoint | null>(null);
   const { user } = useAuth();
+  const { activeRide } = useActiveRide();
+  const { hasPaymentMethod, loading: walletLoading } = useWallet();
+  const { history: searchHistory, addToHistory, removeFromHistory } = useSearchHistory(user?.uid);
   const { t } = useLanguage();
   const { userData } = useUserProfile();
   const router = useRouter();
   const [rides, setRides] = useState<Ride[]>([]);
 
+  // Hype-map events (Firestore-backed) + the tapped event's floating card.
+  const [hypeEvents, setHypeEvents] = useState<HypeEvent[]>([]);
+  const [selectedEvent, setSelectedEvent] = useState<HypeEvent | null>(null);
+
   // Search + suggestions
   const [searchText, setSearchText] = useState("");
   const suppressSuggestionsRef = useRef(false);
-  const debouncedSearch = useDebouncedValue(searchText, 400);
+  const debouncedSearch = useDebouncedValue(searchText, 700);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
 
-  // Search settings (session-only, not persisted)
-  const [showSettings, setShowSettings] = useState(false);
-  const [searchRadius, setSearchRadius] = useState(10);
-  const [minSeats, setMinSeats] = useState(1);
-  const [maxBudget, setMaxBudget] = useState(50);
-  // Recommendation weights (kept as state for the algorithm, not shown in UI)
-  const [wDistance] = useState(35);
-  const [wTime] = useState(30);
-  const [wDirection] = useState(25);
+  // Role toggle: passenger or driver
+  const [role, setRole] = useState<"passenger" | "driver">("passenger");
 
-  // Modal
-  const [modalVisible, setModalVisible] = useState(false);
+  // Lift request sheet
+  const [showLiftSheet, setShowLiftSheet] = useState(false);
+  const [availableDrivers, setAvailableDrivers] = useState<number | undefined>(undefined);
+
+  // Selected destination (drives the on-demand lift request)
   const [selectedPlace, setSelectedPlace] = useState("");
-  const [modalSelectedRide, setModalSelectedRide] = useState<ScoredRide | null>(null);
-
-  const acceptARide = (id: string, started: boolean) => {
-    acceptRide(id).then(() => {
-      if (started) {
-        Alert.alert(t("home.rideAccepted"), t("home.rideStartNow"));
-        router.push(
-          `/rideScreen?rideId=${id}&Originlat=${selectedRide?.localisation?.latitude}&OriginLng=${selectedRide?.localisation?.longitude}&DestinationLat=${selectedRide?.destinationCoords?.latitude}&DestinationLng=${selectedRide?.destinationCoords?.longitude}`,
-        );
-      } else {
-        Alert.alert(t("home.rideAccepted"), t("home.rideDriverReady"));
-      }
-    });
-  };
+  const [selectedDropoff, setSelectedDropoff] = useState<LocationPoint | null>(null);
 
   // Sync home location + favorites from session cache (no Firestore fetch)
   useEffect(() => {
     if (!userData) return;
     setFavoriteRoutes(userData.favorite ?? []);
     const geocodeHome = async () => {
-      if (!userData.homeAddress) { setHomeLoc({ lat: 0, lng: 0 }); return; }
+      if (!userData.homeAddress) { setHomeLoc(undefined); return; }
+      // Use stored coordinates if available (saved from profile suggestions)
+      if (userData.homeAddressCoords) {
+        setHomeLoc({ lat: userData.homeAddressCoords.latitude, lng: userData.homeAddressCoords.longitude });
+        return;
+      }
+      // Fallback: geocode the address string
       try {
-        const geo = await geoCode(JSON.stringify(userData.homeAddress));
-        setHomeLoc({ lat: geo?.latitude ?? 0, lng: geo?.longitude ?? 0 });
-      } catch { setHomeLoc({ lat: 0, lng: 0 }); }
+        const geo = await geoCode(userData.homeAddress);
+        if (geo) setHomeLoc({ lat: geo.latitude, lng: geo.longitude });
+        else setHomeLoc(undefined);
+      } catch { setHomeLoc(undefined); }
     };
     void geocodeHome();
   }, [userData?.homeAddress, userData?.favorite]);
@@ -152,11 +135,58 @@ export default function HomeScreen() {
     void getLoc();
   }, []);
 
+  // Load Hype-map events once on mount.
+  useEffect(() => {
+    void fetchHypeEvents().then(setHypeEvents).catch(() => {});
+  }, []);
+
+  const openLiftSheet = () => {
+    // Reset to the pulsing placeholder; the live poll below fills it in for the
+    // selected place.
+    setAvailableDrivers(undefined);
+    setShowLiftSheet(true);
+  };
+
+  // Live driver count — while the lift sheet is open, poll the backend which
+  // mirrors dispatch matching (online live drives + active Ride Mode windows,
+  // deduped, filtered by the selected destination). A raw driverSessions
+  // listener would miss Ride Mode (offline) drivers entirely.
+  useEffect(() => {
+    if (!showLiftSheet || !selectedDropoff) return;
+    let cancelled = false;
+    const refresh = async () => {
+      const count = await fetchAvailableDriverCount({
+        origin: userLocation,
+        destination: { lat: selectedDropoff.latitude, lng: selectedDropoff.longitude },
+        seats: 1,
+      });
+      if (!cancelled) setAvailableDrivers(count);
+    };
+    void refresh();
+    const interval = setInterval(refresh, 12000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [showLiftSheet, selectedDropoff, userLocation]);
+
+  // Tapping a place on the map or selecting a suggestion routes based on role.
+  // Passengers see the RequestLiftSheet; drivers go straight to drive mode.
   const rideSelect = (name: string, lat: number, lng: number) => {
-    setModalSelectedRide(null);
     setSelectedPlace(name);
-    setFilter(getBoundingBox(lat, lng, searchRadius));
-    setModalVisible(true);
+    setSelectedDropoff({ latitude: lat, longitude: lng });
+    if (role === "driver") {
+      router.push(`/driveOnlineScreen?destName=${encodeURIComponent(name)}&destLat=${lat}&destLng=${lng}`);
+    } else {
+      openLiftSheet();
+    }
+  };
+
+  const handleLiftRequest = () => {
+    setShowLiftSheet(false);
+    setAvailableDrivers(undefined);
+    if (!selectedDropoff) return;
+    void handleChoosePassengerWith(selectedPlace, selectedDropoff);
   };
 
   // ── Debounced geo-suggestion effect ──────────────────────────────────────
@@ -167,8 +197,15 @@ export default function HomeScreen() {
     }
     const q = debouncedSearch.trim().toLowerCase();
     if (q.length < 1) {
-      setShowSuggestions(false);
-      setSuggestions([]);
+      if (searchHistory.length > 0) {
+        setSuggestions(
+          searchHistory.map((h) => ({ displayName: h.displayName, lat: h.lat, lon: h.lon, kind: "history" as const })),
+        );
+        setShowSuggestions(true);
+      } else {
+        setShowSuggestions(false);
+        setSuggestions([]);
+      }
       setIsLoadingSuggestions(false);
       return;
     }
@@ -198,9 +235,13 @@ export default function HomeScreen() {
       }
     }
 
-    // Events
-    for (const ev of PROMOTED_EVENTS) {
-      if (ev.name.toLowerCase().includes(q) || ev.nameFr.toLowerCase().includes(q) || ev.venue.toLowerCase().includes(q)) {
+    // Hype events
+    for (const ev of hypeEvents) {
+      if (
+        ev.name.toLowerCase().includes(q) ||
+        (ev.nameFr?.toLowerCase().includes(q) ?? false) ||
+        ev.venue.toLowerCase().includes(q)
+      ) {
         local.push({
           displayName: `${ev.name} — ${ev.venue}`,
           lat: String(ev.lat),
@@ -235,12 +276,11 @@ export default function HomeScreen() {
       setIsLoadingSuggestions(false);
     });
     return () => controller.abort();
-  }, [debouncedSearch, favoriteRoutes, userData]);
+  }, [debouncedSearch, favoriteRoutes, userData, searchHistory, hypeEvents]);
 
   // ── Search handlers ──────────────────────────────────────────────────────
   const handleSearchInput = (text: string) => {
     suppressSuggestionsRef.current = false;
-    if (text.length > 0) setShowSettings(false);
     setSearchText(text);
   };
 
@@ -250,86 +290,186 @@ export default function HomeScreen() {
     setSearchText(item.displayName);
     setShowSuggestions(false);
     setSelectedPlace(item.displayName);
-    setModalSelectedRide(null);
-    const box = getBoundingBox(parseFloat(item.lat), parseFloat(item.lon), searchRadius);
-    setFilter(box);
-    setModalVisible(true);
+    const lat = parseFloat(item.lat);
+    const lon = parseFloat(item.lon);
+    const dropoff: LocationPoint = { latitude: lat, longitude: lon };
+    setSelectedDropoff(dropoff);
+    // Persist to history for non-ephemeral kinds (home/events change; only save real places)
+    if (item.kind === "geo" || item.kind === "favorite" || item.kind === "history") {
+      addToHistory({ displayName: item.displayName, lat: item.lat, lon: item.lon });
+    }
+    if (role === "driver") {
+      router.push(`/driveOnlineScreen?destName=${encodeURIComponent(item.displayName)}&destLat=${lat}&destLng=${lon}`);
+    } else {
+      openLiftSheet();
+    }
   };
 
   const clearSearch = () => {
     setSearchText("");
     setShowSuggestions(false);
     setSuggestions([]);
-    setFilter(undefined);
-    setModalVisible(false);
-    setModalSelectedRide(null);
+    setSelectedDropoff(null);
   };
 
+  // Passenger posts a live ride request and waits for a driver to accept.
+  const handleChoosePassengerWith = async (place: string, dropoff: LocationPoint) => {
+    if (!ensurePaymentMethodOrAlert(hasPaymentMethod, t, router, walletLoading)) return;
+    try {
+      let origin = userLocation;
+      if (!origin) {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status === "granted") {
+          const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          origin = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
+        }
+      }
+      if (!origin) { Alert.alert(t("common.error"), t("home.locationUnavailable")); return; }
+
+      const resjson = await createRideRequest({
+        destination: place,
+        destinationCoords: { lat: dropoff.latitude, lng: dropoff.longitude },
+        origin,
+        date: new Date().toISOString(),
+        seatsRequested: 1,
+      });
+      const requestId = resjson.name.split("/").pop() ?? "";
+
+      let notified = 0;
+      try { notified = (await dispatchRideRequest(requestId)).notified; } catch { /* drivers may come online later */ }
+
+      router.push(
+        `/findingDriverScreen?requestId=${requestId}&destination=${encodeURIComponent(place)}&destLat=${dropoff.latitude}&destLng=${dropoff.longitude}&originLat=${origin.latitude}&originLng=${origin.longitude}&notified=${notified}`,
+      );
+    } catch (err) {
+      Alert.alert(t("common.error"), rideErrorMessage(err, t));
+    }
+  };
+
+  const syncRides = useRef(async () => {
+    const ridelist = await fetchRides({ force: true }).catch(() => null);
+    if (!ridelist) return;
+    const uid = user?.uid || "";
+    ridelist.forEach((ride: Ride) => {
+      if (
+        ride.passengers &&
+        ride.passengers.includes(uid) &&
+        ride.started &&
+        ride.status === "started" &&
+        // Don't re-push if this passenger was already dropped — their
+        // rideScreen called clearActiveRide() which triggers this sync, but
+        // Firestore already has droppedPassengers set at that point.
+        !ride.droppedPassengers?.includes(uid)
+      ) {
+        router.push(
+          `/rideScreen?rideId=${ride.id}&Originlat=${ride.localisation.latitude}&OriginLng=${ride.localisation.longitude}&DestinationLat=${ride.destinationCoords.latitude}&DestinationLng=${ride.destinationCoords.longitude}`,
+        );
+      }
+    });
+    setRides(ridelist);
+  });
+
   useEffect(() => {
-    fetchRides()
-      .then((ridelist) => {
-        ridelist?.forEach((ride: Ride & { passengerIds?: string[] }) => {
-          if (
-            ride.passengerIds &&
-            ride.passengerIds.includes(user?.uid || "") &&
-            ride.started &&
-            ride.status === "planned"
-          ) {
-            router.push(
-              `/rideScreen?rideId=${ride.id}&Originlat=${ride.localisation.latitude}&OriginLng=${ride.localisation.longitude}&DestinationLat=${ride.destinationCoords.latitude}&DestinationLng=${ride.destinationCoords.longitude}`,
-            );
-          }
-        });
-        setRides(ridelist);
-      })
-      .catch(console.error);
+    syncRides.current = async () => {
+      const ridelist = await fetchRides({ force: true }).catch(() => null);
+      if (!ridelist) return;
+      const uid = user?.uid || "";
+      ridelist.forEach((ride: Ride) => {
+        if (
+          ride.passengers &&
+          ride.passengers.includes(uid) &&
+          ride.started &&
+          ride.status === "started" &&
+          !ride.droppedPassengers?.includes(uid)
+        ) {
+          router.push(
+            `/rideScreen?rideId=${ride.id}&Originlat=${ride.localisation.latitude}&OriginLng=${ride.localisation.longitude}&DestinationLat=${ride.destinationCoords.latitude}&DestinationLng=${ride.destinationCoords.longitude}`,
+          );
+        }
+      });
+      setRides(ridelist);
+    };
   }, [router, user?.uid]);
 
-  const filteredRides = useMemo(() => {
-    if (!filter) return [];
-    return rides.filter(
-      (ride) =>
-        ride.destinationCoords.latitude  >= filter.minLat &&
-        ride.destinationCoords.latitude  <= filter.maxLat &&
-        ride.destinationCoords.longitude >= filter.minLng &&
-        ride.destinationCoords.longitude <= filter.maxLng &&
-        ride.status === "planned" &&
-        ride.seatsAvailable >= minSeats,
-    );
-  }, [filter, rides]);
+  useEffect(() => {
+    // Suspend all ride polling while the user is in an active ride (driver or
+    // passenger). syncRides calls router.push when it finds the user is a
+    // passenger in a started ride — doing that while already on the rideScreen
+    // pushes a duplicate fresh instance, which is the source of the visible
+    // state-reset flash reported by users.
+    if (activeRide) return;
 
-  const normalizedWeights = useMemo((): RecommendOptions["weights"] => {
-    const preference = Math.max(0, 100 - wDistance - wTime - wDirection);
-    const sum = wDistance + wTime + wDirection + preference;
-    return {
-      distance:   wDistance   / sum,
-      time:       wTime       / sum,
-      direction:  wDirection  / sum,
-      preference: preference  / sum,
-    };
-  }, [wDistance, wTime, wDirection]);
+    // Initial fetch
+    void syncRides.current();
 
-  const scoredRides = useMemo((): ScoredRide[] => {
-    const profile = {
-      email: "", xp: 0, rating: 0, avatar: null as null, homeAddress: null as null,
-      localisation: userLocation ?? { latitude: null, longitude: null },
-      ridesCompleted: 0,
-      favorite: favoriteRoutes,
+    // Background poll every 15 s — pauses automatically when app is backgrounded
+    const intervalRef = { id: 0 as ReturnType<typeof setInterval> };
+
+    const startPolling = () => {
+      intervalRef.id = setInterval(() => void syncRides.current(), 15_000);
     };
-    return recommendRides(filteredRides, profile, { weights: normalizedWeights });
-  }, [filteredRides, favoriteRoutes, userLocation, normalizedWeights]);
+    const stopPolling = () => clearInterval(intervalRef.id);
+
+    startPolling();
+
+    const sub = AppState.addEventListener("change", (state: AppStateStatus) => {
+      if (state === "active") {
+        void syncRides.current(); // immediate refresh on foreground
+        startPolling();
+      } else {
+        stopPolling();
+      }
+    });
+
+    return () => {
+      stopPolling();
+      sub.remove();
+    };
+  }, [activeRide]);
+
+  // Lazy cleanup of expired rides (3h past scheduled time for planned, 3h past start for abandoned)
+  const cleanedUpRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const now = new Date();
+    for (const ride of rides) {
+      if (cleanedUpRef.current.has(ride.id)) continue;
+      if (!isRideExpired(ride, now)) continue;
+      cleanedUpRef.current.add(ride.id);
+      if (ride.status === "started") {
+        void cleanupAbandonedStartedRide(ride.id);
+      } else if (ride.status === "planned") {
+        void cleanupExpiredRide(ride.id);
+      }
+    }
+  }, [rides]);
 
   const insets = useSafeAreaInsets();
 
-  const swipePanResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onPanResponderRelease: (_, gs) => {
-        if (gs.dy > 40 || gs.vy > 0.3) setModalVisible(false);
-      },
-    }),
-  ).current;
+  // Wait for the user profile to finish loading before mounting the map —
+  // otherwise favorites/home arrive late and don't render until the user
+  // touches the map. `userData === null` means still loading from Firestore;
+  // once it's defined the favorite array may be empty (account has none),
+  // which is fine — we render the map either way.
+  const profileLoading = userData === null;
+
+  if (profileLoading) {
+    return (
+      <View style={[styles.shell, styles.loadingShell]}>
+        <LinearGradient
+          colors={["#1e1b4b", "#0d1224"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.loadingCard}
+        >
+          <ActivityIndicator size="large" color={C.purpleLight} />
+          <Text style={styles.loadingTitle}>{t("home.loadingTitle") || "Loading map"}</Text>
+          <Text style={styles.loadingSub}>
+            {t("home.loadingSub") || "Fetching your favorites and nearby rides…"}
+          </Text>
+        </LinearGradient>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.shell}>
@@ -338,13 +478,14 @@ export default function HomeScreen() {
         onPlaceSelect={rideSelect}
         favorites={favoriteRoutes}
         homeLocalisation={homeLoc ?? { lat: 0, lng: 0 }}
-        promotedEvents={PROMOTED_EVENTS}
+        events={hypeEvents}
+        onEventSelect={setSelectedEvent}
       />
 
       {/* ── Floating Search Bar ─────────────────────────────────────────── */}
       <View style={[styles.searchBarWrapper, { top: insets.top - 38 }]}>
         <BlurView
-          intensity={60}
+          intensity={70}
           tint="dark"
           experimentalBlurMethod="dimezisBlurView"
           style={styles.searchBarBlur}
@@ -358,122 +499,51 @@ export default function HomeScreen() {
               cursorColor={C.purpleLight}
               value={searchText}
               onChangeText={handleSearchInput}
+              onFocus={() => {
+                if (searchText.length === 0 && searchHistory.length > 0) {
+                  setSuggestions(
+                    searchHistory.map((h) => ({ displayName: h.displayName, lat: h.lat, lon: h.lon, kind: "history" as const })),
+                  );
+                  setShowSuggestions(true);
+                }
+              }}
             />
-            {searchText.length > 0 ? (
+            {searchText.length > 0 && (
               <TouchableOpacity style={styles.searchFilterBtn} activeOpacity={0.7} onPress={clearSearch}>
                 <Ionicons name="close" size={18} color={C.text} />
               </TouchableOpacity>
-            ) : (
-              <TouchableOpacity
-                style={[
-                  styles.searchFilterBtn,
-                  (showSettings || searchRadius !== 10 || minSeats !== 1 || maxBudget !== 50)
-                    && { backgroundColor: "rgba(137, 56, 213, 0.45)" },
-                ]}
-                activeOpacity={0.7}
-                onPress={() => setShowSettings((v) => !v)}
-              >
-                <Ionicons name="options-outline" size={18} color={showSettings ? C.purpleLight : C.text} />
-              </TouchableOpacity>
             )}
+          </View>
+
+          {/* ── Role Toggle ──────────────────────────────────────────────── */}
+          <View style={styles.roleToggleWrapper}>
+            <TouchableOpacity
+              style={[styles.roleToggleOption, role === "passenger" && styles.roleToggleOptionPassenger]}
+              onPress={() => setRole("passenger")}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="people-outline" size={14} color={role === "passenger" ? "#818cf8" : C.muted} />
+              <Text style={[styles.roleToggleText, role === "passenger" && styles.roleToggleTextPassenger]}>
+                {t("home.roleChooser.passengerTitle")}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.roleToggleOption, role === "driver" && styles.roleToggleOptionDriver]}
+              onPress={() => setRole("driver")}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="car-outline" size={14} color={role === "driver" ? "#FD165A" : C.muted} />
+              <Text style={[styles.roleToggleText, role === "driver" && styles.roleToggleTextDriver]}>
+                {t("home.roleChooser.driveTitle")}
+              </Text>
+            </TouchableOpacity>
           </View>
         </BlurView>
       </View>
 
-      {/* ── Search Settings Panel ─────────────────────────────────────────── */}
-      {showSettings && (
-        <View style={[styles.settingsPanel, { top: insets.top - 38 + 58 }]}>
-          <BlurView intensity={80} tint="dark" experimentalBlurMethod="dimezisBlurView" style={styles.settingsBlur}>
-            <View style={styles.settingsInner}>
-              {/* Title row */}
-              <View style={styles.settingsTitleRow}>
-                <Text style={styles.settingsTitleText}>{t("searchSettings.title")}</Text>
-                <TouchableOpacity
-                  onPress={() => { setSearchRadius(10); setMinSeats(1); setMaxBudget(50); }}
-                  style={styles.settingsResetBtn}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.settingsResetText}>{t("searchSettings.reset")}</Text>
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.settingsDivider} />
-
-              {/* Search radius */}
-              <View style={styles.settingsSection}>
-                <View style={styles.settingsLabelRow}>
-                  <Text style={styles.settingsLabel}>{t("searchSettings.radius")}</Text>
-                  <Text style={styles.settingsValue}>{searchRadius} km</Text>
-                </View>
-                <Slider
-                  style={styles.settingsSlider}
-                  minimumValue={1}
-                  maximumValue={50}
-                  step={1}
-                  value={searchRadius}
-                  onValueChange={setSearchRadius}
-                  minimumTrackTintColor={C.purple}
-                  maximumTrackTintColor={C.dim}
-                  thumbTintColor={C.purpleLight}
-                />
-              </View>
-
-              <View style={styles.settingsDivider} />
-
-              {/* Number of people stepper */}
-              <View style={styles.settingsSection}>
-                <View style={styles.settingsLabelRow}>
-                  <Text style={styles.settingsLabel}>{t("searchSettings.people")}</Text>
-                  <View style={styles.stepperRow}>
-                    <TouchableOpacity
-                      style={styles.stepperBtn}
-                      onPress={() => setMinSeats((v) => Math.max(1, v - 1))}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={styles.stepperBtnText}>−</Text>
-                    </TouchableOpacity>
-                    <Text style={styles.stepperValue}>{minSeats}</Text>
-                    <TouchableOpacity
-                      style={styles.stepperBtn}
-                      onPress={() => setMinSeats((v) => Math.min(6, v + 1))}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={styles.stepperBtnText}>+</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </View>
-
-              <View style={styles.settingsDivider} />
-
-              {/* Max budget slider */}
-              <View style={styles.settingsSection}>
-                <View style={styles.settingsLabelRow}>
-                  <Text style={styles.settingsLabel}>{t("searchSettings.budget")}</Text>
-                  <Text style={styles.settingsValue}>
-                    {maxBudget >= 100 ? t("searchSettings.anyBudget") : `$${maxBudget}`}
-                  </Text>
-                </View>
-                <Slider
-                  style={styles.settingsSlider}
-                  minimumValue={5}
-                  maximumValue={100}
-                  step={5}
-                  value={maxBudget}
-                  onValueChange={setMaxBudget}
-                  minimumTrackTintColor={C.purple}
-                  maximumTrackTintColor={C.dim}
-                  thumbTintColor={C.purpleLight}
-                />
-              </View>
-            </View>
-          </BlurView>
-        </View>
-      )}
-
       {/* ── Suggestions Dropdown ───────────────────────────────────────────── */}
       {showSuggestions && (
-        <View style={[styles.suggestionsDropdown, { top: insets.top - 38 + 58 }]}>
+        <View style={[styles.suggestionsDropdown, { top: insets.top - 38 + 112 }]}>
           <BlurView intensity={80} tint="dark" experimentalBlurMethod="dimezisBlurView" style={styles.suggestionsBlur}>
             {isLoadingSuggestions ? (
               <View style={styles.suggestionRow}>
@@ -494,29 +564,63 @@ export default function HomeScreen() {
                 const isEvent    = item.kind === "event";
                 const isFavorite = item.kind === "favorite";
                 const isHome     = item.kind === "home";
+                const isHistory  = item.kind === "history";
                 const icon = isHome     ? "home"
                            : isFavorite ? "star"
                            : isEvent    ? "flame"
+                           : isHistory  ? "time-outline"
                            : "location";
                 const iconColor = isHome     ? "#60a5fa"
                                 : isFavorite ? C.gold
                                 : isEvent    ? "#f97316"
+                                : isHistory  ? C.muted
                                 : C.purpleLight;
                 const rowStyle = isEvent
                   ? [styles.suggestionItem, { backgroundColor: "rgba(249,115,22,0.08)" }, index === suggestions.length - 1 && { borderBottomWidth: 0 }]
                   : [styles.suggestionItem, index === suggestions.length - 1 && { borderBottomWidth: 0 }];
                 const textColor = isEvent ? "#fdba74" : C.text;
+                const distKm =
+                  userLocation !== null &&
+                  !isNaN(parseFloat(item.lat)) && parseFloat(item.lat) !== 0 &&
+                  !isNaN(parseFloat(item.lon)) && parseFloat(item.lon) !== 0
+                    ? haversineKm(
+                        { lat: userLocation.latitude, lng: userLocation.longitude },
+                        { lat: parseFloat(item.lat), lng: parseFloat(item.lon) },
+                      )
+                    : null;
+                const distLabel =
+                  distKm === null ? null
+                  : distKm < 1 ? `${Math.round(distKm * 1000)} m ${t("home.away")}`
+                  : `${distKm.toFixed(1)} km ${t("home.away")}`;
                 return (
-                  <TouchableOpacity
-                    key={index}
-                    onPress={() => onSelectSuggestion(item)}
-                    style={rowStyle}
-                  >
-                    <Ionicons name={icon as any} size={14} color={iconColor} />
-                    <Text style={[styles.suggestionText, { color: textColor }]} numberOfLines={1}>
-                      {item.displayName}
-                    </Text>
-                  </TouchableOpacity>
+                  <View key={index} style={rowStyle}>
+                    <TouchableOpacity
+                      style={[styles.suggestionRowTouchable, { alignItems: "flex-start" }]}
+                      onPress={() => onSelectSuggestion(item)}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons name={icon as any} size={14} color={iconColor} style={{ marginTop: 2 }} />
+                      <View style={styles.suggestionTextGroup}>
+                        <Text style={[styles.suggestionText, { color: textColor }]} numberOfLines={1}>
+                          {item.displayName}
+                        </Text>
+                        {distLabel !== null && (
+                          <Text style={styles.suggestionDistance}>{distLabel}</Text>
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                    {isHistory && (
+                      <TouchableOpacity
+                        onPress={() => {
+                          removeFromHistory(item.displayName);
+                          setSuggestions((prev) => prev.filter((s) => s.displayName !== item.displayName));
+                        }}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Ionicons name="close" size={14} color={C.muted} />
+                      </TouchableOpacity>
+                    )}
+                  </View>
                 );
               })
             )}
@@ -524,125 +628,27 @@ export default function HomeScreen() {
         </View>
       )}
 
-      {/* ── Floating Action Button ───────────────────────────────────────── */}
-      <TouchableOpacity
-        style={styles.floatingButton}
-        onPress={() => router.push("/createRideScreen")}
-        activeOpacity={0.85}
-      >
-        <LinearGradient
-          colors={BUTTON_GRADIENT}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 0 }}
-          style={styles.floatingBtnGrad}
-        >
-          <Text style={{fontSize: 18}}>➕</Text>
-          <Text style={styles.floatingButtonText}>{t("home.startNewRide")}</Text>
-        </LinearGradient>
-      </TouchableOpacity>
-      {/* ── Rides Modal ────────────────────────────────────────────────────── */}
-      <Modal
-        visible={modalVisible}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setModalVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContainer}>
-            {/* Header */}
-            <View style={styles.modalHeader}>
-              <View style={styles.modalDragZone} {...swipePanResponder.panHandlers}>
-                <View style={styles.modalHandle} />
-              </View>
-              <View style={styles.modalTitleRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.modalLabel}>
-                    {t("home.ridesTo") || "Rides to"}
-                  </Text>
-                  <Text style={styles.modalTitle} numberOfLines={2}>
-                    {selectedPlace}
-                  </Text>
-                </View>
-                <TouchableOpacity
-                  onPress={() => setModalVisible(false)}
-                  style={styles.modalCloseBtn}
-                >
-                  <Ionicons name="close" size={22} color={C.text} />
-                </TouchableOpacity>
-              </View>
-            </View>
+      {/* ── Request Lift Sheet ───────────────────────────────────────────── */}
+      <RequestLiftSheet
+        visible={showLiftSheet}
+        onClose={() => { setShowLiftSheet(false); setAvailableDrivers(undefined); }}
+        placeName={selectedPlace}
+        availableDrivers={availableDrivers}
+        onRequestLift={handleLiftRequest}
+      />
 
-            {/* Ride list */}
-            <ScrollView
-              style={styles.modalScroll}
-              contentContainerStyle={styles.modalScrollContent}
-              showsVerticalScrollIndicator={false}
-            >
-              {modalSelectedRide ? (
-                <RideCardSlected
-                  driverId={modalSelectedRide.driverId}
-                  driverName={modalSelectedRide.driverName}
-                  driverAvatar={modalSelectedRide.driverAvatar}
-                  rating={0}
-                  destination={modalSelectedRide.destination}
-                  seatsAvailable={modalSelectedRide.seatsAvailable}
-                  time={modalSelectedRide.time ?? ""}
-                  origin={`${modalSelectedRide.localisation.latitude.toFixed(3)}, ${modalSelectedRide.localisation.longitude.toFixed(3)}`}
-                  level={0}
-                  onPress={async () => {
-                    try {
-                      let loc = { latitude: 0, longitude: 0 };
-                      const { status } = await Location.requestForegroundPermissionsAsync();
-                      if (status === "granted") {
-                        const pos = await Location.getCurrentPositionAsync({});
-                        loc = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
-                      }
-                      await requestToJoinRide(modalSelectedRide.id, loc);
-                      Alert.alert(
-                        t("explore.requestSent") || "Request Sent",
-                        t("explore.requestSentMsg") || "Your request has been sent.",
-                      );
-                      setModalVisible(false);
-                      router.push(
-                        `/rideScreen?rideId=${modalSelectedRide.id}&Originlat=${modalSelectedRide.localisation.latitude}&OriginLng=${modalSelectedRide.localisation.longitude}&DestinationLat=${modalSelectedRide.destinationCoords.latitude}&DestinationLng=${modalSelectedRide.destinationCoords.longitude}&pending=true`,
-                      );
-                    } catch (err: any) {
-                      Alert.alert("Error", err.message ?? "Could not join ride");
-                    }
-                  }}
-                  onCancel={() => setModalSelectedRide(null)}
-                />
-              ) : scoredRides.length > 0 ? (
-                scoredRides.map((ride) => (
-                  <RideCard
-                    key={ride.id}
-                    driverId={ride.driverId}
-                    driverName={ride.driverName}
-                    driverAvatar={ride.driverAvatar}
-                    rating={0}
-                    level={0}
-                    destination={ride.destination}
-                    seatsAvailable={ride.seatsAvailable}
-                    time={ride.time ?? ""}
-                    origin={`${ride.localisation.latitude.toFixed(3)}, ${ride.localisation.longitude.toFixed(3)}`}
-                    onPress={() => setModalSelectedRide(ride)}
-                  />
-                ))
-              ) : (
-                <View style={styles.modalEmptyState}>
-                  <Ionicons name="car-outline" size={32} color={C.muted} />
-                  <Text style={styles.modalEmptyTitle}>
-                    {t("explore.noRidesFound") || "No rides found"}
-                  </Text>
-                  <Text style={styles.modalEmptySubtext}>
-                    {t("explore.noRidesFoundSub") || "Try a different destination"}
-                  </Text>
-                </View>
-              )}
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
+      {/* ── Hype Event Card ──────────────────────────────────────────────── */}
+      <HypeEventCard
+        event={selectedEvent}
+        onClose={() => setSelectedEvent(null)}
+        onAccess={(ev) => {
+          // Tapping "Access event" continues with the normal lift process
+          // (respects the passenger/driver role toggle).
+          setSelectedEvent(null);
+          rideSelect(ev.venue || ev.name, ev.lat, ev.lng);
+        }}
+      />
+
     </View>
   );
 }
@@ -653,6 +659,35 @@ const styles = StyleSheet.create({
     backgroundColor: C.bg,
   },
 
+  // ── Loading state (waiting for user profile) ───────────────────────────────
+  loadingShell: {
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 28,
+  },
+  loadingCard: {
+    width: "100%",
+    maxWidth: 360,
+    paddingVertical: 28,
+    paddingHorizontal: 24,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: C.border,
+    alignItems: "center",
+    gap: 12,
+  },
+  loadingTitle: {
+    color: C.text,
+    fontSize: 16,
+    fontWeight: "700",
+    marginTop: 6,
+  },
+  loadingSub: {
+    color: C.muted,
+    fontSize: 13,
+    textAlign: "center",
+  },
+
   // ── Floating Search Bar ────────────────────────────────────────────────────
   searchBarWrapper: {
     position: "absolute",
@@ -661,18 +696,18 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   searchBarBlur: {
-    borderRadius: 16,
+    borderRadius: 20,
     overflow: "hidden",
     borderWidth: 1,
-    borderColor: "rgba(137, 56, 213, 0.25)",
+    borderColor: "rgba(137, 56, 213, 0.30)",
   },
   searchBarInner: {
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 14,
-    paddingVertical: Platform.OS === "ios" ? 14 : 10,
+    height: 56,
     gap: 10,
-    backgroundColor: "rgba(15, 15, 30, 0.55)",
+    backgroundColor: "rgba(10, 10, 22, 0.72)",
   },
   searchInput: {
     flex: 1,
@@ -699,10 +734,10 @@ const styles = StyleSheet.create({
     zIndex: 9,
   },
   suggestionsBlur: {
-    borderRadius: 14,
+    borderRadius: 20,
     overflow: "hidden",
     borderWidth: 1,
-    borderColor: "rgba(137, 56, 213, 0.25)",
+    borderColor: "rgba(137, 56, 213, 0.30)",
   },
   suggestionRow: {
     flexDirection: "row",
@@ -710,7 +745,7 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     paddingHorizontal: 14,
     gap: 10,
-    backgroundColor: "rgba(15, 15, 30, 0.85)",
+    backgroundColor: "rgba(10, 10, 22, 0.88)",
   },
   suggestionLoadingText: {
     color: C.muted,
@@ -723,53 +758,70 @@ const styles = StyleSheet.create({
   suggestionItem: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 12,
+    paddingVertical: 16,
     paddingHorizontal: 14,
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(255, 255, 255, 0.06)",
+    borderBottomColor: "rgba(137, 56, 213, 0.12)",
     gap: 10,
-    backgroundColor: "rgba(15, 15, 30, 0.85)",
+    backgroundColor: "rgba(10, 10, 22, 0.88)",
+  },
+  suggestionRowTouchable: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
   },
   suggestionText: {
     color: C.text,
     fontSize: 14,
+  },
+  suggestionTextGroup: {
     flex: 1,
+    gap: 2,
+  },
+  suggestionDistance: {
+    color: C.muted,
+    fontSize: 12,
+    fontWeight: "400",
   },
 
   // ── Modal ─────────────────────────────────────────────────────────────────
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0, 0, 0, 0.6)",
+    backgroundColor: "rgba(0, 0, 0, 0.65)",
     justifyContent: "flex-end",
   },
   modalContainer: {
     height: "90%",
-    backgroundColor: C.bg,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
+    backgroundColor: "rgba(8,8,16,0.97)",
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
     borderWidth: 1,
     borderBottomWidth: 0,
-    borderColor: C.border,
+    borderColor: "rgba(137,56,213,0.30)",
     overflow: "hidden",
+    marginBottom: 0,
   },
   modalHeader: {
     alignItems: "center",
     paddingHorizontal: 20,
-    paddingBottom: 16,
+    paddingBottom: 18,
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(255, 255, 255, 0.06)",
-    backgroundColor: C.surface,
+    borderBottomColor: "rgba(137,56,213,0.15)",
+    backgroundColor: "rgba(137,56,213,0.06)",
   },
   modalDragZone: {
     width: "100%",
     alignItems: "center",
-    paddingVertical: 12,
+    paddingVertical: 14,
   },
   modalHandle: {
-    width: 40,
+    width: 44,
     height: 4,
     borderRadius: 2,
-    backgroundColor: C.dim,
+    backgroundColor: "rgba(137,56,213,0.45)",
   },
   modalTitleRow: {
     flexDirection: "row",
@@ -778,9 +830,9 @@ const styles = StyleSheet.create({
   },
   modalLabel: {
     color: C.muted,
-    fontSize: 12,
-    fontWeight: "500",
-    letterSpacing: 0.5,
+    fontSize: 11,
+    fontWeight: "600",
+    letterSpacing: 0.6,
     textTransform: "uppercase",
     marginBottom: 4,
   },
@@ -793,7 +845,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 10,
-    backgroundColor: "rgba(137, 56, 213, 0.18)",
+    backgroundColor: "rgba(255,255,255,0.08)",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -802,13 +854,12 @@ const styles = StyleSheet.create({
   },
   modalScrollContent: {
     padding: 16,
-    gap: 12,
-    paddingBottom: 40,
+    gap: 14,
   },
   modalEmptyState: {
     alignItems: "center",
     paddingVertical: 60,
-    gap: 8,
+    gap: 10,
   },
   modalEmptyTitle: {
     color: C.text,
@@ -821,75 +872,159 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
 
-  // ── Search Settings Panel ─────────────────────────────────────────────────
-  settingsPanel: {
-    position: "absolute",
-    left: 16,
-    right: 16,
-    zIndex: 9,
-  },
-  settingsBlur: {
-    borderRadius: 16,
-    overflow: "hidden",
+  // ── Section headers ──────────────────────────────────────────────────────
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 6,
+    marginBottom: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: "rgba(137,56,213,0.08)",
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: "rgba(137, 56, 213, 0.25)",
+    borderColor: "rgba(137,56,213,0.18)",
+    alignSelf: "flex-start",
   },
-  settingsInner: {
-    backgroundColor: "rgba(15, 15, 30, 0.85)",
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+  sectionDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#34d399",
   },
-  settingsTitleRow: {
+  sectionTitle: {
+    color: C.purpleLight,
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+  },
+
+  // ── Seat stepper (modal) ────────────────────────────────────────────────
+  seatStepperRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 12,
+    backgroundColor: "rgba(137,56,213,0.08)",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(137,56,213,0.28)",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
-  settingsTitleText: {
-    color: C.text,
+  seatStepperLabel: {
+    color: C.muted,
     fontSize: 13,
+    fontWeight: "600",
+  },
+
+  // ── Passenger filter card (inside modal) ─────────────────────────────────
+  filterCard: {
+    backgroundColor: "rgba(137,56,213,0.06)",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(137,56,213,0.22)",
+    padding: 14,
+    gap: 10,
+  },
+  filterTitleRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  filterTitleText: {
+    color: C.muted,
+    fontSize: 11,
     fontWeight: "700",
-    letterSpacing: 0.4,
+    letterSpacing: 0.6,
     textTransform: "uppercase",
   },
-  settingsResetBtn: {
+  filterResetBtn: {
     paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingVertical: 3,
     borderRadius: 8,
-    backgroundColor: "rgba(137, 56, 213, 0.18)",
+    backgroundColor: "rgba(137,56,213,0.15)",
+    borderWidth: 1,
+    borderColor: "rgba(137,56,213,0.30)",
   },
-  settingsResetText: {
+  filterResetText: {
+    color: C.purpleLight,
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  filterRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  filterChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor: "rgba(137,56,213,0.10)",
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderWidth: 1,
+    borderColor: "rgba(137,56,213,0.28)",
+  },
+  filterChipText: {
     color: C.purpleLight,
     fontSize: 12,
     fontWeight: "600",
   },
-  settingsDivider: {
-    height: 1,
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
-    marginBottom: 12,
-  },
-  settingsSection: {
-    marginBottom: 10,
-  },
-  settingsLabelRow: {
+  filterStepperRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 2,
+    gap: 6,
+    backgroundColor: "rgba(137,56,213,0.10)",
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderWidth: 1,
+    borderColor: "rgba(137,56,213,0.28)",
+    flex: 1,
   },
-  settingsLabel: {
-    color: C.muted,
-    fontSize: 13,
-    fontWeight: "500",
+  filterStepperBtn: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    backgroundColor: "rgba(137,56,213,0.25)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(137,56,213,0.40)",
   },
-  settingsValue: {
+  filterStepperBtnText: {
     color: C.purpleLight,
-    fontSize: 13,
-    fontWeight: "600",
+    fontSize: 14,
+    fontWeight: "700",
+    lineHeight: 18,
   },
-  settingsSlider: {
+  filterStepperValue: {
+    color: C.text,
+    fontSize: 13,
+    fontWeight: "700",
+    flex: 1,
+    textAlign: "center",
+  },
+  filterSlider: {
     width: "100%",
-    height: 36,
+    height: 32,
+  },
+  leavingAtDone: {
+    marginTop: 8,
+    alignSelf: "flex-end",
+    backgroundColor: C.purple,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+  },
+  leavingAtDoneText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "600",
   },
   stepperRow: {
     flexDirection: "row",
@@ -897,14 +1032,14 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   stepperBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
+    width: 32,
+    height: 32,
+    borderRadius: 10,
     backgroundColor: "rgba(137, 56, 213, 0.25)",
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "rgba(137, 56, 213, 0.4)",
+    borderColor: "rgba(137, 56, 213, 0.40)",
   },
   stepperBtnText: {
     color: C.purpleLight,
@@ -920,31 +1055,46 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
 
-  // ── Floating Button ────────────────────────────────────────────────────────
-  floatingButton: {
-    position: "absolute",
-    bottom: 30,
-    left: 20,
-    right: 20,
-    borderRadius: 14,
-    overflow: "hidden",
-    shadowColor: C.purple,
-    shadowOpacity: 0.45,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 8,
+  // ── Role Toggle (under search bar) ────────────────────────────────────────
+  roleToggleWrapper: {
+    flexDirection: "row",
+    marginHorizontal: 12,
+    marginBottom: 10,
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderRadius: 12,
+    padding: 3,
+    borderWidth: 1,
+    borderColor: "rgba(137,56,213,0.20)",
+    gap: 3,
   },
-  floatingBtnGrad: {
+  roleToggleOption: {
+    flex: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 16,
-    gap: 8,
+    gap: 6,
+    paddingVertical: 8,
+    borderRadius: 10,
   },
-  floatingButtonText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "700",
-    letterSpacing: 0.3,
+  roleToggleOptionPassenger: {
+    backgroundColor: "rgba(99,102,241,0.20)",
+    borderWidth: 1,
+    borderColor: "rgba(99,102,241,0.35)",
+  },
+  roleToggleOptionDriver: {
+    backgroundColor: "rgba(253,22,90,0.15)",
+    borderWidth: 1,
+    borderColor: "rgba(253,22,90,0.30)",
+  },
+  roleToggleText: {
+    color: C.muted,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  roleToggleTextPassenger: {
+    color: "#818cf8",
+  },
+  roleToggleTextDriver: {
+    color: "#FD165A",
   },
 });

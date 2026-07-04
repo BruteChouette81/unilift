@@ -33,7 +33,12 @@ Expo Router (file-based, v6). Root layout (`app/_layout.tsx`) conditionally rend
 - **Custom hooks**: Profile data is split into focused hooks (`use-profile-data`, `use-profile-favorites`, `use-profile-rides`, `use-profile-avatar`). Each hook encapsulates its own Firestore interactions and local state.
 
 ### Firebase Access Pattern
-The app uses **Firestore REST API directly** (not the Firestore SDK) for all data reads/writes in hooks and services. Every request manually attaches `Authorization: Bearer {idToken}`. Firestore responses use type wrappers (`stringValue`, `integerValue`, `geoPointValue`, `arrayValue`, etc.) that must be manually extracted.
+The app uses a **hybrid** approach:
+
+- **Real-time listeners** (screens that need live updates): Use the **Firestore SDK** (`onSnapshot` from `firebase/firestore`). Get the Firestore instance via `getFirestore()` (no separate import — the app is already initialized via `firebaseConfig.js`). SDK snapshots return plain JS objects — **no type wrappers**. Access fields directly (e.g. `data.passengers`, `data.status`). GeoPoint fields expose `.latitude` / `.longitude`.
+- **One-time reads and all writes**: Use the **Firestore REST API** directly. Every request manually attaches `Authorization: Bearer {idToken}`. REST responses use type wrappers (`stringValue`, `integerValue`, `geoPointValue`, `arrayValue`, etc.) that must be manually extracted via the existing parsing helpers (`parseRideFromFirestoreDocument`, `normalizeUserData`, etc.).
+
+**Rule of thumb**: if the screen polls in a loop or needs instant updates (e.g. driver inbox, passenger waiting, active ride), use `onSnapshot`. For one-off fetches, mutations, and service-layer calls, use the REST API.
 
 Auth uses the Firebase SDK (`firebase/auth`) with `getReactNativePersistence(AsyncStorage)` for session persistence.
 

@@ -113,74 +113,130 @@
 //   }
 // }
 
-import { runtimeConfig } from "@/constants/runtime-config";
+import {
+  CountdownConfigContext,
+  isCountdownActive,
+} from "@/constants/countdown-config";
+import { isUpdateRequired } from "@/constants/force-update-config";
+import { apiFetch, apiBaseUrl, isDev, runtimeConfig } from "@/constants/runtime-config";
+import { useForceUpdateConfigFetcher } from "@/hooks/use-force-update-config";
+import { useOtaUpdate } from "@/hooks/use-ota-update";
+import UpdateRequiredScreen from "@/app/updateRequiredScreen";
+import Constants from "expo-constants";
 import { ActiveRideProvider, useActiveRide } from "@/context/ActiveRideContext";
+import { fetchRideById } from "@/services/rideServices";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { LanguageProvider, useLanguage } from "@/context/LanguageContext";
 import { UserProfileProvider } from "@/context/UserProfileContext";
 import { useColorScheme } from "@/hooks/use-color-scheme";
+import { useCountdown } from "@/hooks/use-countdown";
+import { useCountdownConfigFetcher } from "@/hooks/use-countdown-config";
 import { usePushNotifications } from "@/hooks/use-push-notifications";
-import { useWallet } from "@/hooks/use-wallet";
+import { useNotificationGate } from "@/hooks/use-notification-gate";
+import NotificationGateScreen from "@/components/NotificationGateScreen";
+import { useWallet, WalletProvider } from "@/context/WalletContext";
+import { useDriverSession } from "@/hooks/use-driver-session";
+import SplashAnimation from "@/components/SplashAnimation";
+import * as SplashScreen from "expo-splash-screen";
 import { DarkTheme, DefaultTheme, ThemeProvider } from "@react-navigation/native";
 import { StripeProvider } from "@stripe/stripe-react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import type { DriverSession } from "@/types/models";
 
 const BG = "#101010";
 const STATUS_BAR_STYLE = "light";
 
-const BANNER_GRADIENT  = ["#2d0015", "#1c0038"] as const;
 const BANNER_BORDER    = "rgba(137, 56, 213, 0.22)";
 const PURPLE_LIGHT     = "#e09af7";
 
 export default function RootLayout() {
+  // Start with the env-var key (test key) as an instant fallback, then
+  // override with whatever the server says its current APP_ENV is using.
+  // This keeps client and server always in sync without a full app rebuild.
+  const [stripeKey, setStripeKey] = useState(runtimeConfig.stripePublishableKey);
+  const [showSplash, setShowSplash] = useState(true);
+
+  useEffect(() => {
+    SplashScreen.hideAsync().catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    apiFetch(`${apiBaseUrl}/config`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data?.stripePublishableKey) setStripeKey(data.stripePublishableKey);
+      })
+      .catch(() => {
+        // Network failure: keep the env-var fallback key already set above.
+      });
+  }, []);
+
   return (
     <StripeProvider
-      publishableKey={runtimeConfig.stripePublishableKey}
-      merchantIdentifier="merchant.identifier"
-      urlScheme="your-url-scheme"
+      publishableKey={stripeKey}
+      merchantIdentifier="merchant.com.unilift.unilift"
+      urlScheme="unilift"
     >
-      <AuthProvider>
-        <UserProfileProvider>
-          <LanguageProvider>
-            <ActiveRideProvider>
-              <LayoutContent />
-            </ActiveRideProvider>
-          </LanguageProvider>
-        </UserProfileProvider>
-      </AuthProvider>
+      <>
+        <AuthProvider>
+          <UserProfileProvider>
+            <WalletProvider>
+              <LanguageProvider>
+                <ActiveRideProvider>
+                  <LayoutContent />
+                </ActiveRideProvider>
+              </LanguageProvider>
+            </WalletProvider>
+          </UserProfileProvider>
+        </AuthProvider>
+        {showSplash && <SplashAnimation onFinish={() => setShowSplash(false)} />}
+      </>
     </StripeProvider>
   );
 }
 
 function AppHeader() {
-  const { user } = useAuth();
-  const { balance, loading } = useWallet(user);
+  const { pendingChargeCents, pendingEarningsCents, loading } = useWallet();
   const { top: safeTop } = useSafeAreaInsets();
   const router = useRouter();
 
+  const earnings = Number(pendingEarningsCents) || 0;
+  const pending  = Number(pendingChargeCents)  || 0;
+  const hasEarnings = earnings > 0;
+  const amountCents = hasEarnings ? earnings : pending;
+  const amountColor = hasEarnings ? "#34d399" : "#f3f4f6";
+
   return (
     <LinearGradient
-      colors={BANNER_GRADIENT}
+      colors={["#2d0015", "#1c0038"]}
       start={{ x: 0, y: 0 }}
       end={{ x: 1, y: 0 }}
       style={[styles.banner, { paddingTop: safeTop + 7 }]}
     >
+      {/* glass top-edge highlight */}
+      <View style={styles.bannerHighlight} />
       <View style={styles.bannerRow}>
         <Text style={styles.bannerText}>UniLift</Text>
+        {isDev && (
+          <View style={styles.devBadge}>
+            <Text style={styles.devBadgeText}>DEV</Text>
+          </View>
+        )}
 
         <TouchableOpacity
           style={styles.walletPill}
           activeOpacity={0.75}
           onPress={() => router.push("/(tabs)/wallet")}
         >
-          <Text style={{fontSize: 12}}>💰</Text>
-          <Text style={styles.walletAmount}>
-            {loading ? "—" : `$${(balance / 100).toFixed(2)}`}
+          <Ionicons name={hasEarnings ? "cash" : "card-outline"} size={14} color={hasEarnings ? "#34d399" : PURPLE_LIGHT} />
+          <Text style={[styles.walletAmount, { color: amountColor }]}>
+            {loading ? "$0.00" : `$${(amountCents / 100).toFixed(2)}`}
           </Text>
         </TouchableOpacity>
       </View>
@@ -236,11 +292,177 @@ function ActiveRideBanner() {
   );
 }
 
+interface DriverBannerProps {
+  isOnline: boolean;
+  session: DriverSession | null;
+  goOffline: () => Promise<void>;
+}
+
+function DriverOnlineBanner({ isOnline, session, goOffline }: DriverBannerProps) {
+  const { t } = useLanguage();
+  const router = useRouter();
+  const segments = useSegments();
+
+  const onDriverScreen = (segments as string[]).some(
+    (s) => s === "driverRequestsScreen" || s === "riderScreen" || s === "rideScreen",
+  );
+  if (!isOnline || onDriverScreen) return null;
+
+  return (
+    <Pressable onPress={() => router.push("/driverRequestsScreen")} style={styles.rideBanner}>
+      <LinearGradient
+        colors={["#059669", "#34d399"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 0 }}
+        style={styles.rideBannerGrad}
+      >
+        <View style={styles.rideBannerLeft}>
+          <View style={[styles.rideBannerDot, { backgroundColor: "#fff" }]} />
+          <Text style={styles.rideBannerText} numberOfLines={1}>
+            {t("driveOnline.bannerOnline")}
+            {session?.destination ? ` · ${session.destination}` : ""}
+          </Text>
+        </View>
+        <Pressable
+          onPress={(e) => { e.stopPropagation?.(); void goOffline(); }}
+          hitSlop={8}
+          style={styles.rideBannerBtn}
+        >
+          <Text style={styles.rideBannerBtnText}>{t("driveOnline.goOffline")}</Text>
+        </Pressable>
+      </LinearGradient>
+    </Pressable>
+  );
+}
+
+/** Floating banner for non-tab screens. Same green colour as DriverOnlineBanner
+ *  (which lives in the tabs header), but rendered as an absolute overlay so it
+ *  always appears at the top of any screen while the driver is available. */
+function GlobalDriverAvailabilityBanner({ isOnline, session, goOffline }: DriverBannerProps) {
+  const { t } = useLanguage();
+  const router = useRouter();
+  const segments = useSegments();
+  const { top: safeTop } = useSafeAreaInsets();
+
+  // Tabs already show DriverOnlineBanner in the header — avoid duplicate.
+  const onTabs = (segments as string[])[0] === "(tabs)";
+  // Hide where the driver is actively managing their session or in a ride.
+  const onExcludedScreen = (segments as string[]).some(
+    (s) =>
+      s === "driverRequestsScreen" ||
+      s === "driveOnlineScreen" ||
+      s === "riderScreen" ||
+      s === "rideScreen",
+  );
+
+  if (onTabs || onExcludedScreen || !isOnline) return null;
+
+  return (
+    <View style={[styles.globalBanner, { top: safeTop }]} pointerEvents="box-none">
+      <Pressable onPress={() => router.push("/driverRequestsScreen")} style={styles.rideBanner}>
+        <LinearGradient
+          colors={["#059669", "#34d399"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={styles.rideBannerGrad}
+        >
+          <View style={styles.rideBannerLeft}>
+            <View style={[styles.rideBannerDot, { backgroundColor: "#fff" }]} />
+            <Text style={styles.rideBannerText} numberOfLines={1}>
+              {t("driveOnline.bannerOnline")}
+              {session?.destination ? ` · ${session.destination}` : ""}
+            </Text>
+          </View>
+          <Pressable
+            onPress={(e) => { e.stopPropagation?.(); void goOffline(); }}
+            hitSlop={8}
+            style={styles.rideBannerBtn}
+          >
+            <Text style={styles.rideBannerBtnText}>{t("driveOnline.goOffline")}</Text>
+          </Pressable>
+        </LinearGradient>
+      </Pressable>
+    </View>
+  );
+}
+
 function LayoutContent() {
-  const { status } = useAuth();
+  const { status, user } = useAuth();
   const colorScheme = useColorScheme() ?? "dark";
+  const router = useRouter();
+  const segments = useSegments();
+  const { activeRide, clearActiveRide } = useActiveRide();
+
+  // Single driver-session hook call — shared by DriverOnlineBanner (tabs header)
+  // and GlobalDriverAvailabilityBanner (non-tabs overlay) to avoid duplicate fetches.
+  const { isOnline, session, goOffline } = useDriverSession(user);
+
+  // When the user becomes authenticated, validate the stored active ride.
+  // If the ride no longer exists in Firestore (deleted or expired), or its
+  // status is terminal, remove it from local storage so the banner disappears.
+  useEffect(() => {
+    if (status !== "authenticated" || !activeRide) return;
+    let cancelled = false;
+    fetchRideById(activeRide.rideId)
+      .then((ride) => {
+        if (cancelled) return;
+        if (!ride || ride.status === "cancelled") {
+          clearActiveRide();
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, activeRide?.rideId, clearActiveRide]);
 
   usePushNotifications();
+
+  const notifGate = useNotificationGate();
+
+  // OTA gate: check/fetch/reload the latest JS bundle before rendering. Fail-open.
+  const ota = useOtaUpdate();
+
+  // Fetch live force-update config from Firestore; falls back to disabled locally.
+  const forceUpdateConfig = useForceUpdateConfigFetcher();
+  const installedVersion = Constants.expoConfig?.version ?? "0.0.0";
+  const updateRequired =
+    !forceUpdateConfig.loading &&
+    forceUpdateConfig.enabled &&
+    isUpdateRequired(installedVersion, forceUpdateConfig.minimumVersion);
+
+  // Fetch live countdown config from Firestore; falls back to local constants.
+  const remoteConfig = useCountdownConfigFetcher();
+
+  // Tick every second so the gate re-evaluates when the timer hits zero.
+  useCountdown(remoteConfig.endMs);
+  const countdownActive =
+    !remoteConfig.loading &&
+    isCountdownActive(remoteConfig.enabled, remoteConfig.endMs);
+
+  // Countdown gate: force the user onto the correct screen when the
+  // countdown is active, and off the countdown screens once it elapses.
+  useEffect(() => {
+    if (status === "initializing" || remoteConfig.loading) return;
+    const current = (segments[0] as string | undefined) ?? "";
+
+    if (countdownActive) {
+      if (status === "authenticated") {
+        // Stay on (auth) while the user is completing the Apple signup step 2.
+        if (current !== "countdown-confirmation" && current !== "(auth)") {
+          router.replace("/countdown-confirmation");
+        }
+      } else if (current !== "countdown" && current !== "(auth)") {
+        // Safeguard: redirect any unrecognised route to countdown
+        router.replace("/countdown");
+      }
+    } else {
+      if (current === "countdown") {
+        router.replace("/(auth)/login");
+      } else if (current === "countdown-confirmation") {
+        router.replace("/(tabs)");
+      }
+    }
+  }, [status, countdownActive, segments, router, remoteConfig.loading]);
 
   const theme = useMemo(() => {
     const baseTheme = colorScheme === "dark" ? DarkTheme : DefaultTheme;
@@ -259,7 +481,7 @@ function LayoutContent() {
     [],
   );
 
-  if (status === "initializing") {
+  if (status === "initializing" || remoteConfig.loading || forceUpdateConfig.loading || ota.checking) {
     return (
       <View style={styles.loader}>
         <ActivityIndicator size="large" />
@@ -267,11 +489,48 @@ function LayoutContent() {
     );
   }
 
+  if (updateRequired) {
+    return (
+      <UpdateRequiredScreen
+        minimumVersion={forceUpdateConfig.minimumVersion}
+        iosStoreUrl={forceUpdateConfig.iosStoreUrl}
+        androidStoreUrl={forceUpdateConfig.androidStoreUrl}
+      />
+    );
+  }
+
+  if (status === "authenticated" && !notifGate.loading && !notifGate.permissionGranted) {
+    return (
+      <>
+        <NotificationGateScreen
+          permissionDenied={notifGate.permissionDenied}
+          requesting={notifGate.requesting}
+          onEnable={notifGate.requestPermission}
+          onOpenSettings={notifGate.openSettings}
+        />
+        <StatusBar style={STATUS_BAR_STYLE} backgroundColor={BG} translucent={false} />
+      </>
+    );
+  }
+
+  const tabsHeaderShown = !countdownActive;
+
   return (
+    <CountdownConfigContext.Provider value={remoteConfig}>
     <ThemeProvider value={theme}>
       {status === "unauthenticated" ? (
+        // When countdown is active, declare `countdown` first so expo-router
+        // starts there on cold open. `(auth)` is still registered so the user
+        // can reach signup/login by tapping the CTA on the countdown screen.
         <Stack screenOptions={commonStackOptions}>
-          <Stack.Screen name="(auth)" />
+          {countdownActive ? (
+            <>
+              <Stack.Screen name="countdown" />
+              <Stack.Screen name="(auth)" />
+            </>
+          ) : (
+            <Stack.Screen name="(auth)" />
+          )}
         </Stack>
       ) : (
         <>
@@ -279,11 +538,12 @@ function LayoutContent() {
             <Stack.Screen
               name="(tabs)"
               options={{
-                headerShown: true,
+                headerShown: tabsHeaderShown,
                 header: () => (
                   <>
                     <AppHeader />
                     <ActiveRideBanner />
+                    <DriverOnlineBanner isOnline={isOnline} session={session} goOffline={goOffline} />
                   </>
                 ),
                 animation: "none",
@@ -294,9 +554,27 @@ function LayoutContent() {
             <Stack.Screen name="riderScreen" options={{ headerShown: false }} />
             <Stack.Screen name="profileSettings" options={{ headerShown: false }} />
             <Stack.Screen name="favoriteScreen" options={{ headerShown: false }} />
-            <Stack.Screen name="createRideScreen" options={{ headerShown: false }} />
+            <Stack.Screen name="driverModeScreen" options={{ headerShown: false }} />
+            <Stack.Screen name="driveOnlineScreen" options={{ headerShown: false }} />
+            <Stack.Screen name="driverRequestsScreen" options={{ headerShown: false }} />
+            <Stack.Screen
+              name="findingDriverScreen"
+              options={{
+                headerShown: false,
+                presentation: "transparentModal",
+                animation: "slide_from_bottom",
+                contentStyle: { backgroundColor: "transparent" },
+              }}
+            />
             <Stack.Screen name="rewardsScreen" options={{ headerShown: false }} />
+            <Stack.Screen name="acceptRideScreen" options={{ headerShown: false }} />
+            <Stack.Screen name="onboardingScreen" options={{ headerShown: false }} />
+            <Stack.Screen name="countdown-confirmation" options={{ headerShown: false }} />
           </Stack>
+          {/* Floating availability banner — shown on non-tab screens when driver is online.
+              Distinct from the active-ride (pink/purple) banner; this one is always green
+              and routes back to the driver inbox, not to an active ride. */}
+          <GlobalDriverAvailabilityBanner isOnline={isOnline} session={session} goOffline={goOffline} />
         </>
       )}
       <StatusBar
@@ -305,14 +583,24 @@ function LayoutContent() {
         translucent={false}
       />
     </ThemeProvider>
+    </CountdownConfigContext.Provider>
   );
 }
 
 const styles = StyleSheet.create({
   loader:       { flex: 1, justifyContent: "center", alignItems: "center" },
-  banner:       { paddingHorizontal: 16, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: BANNER_BORDER },
+  banner:          { paddingHorizontal: 16, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: "rgba(137, 56, 213, 0.55)", overflow: "hidden" },
+  bannerHighlight: { position: "absolute", top: 0, left: 0, right: 0, height: 1, backgroundColor: "rgba(255, 255, 255, 0.12)" },
   bannerRow:    { flexDirection: "row", alignItems: "center", justifyContent: "center" },
   bannerText:   { flex: 1, color: "#f3f4f6", fontSize: 28, fontWeight: "800", letterSpacing: 0.5, textAlign: "left" },
+  devBadge: {
+    backgroundColor: "#f97316",
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginRight: 8,
+  },
+  devBadgeText: { color: "#fff", fontSize: 10, fontWeight: "800", letterSpacing: 1 },
   walletPill:   {
     flexDirection: "row",
     alignItems: "center",
@@ -325,6 +613,9 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
   },
   walletAmount: { color: "#f3f4f6", fontSize: 13, fontWeight: "700" },
+
+  // ── Global driver availability overlay (non-tab screens) ────────────────
+  globalBanner: { position: "absolute", left: 0, right: 0, zIndex: 999 },
 
   // ── Active Ride Banner ───────────────────────────────────────────────────
   rideBanner: { overflow: "hidden" },

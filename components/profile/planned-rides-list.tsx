@@ -18,6 +18,8 @@ const C = {
   greenFaint:  "rgba(16,185,129,0.12)",
   red:         "#ef4444",
   redFaint:    "rgba(239,68,68,0.12)",
+  gold:        "#fbbf24",
+  goldFaint:   "rgba(251,191,36,0.15)",
   text:        "#f3f4f6",
   muted:       "#9ca3af",
   dim:         "#4b5563",
@@ -26,7 +28,7 @@ const C = {
 type PlannedRidesListProps = {
   rides: Ride[];
   driverId?: string;
-  onStartRide: (rideId: string, payload: StartRidePayload) => void;
+  onManageRide: (rideId: string, payload: StartRidePayload) => void;
   onCancelRide: (rideId: string) => void;
 };
 
@@ -42,35 +44,42 @@ function formatDate(iso: string, language: Language): { weekday: string; date: s
 export function PlannedRidesList({
   rides,
   driverId,
-  onStartRide,
+  onManageRide,
   onCancelRide,
 }: PlannedRidesListProps) {
   const { t, language } = useLanguage();
   const today = useMemo(() => new Date().toISOString().split("T")[0], []);
   const plannedRides = useMemo(
-    () => rides.filter((ride) => ride.status === "planned" && ride.driverId === driverId),
+    () => rides.filter((ride) =>
+      (ride.status === "planned" || ride.status === "expired") && ride.driverId === driverId,
+    ),
     [driverId, rides],
   );
   const keyExtractor = useCallback((item: Ride) => item.id, []);
 
   const renderItem = useCallback(({ item, index }: { item: Ride; index: number }) => {
     const rideDate = item.date?.split("T")[0];
-    const canStart = rideDate === today;
+    const isExpired = item.status === "expired" ||
+      (item.status === "planned" && item.date && rideDate && rideDate < today);
+    const isToday = !isExpired && rideDate === today;
     const isFirst = index === 0;
     const formatted = item.date ? formatDate(item.date, language) : null;
     const passengerCount = item.passengers?.length ?? 0;
     const totalSeats = passengerCount + item.seatsAvailable;
+    const pendingRequestsCount = Object.values(item.joinRequests ?? {}).filter(
+      (r) => r.status === "pending",
+    ).length;
 
     return (
       <View style={styles.row}>
         {/* Timeline column */}
         <View style={styles.timeline}>
-          <View style={[styles.dot, canStart && styles.dotActive]} />
+          <View style={[styles.dot, isToday ? styles.dotActive : isExpired ? styles.dotExpired : undefined]} />
           <View style={styles.line} />
         </View>
 
         {/* Card */}
-        <View style={[styles.card, isFirst && styles.cardFirst]}>
+        <View style={[styles.card, isFirst && styles.cardFirst, isExpired && styles.cardExpired]}>
           {/* Date badge */}
           <View style={styles.cardHeader}>
             <View style={styles.dateBadge}>
@@ -84,7 +93,11 @@ export function PlannedRidesList({
               )}
             </View>
 
-            {canStart ? (
+            {isExpired ? (
+              <View style={styles.expiredBadge}>
+                <Text style={styles.expiredBadgeText}>{t("rides.expired")}</Text>
+              </View>
+            ) : isToday ? (
               <View style={styles.todayBadge}>
                 <Text style={{fontSize: 6}}>📍</Text>
                 <Text style={styles.todayBadgeText}>{t("rides.today")}</Text>
@@ -101,7 +114,7 @@ export function PlannedRidesList({
             <View style={styles.destIconWrap}>
               <Text style={{fontSize: 12}}>📍</Text>
             </View>
-            <Text style={styles.destination} numberOfLines={1}>
+            <Text style={[styles.destination, isExpired && { color: C.dim }]} numberOfLines={1}>
               {item.destination}
             </Text>
           </View>
@@ -124,50 +137,76 @@ export function PlannedRidesList({
               <Text style={{fontSize: 10}}>🚗</Text>
               <Text style={styles.metaText}>{t("rides.seatsLeft", { count: item.seatsAvailable })}</Text>
             </View>
+            {!isExpired && pendingRequestsCount > 0 && (
+              <View style={styles.pendingChip}>
+                <Text style={{fontSize: 10}}>🔔</Text>
+                <Text style={styles.pendingChipText}>
+                  {t("rides.pendingCount", { count: pendingRequestsCount })}
+                </Text>
+              </View>
+            )}
           </View>
 
           {/* Actions */}
           <View style={styles.actions}>
-            <TouchableOpacity
-              style={[styles.actionBtn, canStart ? styles.startBtn : styles.disabledBtn]}
-              disabled={!canStart}
-              onPress={() =>
-                onStartRide(item.id, {
-                  originLat: item.localisation.latitude,
-                  originLng: item.localisation.longitude,
-                  destination: item.destination,
-                  destinationLat: item.destinationCoords.latitude,
-                  destinationLng: item.destinationCoords.longitude,
-                })
-              }
-            >
-              <Text style={{fontSize: 11}}>▶</Text>
-              <Text style={[styles.actionBtnText, !canStart && styles.actionBtnTextDisabled]}>
-                {t("rides.startRide")}
-              </Text>
-            </TouchableOpacity>
+            {isExpired ? (
+              <TouchableOpacity
+                style={[styles.actionBtn, styles.cancelBtn, { flex: 1 }]}
+                onPress={() =>
+                  Alert.alert(
+                    t("rides.deleteExpired"),
+                    t("rides.deleteExpiredMsg"),
+                    [
+                      { text: t("common.no") },
+                      { text: t("common.yes"), style: "destructive", onPress: () => onCancelRide(item.id) },
+                    ],
+                  )
+                }
+              >
+                <Text style={{fontSize: 11}}>🗑</Text>
+                <Text style={styles.cancelBtnText}>{t("rides.delete")}</Text>
+              </TouchableOpacity>
+            ) : (
+              <>
+                <TouchableOpacity
+                  style={[styles.actionBtn, styles.manageBtn]}
+                  onPress={() =>
+                    onManageRide(item.id, {
+                      originLat: item.localisation.latitude,
+                      originLng: item.localisation.longitude,
+                      destination: item.destination,
+                      destinationLat: item.destinationCoords.latitude,
+                      destinationLng: item.destinationCoords.longitude,
+                    })
+                  }
+                >
+                  <Text style={{fontSize: 11}}>👥</Text>
+                  <Text style={styles.manageBtnText}>{t("rides.manageRide")}</Text>
+                </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[styles.actionBtn, styles.cancelBtn]}
-              onPress={() =>
-                Alert.alert(
-                  t("rides.confirmCancel"),
-                  t("rides.confirmCancelMsg"),
-                  [
-                    { text: t("common.no") },
-                    { text: t("common.yes"), style: "destructive", onPress: () => onCancelRide(item.id) },
-                  ],
-                )
-              }
-            >
-              <Text style={{fontSize: 11}}>✕</Text>
-              <Text style={styles.cancelBtnText}>{t("rides.cancel")}</Text>
-            </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.actionBtn, styles.cancelBtn]}
+                  onPress={() =>
+                    Alert.alert(
+                      t("rides.confirmCancel"),
+                      t("rides.confirmCancelMsg"),
+                      [
+                        { text: t("common.no") },
+                        { text: t("common.yes"), style: "destructive", onPress: () => onCancelRide(item.id) },
+                      ],
+                    )
+                  }
+                >
+                  <Text style={{fontSize: 11}}>✕</Text>
+                  <Text style={styles.cancelBtnText}>{t("rides.cancel")}</Text>
+                </TouchableOpacity>
+              </>
+            )}
           </View>
         </View>
       </View>
     );
-  }, [onCancelRide, onStartRide, today, t, language]);
+  }, [onCancelRide, onManageRide, today, t, language]);
 
   if (plannedRides.length === 0) {
     return (
@@ -220,6 +259,10 @@ const styles = StyleSheet.create({
     backgroundColor: C.green,
     borderColor: C.greenFaint,
   },
+  dotExpired: {
+    backgroundColor: C.red,
+    borderColor: C.redFaint,
+  },
   line: {
     flex: 1,
     width: 2,
@@ -239,6 +282,10 @@ const styles = StyleSheet.create({
   },
   cardFirst: {
     borderColor: "rgba(124,58,237,0.4)",
+  },
+  cardExpired: {
+    opacity: 0.7,
+    borderColor: "rgba(239,68,68,0.25)",
   },
 
   // ── Card header ──────────────────────────────────────────────────────────
@@ -292,6 +339,19 @@ const styles = StyleSheet.create({
     color: C.purpleLight,
     fontSize: 11,
     fontWeight: "600",
+  },
+  expiredBadge: {
+    backgroundColor: C.redFaint,
+    borderRadius: 20,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: 1,
+    borderColor: "rgba(239,68,68,0.25)",
+  },
+  expiredBadgeText: {
+    color: C.red,
+    fontSize: 11,
+    fontWeight: "700",
   },
 
   // ── Destination ──────────────────────────────────────────────────────────
@@ -353,30 +413,40 @@ const styles = StyleSheet.create({
     borderRadius: 9,
     borderWidth: 1,
   },
-  startBtn: {
-    backgroundColor: C.greenFaint,
-    borderColor: "rgba(16,185,129,0.3)",
+  manageBtn: {
+    flex: 2,
+    backgroundColor: C.purple,
+    borderColor: C.purple,
   },
-  disabledBtn: {
-    backgroundColor: "rgba(255,255,255,0.03)",
-    borderColor: C.borderFaint,
+  manageBtnText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "700",
   },
   cancelBtn: {
     backgroundColor: C.redFaint,
     borderColor: "rgba(239,68,68,0.3)",
   },
-  actionBtnText: {
-    color: C.green,
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  actionBtnTextDisabled: {
-    color: C.dim,
-  },
   cancelBtnText: {
     color: C.red,
     fontSize: 13,
     fontWeight: "600",
+  },
+  pendingChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: C.goldFaint,
+    borderRadius: 6,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: "rgba(251,191,36,0.45)",
+  },
+  pendingChipText: {
+    color: C.gold,
+    fontSize: 11,
+    fontWeight: "700",
   },
 
   // ── Empty state ──────────────────────────────────────────────────────────
