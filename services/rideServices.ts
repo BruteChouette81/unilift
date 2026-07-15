@@ -12,12 +12,39 @@ import {
 } from "@/constants/runtime-config";
 import { haversineKm } from "@/hooks/use-ride-recommendations";
 import type { JoinRequest, LocationPoint, Ride } from "@/types/models";
+import { rideLog } from "@/utils/ride-logger";
 import { getAuth } from "firebase/auth";
 
 export function createRideError(code: string, message: string): Error {
   const err = new Error(message);
   (err as Error & { code: string }).code = code;
   return err;
+}
+
+/** Authenticated POST to a ride-lifecycle Cloud Function endpoint. These
+ *  endpoints are server-authoritative: the client no longer PATCHes ride docs
+ *  directly (blocked by the tightened Firestore rules) — it calls these. */
+async function apiPostRide<T = Record<string, unknown>>(
+  path: string,
+  body: Record<string, unknown>,
+): Promise<T> {
+  const user = getAuth().currentUser;
+  if (!user) throw createRideError("NOT_AUTHENTICATED", "Not authenticated");
+  const token = await user.getIdToken();
+  rideLog.info("driver", `POST ${path}`, body);
+  const res = await apiFetch(`${apiBaseUrl}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    rideLog.error("driver", `POST ${path} failed (${res.status})`, text);
+    throw createRideError(String(res.status), text || `Request failed (${res.status})`);
+  }
+  const json = (await res.json().catch(() => ({}))) as T;
+  rideLog.info("driver", `POST ${path} ok`, json);
+  return json;
 }
 
 async function assertCurrentUserHasPaymentMethod(): Promise<void> {
@@ -203,6 +230,14 @@ const parseRideFromFirestoreDocument = (doc: unknown): Ride | null => {
       ? fields.confirmedDropoffPassengers.arrayValue.values
       : [];
 
+  // Parse pendingConfirmation (passengers who haven't yet swiped to confirm)
+  const pendingConfirmationValues =
+    isRecord(fields.pendingConfirmation) &&
+    isRecord(fields.pendingConfirmation.arrayValue) &&
+    Array.isArray(fields.pendingConfirmation.arrayValue.values)
+      ? fields.pendingConfirmation.arrayValue.values
+      : [];
+
   const driverName = readString(
     isRecord(fields.driverName) ? fields.driverName.stringValue : "",
   );
@@ -263,6 +298,13 @@ const parseRideFromFirestoreDocument = (doc: unknown): Ride | null => {
     confirmedDropoffPassengers: confirmedDropoffValues
       .map((v: unknown) => (isRecord(v) ? readString(v.stringValue, "") : ""))
       .filter(Boolean),
+    pendingConfirmation: pendingConfirmationValues
+      .map((v: unknown) => (isRecord(v) ? readString(v.stringValue, "") : ""))
+      .filter(Boolean),
+    confirmDeadlineAt:
+      readString(isRecord(fields.confirmDeadlineAt) ? fields.confirmDeadlineAt.timestampValue : "", "") || undefined,
+    requestId:
+      readString(isRecord(fields.requestId) ? fields.requestId.stringValue : "", "") || undefined,
   };
 };
 
@@ -583,108 +625,14 @@ export async function geoSuggestion(
   }
 }
 
-export async function updateRatings(rideId: string, rating: number) {
-  //get driver id from rideId
-   const res = await fetch(withFirebaseApiKey(`${BASE_URL}/${rideId}`), {
-    headers: await getAuthHeaders(),
-  });
-  if (!res.ok) await throwFetchError(res, "Failed to fetch ride for rating");
-  const data = await res.json();
-  const driverId = data.fields.driverId.stringValue;
-  //update driver's ratings in users collection
-  const userUrl = withFirebaseApiKey(`${USERS_BASE_URL}/${driverId}`);
-  const userRes = await fetch(userUrl, {
-    headers: await getAuthHeaders(),
-  });
-  if (!userRes.ok) await throwFetchError(userRes, "Failed to fetch user for rating");
-  const userData = await userRes.json();
-  const currentRatings = Number(userData.fields.ratings?.integerValue) || 0;
-  const numberOfRatings = Number(userData.fields.ratingWeigth?.integerValue) || 0;
-  const newRatings = ((currentRatings * numberOfRatings) + rating) / (numberOfRatings + 1);
-  const updateDoc = {
-    fields: {
-      ratings: { integerValue: Math.round(newRatings) },
-      ratingWeigth: { integerValue: numberOfRatings + 1 },
-    },
-  };
-
-  const updateRes = await fetch(
-    `${userUrl}&updateMask.fieldPaths=ratings&updateMask.fieldPaths=ratingWeigth`,
-    {
-      method: "PATCH",
-      headers: await getAuthHeaders(true),
-      body: JSON.stringify(updateDoc),
-    },
-  );
-  if (!updateRes.ok) await throwFetchError(updateRes, "Failed to update ratings");
-  return driverId;
-
-}
-
-export async function updateXP(userId: string, driverId: string, xpToAdd: number) {
-  //update user's XP in users collection
-  const userUrl = withFirebaseApiKey(`${USERS_BASE_URL}/${userId}`);
-  const userRes = await fetch(userUrl, {
-    headers: await getAuthHeaders(),
-  });
-  if (!userRes.ok) await throwFetchError(userRes, "Failed to fetch user for XP");
-  const userData = await userRes.json();
-  const currentXP = Number(userData.fields.xp?.integerValue) || 0;
-  const currentRidesCompleted = Number(userData.fields.ridesCompleted?.integerValue) || 0;
-  const newXP = currentXP + Math.floor(xpToAdd / 2);
-  const updateDoc = {
-    fields: {
-      xp: { integerValue: newXP },
-      ridesCompleted: { integerValue: currentRidesCompleted + 1 },
-    },
-  };
-  const updateRes = await fetch(
-    `${userUrl}&updateMask.fieldPaths=xp&updateMask.fieldPaths=ridesCompleted`,
-    {
-      method: "PATCH",
-      headers: await getAuthHeaders(true),
-      body: JSON.stringify(updateDoc),
-    },
-  );
-  if (!updateRes.ok) await throwFetchError(updateRes, "Failed to update XP");
-
-  const driverUrl = withFirebaseApiKey(`${USERS_BASE_URL}/${driverId}`);
-  const driverRes = await fetch(driverUrl, {
-    headers: await getAuthHeaders(),
-  });
-  if (!driverRes.ok) await throwFetchError(driverRes, "Failed to fetch driver for XP");
-  const driverData = await driverRes.json();
-  const driverXP = Number(driverData.fields.xp?.integerValue) || 0;
-  const driverRidesCompleted = Number(driverData.fields.ridesCompleted?.integerValue) || 0;
-  const newDriverXP = driverXP + xpToAdd;
-
-  const updateDriverDoc = {
-    fields: {
-      xp: { integerValue: newDriverXP },
-      ridesCompleted: { integerValue: driverRidesCompleted + 1 },
-    },
-  };
-  const updateDriverRes = await fetch(
-    `${driverUrl}&updateMask.fieldPaths=xp&updateMask.fieldPaths=ridesCompleted`,
-    {
-      method: "PATCH",
-      headers: await getAuthHeaders(true),
-      body: JSON.stringify(updateDriverDoc),
-    },
-  );
-  if (!updateDriverRes.ok) await throwFetchError(updateDriverRes, "Failed to update driver XP");
-  return;
-}
+// Ratings + XP are now written exclusively by the /rides/rate Cloud Function
+// (see submitRideRating below). The former client-side updateRatings()/updateXP()
+// were removed: they did unauthenticated read-modify-write on user docs and were
+// spoofable/racy. The tightened Firestore rules now block those writes entirely.
 
 // ─── New Ride Flow Functions ──────────────────────────────────────────────────
 
 const batchWriteUrl = (): string => `${firestoreBaseUrl}:batchWrite`;
-
-const rideDocPath = (rideId: string): string => {
-  const projectId = runtimeConfig.firebaseProjectId;
-  const dbId = encodeURIComponent(runtimeConfig.firestoreDatabaseId);
-  return `projects/${projectId}/databases/${dbId}/documents/rides/${rideId}`;
-};
 
 const userDocPath = (uid: string): string => {
   const projectId = runtimeConfig.firebaseProjectId;
@@ -948,55 +896,9 @@ export async function respondToJoinRequest(
   invalidateRidesCache();
 }
 
-/** Driver starts the ride — locks passengers, blocks new joins */
+/** Driver starts the ride — server-authoritative (locks passengers, blocks joins). */
 export async function startRideService(rideId: string): Promise<void> {
-  const user = getAuth().currentUser;
-  if (!user) throw createRideError("NOT_AUTHENTICATED", "Not authenticated");
-
-  const getUrl = withFirebaseApiKey(`${BASE_URL}/${rideId}`);
-  const rideRes = await fetch(getUrl, { headers: await getAuthHeaders() });
-  if (!rideRes.ok) await throwFetchError(rideRes, "Failed to fetch ride");
-  const rideData = await rideRes.json();
-  const fields = rideData.fields ?? {};
-
-  const driverId = readString(isRecord(fields.driverId) ? fields.driverId.stringValue : "");
-  if (driverId !== user.uid) {
-    throw createRideError("NOT_RIDE_DRIVER", "NOT_RIDE_DRIVER");
-  }
-
-  const currentStatus = readString(
-    isRecord(fields.status) ? fields.status.stringValue : "planned",
-    "planned",
-  );
-  if (currentStatus === "started") throw createRideError("ALREADY_STARTED", "ALREADY_STARTED");
-  if (currentStatus === "completed") throw createRideError("ALREADY_COMPLETED", "ALREADY_COMPLETED");
-  if (currentStatus !== "planned") throw createRideError("ALREADY_STARTED", "ALREADY_STARTED");
-
-  const passengers: string[] =
-    (isRecord(fields.passengers) && isRecord(fields.passengers.arrayValue)
-      ? (fields.passengers.arrayValue.values as { stringValue?: string }[] | undefined)
-      : undefined
-    )?.map((v) => v.stringValue ?? "").filter(Boolean) ?? [];
-  if (passengers.length === 0) {
-    throw createRideError("NO_ACCEPTED_PASSENGERS", "NO_ACCEPTED_PASSENGERS");
-  }
-
-  const patchUrl = withFirebaseApiKey(
-    `${BASE_URL}/${rideId}?updateMask.fieldPaths=status&updateMask.fieldPaths=started&updateMask.fieldPaths=startedAt`,
-  );
-  const updateDoc = {
-    fields: {
-      status: { stringValue: "started" },
-      started: { booleanValue: true },
-      startedAt: { timestampValue: new Date().toISOString() },
-    },
-  };
-  const res = await fetch(patchUrl, {
-    method: "PATCH",
-    headers: await getAuthHeaders(true),
-    body: JSON.stringify(updateDoc),
-  });
-  if (!res.ok) await throwFetchError(res, "Failed to start ride");
+  await apiPostRide("/rides/start", { rideId });
   invalidateRidesCache();
 }
 
@@ -1039,146 +941,44 @@ export async function updateDriverLocation(
   }
 }
 
-/** Mark ride as completed and set pendingRatings */
-export async function markRideCompleted(
-  rideId: string,
-  passengerIds: string[],
-  preservePendingRatings = false,
-): Promise<void> {
-  // Verify the caller is actually the driver of this ride before writing.
-  const currentUser = getAuth().currentUser;
-  if (!currentUser) throw new Error("Not authenticated");
-
-  const rideCheckRes = await fetch(withFirebaseApiKey(`${BASE_URL}/${rideId}`), {
-    headers: await getAuthHeaders(),
-  });
-  if (!rideCheckRes.ok) throw new Error("Failed to verify ride ownership");
-  const rideCheckData = await rideCheckRes.json();
-  const rideDriverId: string = rideCheckData.fields?.driverId?.stringValue ?? "";
-  if (rideDriverId !== currentUser.uid) {
-    throw new Error("Only the driver can mark a ride as completed");
-  }
-
-  const fieldPaths = preservePendingRatings
-    ? ["status"]
-    : ["status", "pendingRatings", "ratingsSubmitted"];
-  const patchUrl = withFirebaseApiKey(
-    `${BASE_URL}/${rideId}?${fieldPaths.map((f) => `updateMask.fieldPaths=${f}`).join("&")}`,
-  );
-  const fields: Record<string, unknown> = {
-    status: { stringValue: "completed" },
-  };
-  if (!preservePendingRatings) {
-    fields.pendingRatings = {
-      arrayValue: { values: passengerIds.map((id) => ({ stringValue: id })) },
-    };
-    fields.ratingsSubmitted = { arrayValue: { values: [] } };
-  }
-  const res = await fetch(patchUrl, {
-    method: "PATCH",
-    headers: await getAuthHeaders(true),
-    body: JSON.stringify({ fields }),
-  });
-  if (!res.ok) await throwFetchError(res, "Failed to mark ride completed");
-  invalidateRidesCache();
-}
-
-/** Driver marks a single passenger as dropped off; appends to droppedPassengers,
- *  and (if confirmed) also to confirmedDropoffPassengers and pendingRatings. */
+/** Driver drops a passenger (or marks a no-show). Server derives confirmation
+ *  and charge eligibility — the client only names the passenger. */
 export async function markPassengerDropped(
   rideId: string,
   passengerId: string,
-  isConfirmed: boolean,
+  opts?: { noShow?: boolean },
 ): Promise<void> {
-  const currentUser = getAuth().currentUser;
-  if (!currentUser) throw new Error("Not authenticated");
-
-  // Read current arrays so we can append client-side and PATCH the result.
-  // Plain PATCH with an explicit updateMask is the most rule-friendly path:
-  // the security rule's diff sees exactly the fields we list, no surprises
-  // from transform-only batchWrites.
-  const rideCheckRes = await fetch(withFirebaseApiKey(`${BASE_URL}/${rideId}`), {
-    headers: await getAuthHeaders(),
+  await apiPostRide("/rides/dropoff", {
+    rideId,
+    passengerId,
+    ...(opts?.noShow ? { noShow: true } : {}),
   });
-  if (!rideCheckRes.ok) throw new Error("Failed to verify ride ownership");
-  const rideCheckData = await rideCheckRes.json();
-  const rideFields = rideCheckData.fields ?? {};
-
-  const rideDriverId: string = rideFields.driverId?.stringValue ?? "";
-  if (rideDriverId !== currentUser.uid) {
-    throw new Error("Only the driver can drop off passengers");
-  }
-
-  const readArr = (key: string): string[] =>
-    rideFields[key]?.arrayValue?.values?.map((v: { stringValue: string }) => v.stringValue) ?? [];
-
-  const dropped = readArr("droppedPassengers");
-  const confirmed = readArr("confirmedDropoffPassengers");
-  const pending = readArr("pendingRatings");
-
-  const nextDropped = dropped.includes(passengerId) ? dropped : [...dropped, passengerId];
-  const nextConfirmed = isConfirmed && !confirmed.includes(passengerId)
-    ? [...confirmed, passengerId]
-    : confirmed;
-  const nextPending = isConfirmed && !pending.includes(passengerId)
-    ? [...pending, passengerId]
-    : pending;
-
-  const toArrayValue = (arr: string[]) => ({
-    arrayValue: { values: arr.map((id) => ({ stringValue: id })) },
-  });
-
-  const fields: Record<string, unknown> = {
-    droppedPassengers: toArrayValue(nextDropped),
-  };
-  const updateMaskParts = ["droppedPassengers"];
-  if (isConfirmed) {
-    fields.confirmedDropoffPassengers = toArrayValue(nextConfirmed);
-    fields.pendingRatings = toArrayValue(nextPending);
-    updateMaskParts.push("confirmedDropoffPassengers", "pendingRatings");
-  }
-
-  const updateMask = updateMaskParts
-    .map((p) => `updateMask.fieldPaths=${p}`)
-    .join("&");
-  const patchUrl = withFirebaseApiKey(`${BASE_URL}/${rideId}?${updateMask}`);
-
-  const res = await fetch(patchUrl, {
-    method: "PATCH",
-    headers: await getAuthHeaders(true),
-    body: JSON.stringify({ fields }),
-  });
-  if (!res.ok) await throwFetchError(res, "Failed to mark passenger dropped");
   invalidateRidesCache();
 }
 
-/** Submit a passenger's rating (append to ratingsSubmitted) */
-export async function submitRating(rideId: string, passengerId: string): Promise<void> {
-  const docPath = rideDocPath(rideId);
-  const res = await fetch(withFirebaseApiKey(batchWriteUrl()), {
-    method: "POST",
-    headers: await getAuthHeaders(true),
-    body: JSON.stringify({
-      writes: [
-        {
-          transform: {
-            document: docPath,
-            fieldTransforms: [
-              {
-                fieldPath: "ratingsSubmitted",
-                appendMissingElements: {
-                  values: [{ stringValue: passengerId }],
-                },
-              },
-            ],
-          },
-        },
-      ],
-    }),
-  });
-  if (!res.ok) {
-    console.warn("Failed to submit rating record");
-  }
+/** Passenger submits their rating of the driver (1–5). Server-authoritative. */
+export async function submitRideRating(rideId: string, stars: number): Promise<void> {
+  await apiPostRide("/rides/rate", { rideId, stars });
+}
+
+/** Passenger leaves an accepted ride before boarding (restores the seat). */
+export async function leaveRide(rideId: string): Promise<void> {
+  await apiPostRide("/rides/leave", { rideId });
+  invalidateRidesCache();
+}
+
+/** Passenger swipes right to confirm the matched driver (mutual match).
+ *  Removes them from the ride's pendingConfirmation set so the driver can start. */
+export async function confirmDriver(rideId: string): Promise<void> {
+  await apiPostRide("/rides/confirm-driver", { rideId });
+  invalidateRidesCache();
+}
+
+/** Passenger swipes left to pass on the matched driver: leaves the ride
+ *  (restores the seat) and re-opens the ride request so the search resumes. */
+export async function rejectDriver(rideId: string): Promise<void> {
+  await apiPostRide("/rides/reject-driver", { rideId });
+  invalidateRidesCache();
 }
 
 /** Fetch a single ride by ID and parse it */
@@ -1449,49 +1249,10 @@ export async function quitRide(rideId: string): Promise<number> {
   return CANCELLATION_FEES.passengerCancelCents;
 }
 
-/** Driver cancels their own ride — deletes it and applies driver fee unless
- *  still inside the grace window after creation. Returns the fee applied. */
+/** Driver cancels their own ride — server marks it cancelled, releases
+ *  passengers, and notifies them. Returns the cancellation fee applied (0). */
 export async function cancelRideAsDriver(rideId: string): Promise<number> {
-  const auth = getAuth();
-  const user = auth.currentUser;
-  if (!user) throw new Error("Not authenticated");
-
-  const getUrl = withFirebaseApiKey(`${BASE_URL}/${rideId}`);
-  const rideRes = await fetch(getUrl, { headers: await getAuthHeaders() });
-  if (!rideRes.ok) await throwFetchError(rideRes, "Failed to fetch ride");
-  const rideData = await rideRes.json();
-  const fields = rideData.fields ?? {};
-
-  if (readString(isRecord(fields.driverId) ? fields.driverId.stringValue : "") !== user.uid) {
-    throw new Error("Only the driver can cancel this ride.");
-  }
-
-  const createdAt = readString(rideData.createTime, "");
-
-  // Mark as cancelled — Firestore rules block hard deletes from the client.
-  const patchUrl = withFirebaseApiKey(
-    `${BASE_URL}/${rideId}?updateMask.fieldPaths=status&updateMask.fieldPaths=passengers&updateMask.fieldPaths=joinRequests`,
-  );
-  const patchRes = await fetch(patchUrl, {
-    method: "PATCH",
-    headers: await getAuthHeaders(true),
-    body: JSON.stringify({
-      fields: {
-        status: { stringValue: "cancelled" },
-        passengers: { arrayValue: {} },
-        joinRequests: { mapValue: { fields: {} } },
-      },
-    }),
-  });
-  if (!patchRes.ok) await throwFetchError(patchRes, "Failed to cancel ride");
+  await apiPostRide("/rides/cancel", { rideId });
   invalidateRidesCache();
-
-  const shouldCharge = !isWithinGraceWindow(createdAt);
-  if (!shouldCharge) return 0;
-
-  await applyCancellationChargeToUser(
-    user.uid,
-    CANCELLATION_FEES.driverCancelCents,
-  );
   return CANCELLATION_FEES.driverCancelCents;
 }

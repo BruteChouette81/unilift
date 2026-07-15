@@ -28,6 +28,11 @@ const fieldInt = (fields: Record<string, unknown>, key: string, fallback = 0) =>
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const fieldBool = (fields: Record<string, unknown>, key: string, fallback = false) => {
+  const field = asRecord(fields[key]);
+  return typeof field?.booleanValue === "boolean" ? field.booleanValue : fallback;
+};
+
 export const calculateAgeFromBirthDate = (birthDateStr: string): number => {
   const birth = new Date(birthDateStr);
   if (isNaN(birth.getTime())) return 0;
@@ -150,6 +155,7 @@ export const normalizeUserData = (
   const age = birthDate ? calculateAgeFromBirthDate(birthDate) : storedAge;
   const school = fieldString(fields, "school", "");
   const preferences = fieldStringArray(fields, "preferences");
+  const certifications = fieldStringArray(fields, "certifications");
   const langRaw = fieldString(fields, "language", "");
   const language = SUPPORTED_LANGUAGES.includes(langRaw as Language) ? (langRaw as Language) : undefined;
   const facebookId = fieldString(fields, "facebookId", "") || undefined;
@@ -161,6 +167,7 @@ export const normalizeUserData = (
   const spotifyId = fieldString(fields, "spotifyId", "") || undefined;
   const spotifyName = fieldString(fields, "spotifyName", "") || undefined;
 
+  const driverModeEnabled = fieldBool(fields, "driverModeEnabled", true);
   const driverDays = fieldStringArray(fields, "driverDays");
   const driverAvailability = parseDriverAvailability(fields);
   const interestedEvents = fieldStringArray(fields, "interestedEvents");
@@ -211,6 +218,7 @@ export const normalizeUserData = (
     ...(birthDate ? { birthDate } : {}),
     ...(school ? { school } : {}),
     ...(preferences.length ? { preferences } : {}),
+    ...(certifications.length ? { certifications } : {}),
     ...(language ? { language } : {}),
     ...(facebookId ? { facebookId } : {}),
     ...(facebookName ? { facebookName } : {}),
@@ -220,6 +228,7 @@ export const normalizeUserData = (
     ...(tiktokHandle ? { tiktokHandle } : {}),
     ...(spotifyId ? { spotifyId } : {}),
     ...(spotifyName ? { spotifyName } : {}),
+    driverModeEnabled,
     ...(driverDays.length ? { driverDays } : {}),
     ...(driverAvailability.length ? { driverAvailability } : {}),
     ...(interestedEvents.length ? { interestedEvents } : {}),

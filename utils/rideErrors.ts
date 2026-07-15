@@ -13,6 +13,8 @@ export function rideErrorMessage(err: unknown, t: TranslateFn): string {
       return t("railguards.rideAlreadyCompleted");
     case "NO_ACCEPTED_PASSENGERS":
       return t("railguards.noAcceptedPassengers");
+    case "428":
+      return t("railguards.passengersNotConfirmed");
     default:
       return (
         (err as { message?: string } | null)?.message ??

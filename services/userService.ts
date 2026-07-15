@@ -4,6 +4,19 @@ import {
 } from "@/constants/runtime-config";
 import type { FavoriteRoute } from "@/types/models";
 import type { Language } from "@/constants/translations";
+import { getAuth } from "firebase/auth";
+
+// Inlined (not imported from components/userHelper) to avoid a module cycle:
+// userHelper already imports from this file. Pure age-from-birthdate calc.
+const ageFromBirthDate = (birthDateStr: string): number => {
+  const birth = new Date(birthDateStr);
+  if (isNaN(birth.getTime())) return 0;
+  const today = new Date();
+  let age = today.getFullYear() - birth.getFullYear();
+  const m = today.getMonth() - birth.getMonth();
+  if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) age--;
+  return age;
+};
 
 export type FirestoreDocument = {
   fields?: Record<string, unknown>;
@@ -95,6 +108,71 @@ export const updateUserLanguage = async (
     }),
   });
 };
+
+/** A driver's public-facing profile, shown on the passenger's ride screen and
+ *  the swipe-to-confirm match card. Decoded from the users/{uid} Firestore doc. */
+export type DriverProfile = {
+  uid: string;
+  name: string;
+  xp: number;
+  rating: number;
+  avatar: string | null;
+  ridesCompleted: number;
+  school?: string;
+  age?: number;
+  instagramHandle?: string;
+  certifications: string[];
+};
+
+/** Decode a raw users/{uid} Firestore REST document into a DriverProfile. */
+export function extractDriverProfile(
+  uid: string,
+  doc: { fields?: Record<string, unknown> },
+): DriverProfile {
+  const fields = doc?.fields ?? {};
+  const str = (key: string): string => {
+    const v = fields[key] as Record<string, unknown> | undefined;
+    return typeof v?.stringValue === "string" ? v.stringValue : "";
+  };
+  const num = (key: string): number => {
+    const v = fields[key] as Record<string, unknown> | undefined;
+    return Number(v?.integerValue ?? v?.doubleValue ?? 0);
+  };
+  const strArr = (key: string): string[] => {
+    const v = fields[key] as Record<string, unknown> | undefined;
+    const values = (v?.arrayValue as Record<string, unknown> | undefined)?.values;
+    if (!Array.isArray(values)) return [];
+    return values
+      .map((e) => (e as Record<string, unknown>)?.stringValue)
+      .filter((s): s is string => typeof s === "string");
+  };
+  const email = str("email");
+  const name = str("name") || email.split("@")[0] || "Driver";
+  const birthDate = str("birthDate");
+  const storedAge = num("age");
+  const age = birthDate ? ageFromBirthDate(birthDate) : (storedAge > 0 ? storedAge : undefined);
+  return {
+    uid,
+    name,
+    xp: num("xp"),
+    rating: num("rating"),
+    avatar: str("avatar") || null,
+    ridesCompleted: num("ridesCompleted"),
+    school: str("school") || undefined,
+    age: typeof age === "number" && age > 0 ? age : undefined,
+    instagramHandle: str("instagramHandle") || undefined,
+    certifications: strArr("certifications"),
+  };
+}
+
+/** Fetch and decode a driver's profile by uid (authenticated). */
+export async function fetchDriverProfile(uid: string): Promise<DriverProfile | null> {
+  if (!uid) return null;
+  const token = await getAuth().currentUser?.getIdToken();
+  const doc = await fetchUserDocument(uid, token);
+  if (!doc) return null;
+  return extractDriverProfile(uid, doc);
+}
 
 export const extractDriverSummary = (data: FirestoreDocument | null) => {
   const fields = data?.fields ?? {};

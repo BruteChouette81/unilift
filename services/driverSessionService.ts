@@ -8,6 +8,7 @@ import {
 } from "@/constants/runtime-config";
 import type { DriverSession, LocationPoint } from "@/types/models";
 import { getMultiWaypointRoute } from "@/services/routeService";
+import { rideLog } from "@/utils/ride-logger";
 import { getAuth } from "firebase/auth";
 
 const COLLECTION = "driverSessions";
@@ -240,7 +241,9 @@ export async function dispatchRideRequest(requestId: string): Promise<{ notified
   });
   if (!res.ok) await throwFetchError(res, "Failed to dispatch request");
   const data = await res.json().catch(() => ({}));
-  return { notified: Number(data?.notified) || 0 };
+  const notified = Number(data?.notified) || 0;
+  rideLog.info("dispatch", `dispatched request ${requestId}`, { notified });
+  return { notified };
 }
 
 /** Count drivers currently online (status == "online") via Firestore aggregation. */
@@ -313,8 +316,11 @@ export async function acceptRideRequest(
     }),
   });
   if (res.status === 409) {
+    rideLog.warn("dispatch", `accept ${requestId} rejected: ALREADY_TAKEN`);
     throw Object.assign(new Error("ALREADY_TAKEN"), { code: "ALREADY_TAKEN" });
   }
   if (!res.ok) await throwFetchError(res, "Failed to accept request");
-  return await res.json();
+  const accepted = await res.json();
+  rideLog.transition("ride", "open", "planned", { requestId, rideId: accepted?.rideId });
+  return accepted;
 }

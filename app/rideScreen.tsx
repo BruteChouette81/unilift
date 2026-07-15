@@ -6,11 +6,11 @@
  */
 
 import { UserRideMapView } from '@/components/mapview';
+import CertBadges from '@/components/cert-badges';
 import QrScanner from '@/components/QrScanner';
 import RatingScreen from '@/components/ratings';
 import { CANCELLATION_FEES } from "@/constants/cancellation";
 import { formatCentsAsDollars } from "@/constants/pricing";
-import { calculateAgeFromBirthDate } from '@/components/userHelper';
 import { useActiveRide } from '@/context/ActiveRideContext';
 import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
@@ -21,11 +21,11 @@ import { validateAndBoardPassenger } from '@/services/paymentService';
 import {
   cancelJoinRequest,
   fetchRideById,
-  submitRating,
-  updateRatings,
-  updateXP,
+  leaveRide,
+  submitRideRating,
 } from '@/services/rideServices';
-import { fetchUserDocument } from '@/services/userService';
+import { fetchUserDocument, extractDriverProfile, type DriverProfile } from '@/services/userService';
+import { rideLog } from '@/utils/ride-logger';
 import { useKeepAwake } from 'expo-keep-awake';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { getAuth } from 'firebase/auth';
@@ -56,46 +56,6 @@ const toSafeNumber = (value: string, fallback = 0): number => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
-
-type DriverProfile = {
-  uid: string;
-  name: string;
-  xp: number;
-  rating: number;
-  avatar: string | null;
-  ridesCompleted: number;
-  school?: string;
-  age?: number;
-  instagramHandle?: string;
-};
-
-function extractDriverProfile(uid: string, doc: { fields?: Record<string, unknown> }): DriverProfile {
-  const fields = doc?.fields ?? {};
-  const str = (key: string): string => {
-    const v = fields[key] as Record<string, unknown> | undefined;
-    return typeof v?.stringValue === "string" ? v.stringValue : "";
-  };
-  const num = (key: string): number => {
-    const v = fields[key] as Record<string, unknown> | undefined;
-    return Number(v?.integerValue ?? v?.doubleValue ?? 0);
-  };
-  const email = str("email");
-  const name = str("name") || email.split("@")[0] || "Driver";
-  const birthDate = str("birthDate");
-  const storedAge = num("age");
-  const age = birthDate ? calculateAgeFromBirthDate(birthDate) : (storedAge > 0 ? storedAge : undefined);
-  return {
-    uid,
-    name,
-    xp: num("xp"),
-    rating: num("rating"),
-    avatar: str("avatar") || null,
-    ridesCompleted: num("ridesCompleted"),
-    school: str("school") || undefined,
-    age: typeof age === "number" && age > 0 ? age : undefined,
-    instagramHandle: str("instagramHandle") || undefined,
-  };
-}
 
 type PassengerState = "pending" | "accepted" | "rejected" | "started" | "boarded" | "completed";
 
@@ -163,15 +123,17 @@ type BottomPanelProps = {
   bottomInset: number;
   driverName?: string;
   driverAvatar?: string | null;
+  driverCerts?: string[];
   onScan: () => void;
   onQuit: () => void;
+  onLeave: () => void;
   onViewDriver: () => void;
   t: TFn;
 };
 
 const BottomPanel = React.memo(function BottomPanel({
   passengerState, boarded, loading, hasDriverLocation, bottomInset,
-  driverName, driverAvatar, onScan, onQuit, onViewDriver, t,
+  driverName, driverAvatar, driverCerts, onScan, onQuit, onLeave, onViewDriver, t,
 }: BottomPanelProps) {
   const statusInfo = getStatusInfo(passengerState, t);
   return (
@@ -190,7 +152,10 @@ const BottomPanel = React.memo(function BottomPanel({
             </View>
           )}
           <View style={{ flex: 1 }}>
-            <Text style={styles.driverName} numberOfLines={1}>{driverName}</Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <Text style={styles.driverName} numberOfLines={1}>{driverName}</Text>
+              <CertBadges certifications={driverCerts} size="compact" hideWhenEmpty />
+            </View>
             <Text style={styles.driverSub}>{t("passengerRide.viewDriverProfile")}</Text>
           </View>
           <Text style={{ fontSize: 16, color: "#9ca3af" }}>›</Text>
@@ -242,12 +207,22 @@ const BottomPanel = React.memo(function BottomPanel({
       </View>
 
       {/* Accepted but the driver hasn't started yet — show a reassuring waiting
-          card instead of the (premature) scan button. */}
+          card instead of the (premature) scan button, plus a leave option. */}
       {passengerState === "accepted" && !boarded && (
-        <View style={styles.waitingCard}>
-          <Text style={styles.waitingTitle}>{t("passengerRide.driverConfirmedTitle")}</Text>
-          <Text style={styles.waitingMsg}>{t("passengerRide.waitingForStartMsg")}</Text>
-        </View>
+        <>
+          <View style={styles.waitingCard}>
+            <Text style={styles.waitingTitle}>{t("passengerRide.driverConfirmedTitle")}</Text>
+            <Text style={styles.waitingMsg}>{t("passengerRide.waitingForStartMsg")}</Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.dangerBtn, loading && styles.btnDisabled]}
+            onPress={onLeave}
+            disabled={loading}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.btnText}>{t("passengerRide.leave")}</Text>
+          </TouchableOpacity>
+        </>
       )}
 
       {passengerState === "started" && !boarded && (
@@ -277,8 +252,10 @@ const BottomPanel = React.memo(function BottomPanel({
   prev.bottomInset === next.bottomInset &&
   prev.driverName === next.driverName &&
   prev.driverAvatar === next.driverAvatar &&
+  (prev.driverCerts ?? []).join(",") === (next.driverCerts ?? []).join(",") &&
   prev.onScan === next.onScan &&
   prev.onQuit === next.onQuit &&
+  prev.onLeave === next.onLeave &&
   prev.onViewDriver === next.onViewDriver &&
   prev.t === next.t
 ));
@@ -294,6 +271,7 @@ export default function RideScreen() {
   const [showScanner, setShowScanner] = useState(false);
   const [pollingActive, setPollingActive] = useState(true);
   const [driverProfile, setDriverProfile] = useState<DriverProfile | null>(null);
+  const [driverLocation, setDriverLocation] = useState<{ latitude: number; longitude: number } | undefined>(undefined);
   const [showDriverModal, setShowDriverModal] = useState(false);
   const driverFetchedRef = useRef(false);
 
@@ -355,6 +333,7 @@ export default function RideScreen() {
             name: ride.driverName ?? "Driver",
             avatar: ride.driverAvatar ?? null,
             xp: 0, rating: 0, ridesCompleted: 0,
+            certifications: [],
           });
           // Then fetch the full profile in the background.
           getAuth().currentUser?.getIdToken().then((token) =>
@@ -362,6 +341,27 @@ export default function RideScreen() {
           ).then((doc) => {
             if (doc) setDriverProfile(extractDriverProfile(ride.driverId, doc));
           }).catch(() => {});
+        }
+
+        // Seed map coords from the ride doc when params were absent/zero (e.g. a
+        // cold `driver_accepted` deep link that carries no coords — W-17).
+        if (ride.localisation) {
+          setOriginCoords((prev) => (prev.latitude === 0 && prev.longitude === 0
+            ? { latitude: ride.localisation.latitude, longitude: ride.localisation.longitude }
+            : prev));
+        }
+        if (ride.destinationCoords) {
+          setDestinationCoords((prev) => (prev.latitude === 0 && prev.longitude === 0
+            ? { latitude: ride.destinationCoords.latitude, longitude: ride.destinationCoords.longitude }
+            : prev));
+        }
+
+        // Live driver tracking — plot the driver's last broadcast position (W-16).
+        if (ride.driverLocation) {
+          setDriverLocation((prev) => {
+            const next = { latitude: ride.driverLocation!.latitude, longitude: ride.driverLocation!.longitude };
+            return prev && prev.latitude === next.latitude && prev.longitude === next.longitude ? prev : next;
+          });
         }
 
         // ── Frozen post-boarded path ─────────────────────────────────────────
@@ -404,6 +404,7 @@ export default function RideScreen() {
         // Sticky boarded check — once true, never regresses to false.
         const currentBoarded = ride.boardedPassengers?.includes(uid) ?? false;
         if (currentBoarded) {
+          rideLog.transition("passenger", passengerState, "boarded", { rideId });
           setBoarded(true);
           setPassengerState("boarded");
           return true;
@@ -441,7 +442,9 @@ export default function RideScreen() {
 
         if (passengerState === "pending") {
           if (ride.passengers.includes(uid)) {
-            setPassengerState(ride.status === "started" ? "started" : "accepted");
+            const next = ride.status === "started" ? "started" : "accepted";
+            rideLog.transition("passenger", "pending", next, { rideId });
+            setPassengerState(next);
             Alert.alert(t("passengerRide.requestAcceptedTitle"), t("passengerRide.requestAcceptedMsg"));
           }
           const myRequest = ride.joinRequests?.[uid];
@@ -460,6 +463,7 @@ export default function RideScreen() {
 
         // accepted → started transition (still not boarded)
         if (passengerState === "accepted" && ride.status === "started") {
+          rideLog.transition("passenger", "accepted", "started", { rideId });
           setPassengerState("started");
         }
 
@@ -480,6 +484,9 @@ export default function RideScreen() {
     },
     {
       enabled: Boolean(rideId && user?.uid) && pollingActive,
+      // Fetch once immediately so a just-started ride flips the passenger into
+      // live mode right away instead of showing "waiting" for the first interval.
+      immediate: true,
       initialDelayMs: 8000,
       maxDelayMs: 30000,
       backoffFactor: 1.5,
@@ -518,6 +525,36 @@ export default function RideScreen() {
     );
   }, [user, t, rideId, clearActiveRide, router]);
 
+  // Accepted-but-not-yet-boarded passengers can leave the ride (restores the
+  // seat, notifies the driver). Once boarded/started this is disallowed server-side.
+  const leaveRideHandler = useCallback(() => {
+    Alert.alert(
+      t("passengerRide.leaveRideTitle"),
+      t("passengerRide.leaveRideMsg"),
+      [
+        { text: t("common.no"), style: "cancel" },
+        {
+          text: t("passengerRide.leave"),
+          style: "destructive",
+          onPress: async () => {
+            setLoading(true);
+            try {
+              await leaveRide(rideId);
+              hasNavigatedAwayRef.current = true;
+              setPollingActive(false);
+              clearActiveRide();
+              router.push('/(tabs)');
+            } catch {
+              Alert.alert(t("common.error"), t("passengerRide.failedLeaveRide"));
+            } finally {
+              setLoading(false);
+            }
+          },
+        },
+      ],
+    );
+  }, [t, rideId, clearActiveRide, router]);
+
   const openScanner = useCallback(() => setShowScanner(true), []);
 
   const handleQrScan = useCallback(async (payload: string) => {
@@ -538,15 +575,13 @@ export default function RideScreen() {
   const handleRatingSubmitted = async (rating: number) => {
     if (!user) return;
     try {
-      const driverId = await updateRatings(rideId, rating);
-      await updateXP(user.uid, driverId!, rating * 20);
-      await submitRating(rideId, user.uid);
+      await submitRideRating(rideId, rating);
       hasNavigatedAwayRef.current = true;
       clearActiveRide();
       Alert.alert(t("ratings.thankYou"), t("ratings.thankYouMsg", { count: rating }), [
         { text: t("common.ok"), onPress: () => router.replace("/") },
       ]);
-    } catch (e) {
+    } catch {
       Alert.alert(t("common.error"), t("passengerRide.failedRating"));
     }
   };
@@ -572,7 +607,7 @@ export default function RideScreen() {
         <UserRideMapView
           origin={originCoords}
           destination={destinationCoords}
-          driverLocation={undefined}
+          driverLocation={driverLocation}
         />
       </View>
 
@@ -591,12 +626,14 @@ export default function RideScreen() {
         passengerState={passengerState}
         boarded={boarded}
         loading={loading}
-        hasDriverLocation={false}
+        hasDriverLocation={Boolean(driverLocation)}
         bottomInset={insets.bottom}
         driverName={driverProfile?.name}
         driverAvatar={driverProfile?.avatar}
+        driverCerts={driverProfile?.certifications}
         onScan={openScanner}
         onQuit={quitRide}
+        onLeave={leaveRideHandler}
         onViewDriver={() => setShowDriverModal(true)}
         t={t}
       />
@@ -645,6 +682,10 @@ export default function RideScreen() {
                 </View>
 
                 <Text style={styles.profileDriverName}>{driverProfile.name}</Text>
+
+                <View style={{ alignItems: "center", marginTop: 8 }}>
+                  <CertBadges certifications={driverProfile.certifications} size="full" />
+                </View>
 
                 <View style={styles.profileXpRow}>
                   <Text style={styles.profileXpText}>⚡ {driverProfile.xp} XP</Text>

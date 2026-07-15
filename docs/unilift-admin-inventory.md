@@ -182,6 +182,34 @@ should validate `score ∈ [1,10]` and write `location` as a GeoPoint.
 > `new GeoPoint(lat, lng)` for `location`; the REST type wrappers above are only
 > needed if writing via the raw REST API.
 
+### `sponsors` — map sponsors (in Firestore) 🟢
+Paying partner businesses shown on the home map. Read by the app via REST
+`:runQuery` ([services/sponsorService.ts](../services/sponsorService.ts)); dev
+test data seeded by [functions/scripts/seed-sponsors.js](../functions/scripts/seed-sponsors.js)
+(**`uniliftdev` only**); the **admin dashboard creates/edits/deletes these in
+`uniliftdefault`** (see [website-sponsors-handoff.md](website-sponsors-handoff.md)).
+No PII (business data). Rules: `read: isSignedIn()`, `create/update/delete: isAdmin()`.
+
+**Collection path:** `sponsors/{sponsorId}` (document id is a slug, e.g. `mcdonalds-laurier`).
+
+**Document shape (app read/write contract — write via SDK with native types):**
+
+| Field | REST type | Required | Meaning |
+|-------|-----------|----------|---------|
+| `name` | `stringValue` | ✅ | Business name |
+| `category` | `stringValue` | ✅ | `fast-food` \| `cafe` \| `bar` \| `store` \| … (drives fallback icon) |
+| `location` | `geoPointValue` `{latitude,longitude}` | ✅ | Map marker position |
+| `tier` | `stringValue` | ✅ | `gold` \| `silver` \| `bronze` → marker size / glow / z-order / badge |
+| `logoUrl` | `stringValue` | — | **Raster** (PNG/JPG/WebP) logo URL — no SVG. Omit ⇒ category icon |
+| `brandColor` | `stringValue` | — | Hex accent, e.g. `#FFC72C` |
+| `address` | `stringValue` | — | Modal display line |
+| `tagline` | `stringValue` | — | Short eyebrow, e.g. `Open till 3 AM` |
+| `offers` | `arrayValue` of `mapValue` | — | Each `{ title (req), description?, discount? }` |
+| `active` | `booleanValue` | — | Default true; `false` hides from the map |
+
+> The dashboard writes with the Firebase JS SDK (`new GeoPoint(lat,lng)`, real
+> arrays/maps) — the REST wrappers above are only how the app *reads* them.
+
 ### Other constants — NOT yet in Firestore (future candidates)
 - **Ride pricing** — hardcoded in [constants/pricing.ts](../constants/pricing.ts)
   and **mirrored** in [functions/index.js](../functions/index.js#L54-L58)
@@ -294,3 +322,102 @@ Firestore read on every admin rule evaluation and another collection to secure.
 Phase 2 (after your approval): additive `firestore.rules` diff + `firebase.json`
 multi-db config, `set-admin-claims.js`, the `getAdminMetrics` callable, and
 `docs/website-handoff.md` — all as files + commands for **you** to deploy.
+
+---
+
+## 7. Grant your account admin clearance — step by step
+
+**Goal:** put the `{ admin: true }` custom claim on `thomasberthiaume183@gmail.com`
+so `getAdminMetrics` stops returning `permission-denied` and the dashboard rules
+recognize you as admin.
+
+**What's already done (no action needed):**
+- `getAdminMetrics` is deployed and checks `context.auth.token.admin === true`
+  ([functions/index.js](../functions/index.js#L1456)).
+- The grant script exists and already lists your email
+  ([functions/scripts/set-admin-claims.js](../functions/scripts/set-admin-claims.js#L33-L36)).
+- The claim is **project-wide** — one run covers both `uniliftdev` and
+  `uniliftdefault` (Auth is shared across the named DBs).
+
+So clearance = run the script once with an admin credential, then refresh your token.
+
+### Step 1 — Confirm your account exists in Firebase Auth
+Your account must have signed into the app at least once (email/password or Apple),
+so a Firebase Auth user record exists for `thomasberthiaume183@gmail.com`. If it
+doesn't, the script prints `auth/user-not-found` — sign in through the app first,
+then continue.
+
+### Step 2 — Get a service-account key with Auth-admin rights
+The script authenticates as the project, not as you.
+
+1. Open the Firebase console → project **`unilift-6e756`** → **Project settings**
+   (gear) → **Service accounts** tab.
+2. Click **Generate new private key** → confirm → a `serviceAccount.json` downloads.
+3. Move it somewhere private and **outside the git repo** (e.g.
+   `C:\Users\hbari\secrets\unilift-serviceAccount.json`). Never commit it.
+
+> The default "Firebase Admin SDK" service account already has the
+> `setCustomUserClaims` / `listUsers` permissions the script needs.
+
+### Step 3 — Point the environment at the key and project
+In a **Git Bash** shell (the Bash tool), from the repo root:
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS="/c/Users/hbari/secrets/unilift-serviceAccount.json"
+export GOOGLE_CLOUD_PROJECT=unilift-6e756
+```
+
+PowerShell equivalent:
+
+```powershell
+$env:GOOGLE_APPLICATION_CREDENTIALS = "C:\Users\hbari\secrets\unilift-serviceAccount.json"
+$env:GOOGLE_CLOUD_PROJECT = "unilift-6e756"
+```
+
+### Step 4 — Run the grant script
+```bash
+cd functions
+node scripts/set-admin-claims.js
+```
+
+Expected output:
+```
+✅ admin granted to thomasberthiaume183@gmail.com (uid: …)
+✅ admin granted to vachonbegin@gmail.com (uid: …)   # (or user-not-found if that account hasn't signed in)
+
+Done. 2/2 processed. Founders must re-login (token refresh) for the claim to take effect.
+```
+
+The script is idempotent — safe to re-run. To remove the claim later:
+`node scripts/set-admin-claims.js --revoke`.
+
+### Step 5 — Refresh your ID token so the claim appears
+Custom claims only land in the ID token on the **next** token issuance. Do one of:
+- **App:** sign out and sign back in, **or**
+- **Web dashboard / any client:** call `await auth.currentUser.getIdToken(true)`
+  (force-refresh) then re-issue the request.
+
+### Step 6 — Verify clearance
+Call the deployed callable as your signed-in self:
+
+```js
+import { getFunctions, httpsCallable } from "firebase/functions";
+const fns = getFunctions(app, "us-central1");           // region matches deploy
+const res = await httpsCallable(fns, "getAdminMetrics")({ env: "prod" });
+console.log(res.data);   // { users, rides, gmv, authUsers, … } → success
+```
+
+- Success → JSON metrics object = clearance is live.
+- `permission-denied` ("Admins only.") → token not refreshed yet; redo Step 5.
+- `unauthenticated` → you're not signed in on that client.
+
+### Step 7 — Clean up
+Delete or lock down `serviceAccount.json` once done — it grants full project
+access. Do **not** leave it in the repo or in shell history.
+
+> **Note (dashboard write rules):** this claim also satisfies the `isAdmin()`
+> rule for editing `events`. But per the §5 caveat, confirm `firestore.rules` is
+> actually deployed to the **`uniliftdefault`** DB (not `(default)`) before
+> relying on admin `events` writes. The `getAdminMetrics` callable itself does
+> **not** depend on rules — it enforces the claim in code — so metrics work
+> regardless.

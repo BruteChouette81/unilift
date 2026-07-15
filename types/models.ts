@@ -41,6 +41,10 @@ export type UserProfile = {
   birthDate?: string;
   school?: string;
   preferences?: string[];
+  /** Identity certifications the user holds (stackable): subset of
+   *  ["adult","student"]. Absent/empty = uncertified. Written only by the
+   *  apiSandbox Cloud Function — never by the client. */
+  certifications?: string[];
   walletBalance?: number;            // legacy wallet balance (in cents)
   pendingChargeCents?: number;       // passenger: accumulated unpaid ride charges (in cents)
   pendingEarningsCents?: number;     // driver: accumulated unpaid earnings (in cents)
@@ -61,6 +65,11 @@ export type UserProfile = {
   spotifyId?: string;
   spotifyName?: string;
   // ── Driver mode (recurring availability) ─────────────────────────────────
+  /** Simple ON/OFF driver-mode flag. When enabled (or absent — absent is treated
+   *  as ON for reach), the user is notified of every ride request. This is the
+   *  authoritative on/off state for now; the recurring-window matching below is
+   *  kept for a later reinstatement of the matching algo. */
+  driverModeEnabled?: boolean;
   /** Recurring availability windows (day(s) + time window + destination). The
    *  authoritative Ride Mode (Flow A) configuration. */
   driverAvailability?: DriverAvailabilityWindow[];
@@ -172,6 +181,16 @@ export type Ride = {
   startedAt?: string;
   status: RideStatus | string;
   boardedPassengers?: string[];
+  /** Passengers matched via dispatch/accept who have not yet swiped to confirm
+   *  the driver. The driver cannot start until this is empty. Passengers who
+   *  join through the planned-ride flow are never added here. */
+  pendingConfirmation?: string[];
+  /** Passengers who swiped to confirm the driver (mutual match). */
+  confirmedPassengers?: string[];
+  /** When the pending confirmation auto-expires (server sweep). */
+  confirmDeadlineAt?: string;
+  /** Originating rideRequests doc id — lets reject/expire re-open the search. */
+  requestId?: string;
   joinRequests?: Record<string, JoinRequest>;
   passengerSeats?: Record<string, number>;
   driverLocation?: LocationPoint;

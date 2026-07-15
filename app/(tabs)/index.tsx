@@ -1,12 +1,20 @@
 import RideMapView from "@/components/mapview";
 import { RequestLiftSheet } from "@/components/request-lift-sheet";
+import WizardModal, { type WizardStep } from "@/components/wizard/wizard-modal";
+import ProfileCompletionSheet from "@/components/profile-completion-sheet";
+import { useProfileCompletion } from "@/hooks/use-profile-completion";
+import { useFirstRun } from "@/hooks/use-first-run";
 import HypeEventCard from "@/components/hype-event-card";
+import SponsorCard from "@/components/sponsor-card";
 import { type HypeEvent } from "@/constants/events";
+import { type Sponsor } from "@/constants/sponsors";
 import { isRideExpired } from "@/utils/ride-lifecycle";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Location from "expo-location";
-import React, { useEffect, useRef, useState } from "react";
+import { devAwareCurrentPosition } from "@/utils/dev-location";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -39,6 +47,7 @@ import { useWallet } from "@/context/WalletContext";
 import { createRideRequest } from "@/services/rideRequestService";
 import { dispatchRideRequest, fetchAvailableDriverCount } from "@/services/driverSessionService";
 import { fetchHypeEvents } from "@/services/eventService";
+import { fetchSponsors } from "@/services/sponsorService";
 import type { FavoriteRoute, LocationPoint, Ride } from "@/types/models";
 import { ensurePaymentMethodOrAlert } from "@/utils/ensurePaymentMethod";
 import { rideErrorMessage } from "@/utils/rideErrors";
@@ -63,7 +72,21 @@ const C = {
   muted:       "#9ca3af",
   dim:         "#4b5563",
   gold:        "#fbbf24",
+  fire:        "#f97316",
 };
+
+// Hype (night) mode overrides — only the tokens that shift when Hype is toggled on.
+const C_HYPE = {
+  ...C,
+  bg:          "#0a0014",
+  surface:     "#150430",
+  surfaceAlt:  "#1a0533",
+  border:      "rgba(249, 115, 22, 0.35)",
+  borderFaint: "rgba(249, 115, 22, 0.10)",
+  purpleLight: "#f97316",
+};
+
+const HYPE_MODE_STORAGE_KEY = "unilift:hypeMode";
 
 
 // ─── Main Screen ───────────────────────────────────────────────────────────────
@@ -80,9 +103,28 @@ export default function HomeScreen() {
   const router = useRouter();
   const [rides, setRides] = useState<Ride[]>([]);
 
+  // Profile-completion nudge: a ride request held while we encourage the user
+  // to finish their profile. Shown at most once per app session.
+  const [pendingRide, setPendingRide] = useState<{ place: string; dropoff: LocationPoint } | null>(null);
+  const profileNudgeShown = useRef(false);
+  const { completion: profileCompletion, ready: profileCompletionReady } = useProfileCompletion();
+
+  // First-run wizard: explains how a passenger searches for a lift.
+  const searchWizard = useFirstRun("home-search");
+  const searchWizardSteps = useMemo<WizardStep[]>(() => [
+    { icon: "search-outline",   title: t("wizard.home.step1Title"), highlight: t("wizard.home.step1Highlight"), body: t("wizard.home.step1Body") },
+    { icon: "list-outline",     title: t("wizard.home.step2Title"), body: t("wizard.home.step2Body") },
+    { icon: "flame-outline",    title: t("wizard.home.step3Title"), body: t("wizard.home.step3Body") },
+    { icon: "map-outline",      title: t("wizard.home.step4Title"), body: t("wizard.home.step4Body") },
+  ], [t]);
+
   // Hype-map events (Firestore-backed) + the tapped event's floating card.
   const [hypeEvents, setHypeEvents] = useState<HypeEvent[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<HypeEvent | null>(null);
+
+  // Sponsors (Firestore-backed) + the tapped sponsor's card. Always shown on the map.
+  const [sponsors, setSponsors] = useState<Sponsor[]>([]);
+  const [selectedSponsor, setSelectedSponsor] = useState<Sponsor | null>(null);
 
   // Search + suggestions
   const [searchText, setSearchText] = useState("");
@@ -92,8 +134,9 @@ export default function HomeScreen() {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
 
-  // Role toggle: passenger or driver
-  const [role, setRole] = useState<"passenger" | "driver">("passenger");
+  // Hype mode: toggles the night-mode map style + reveals event markers
+  const [hypeMode, setHypeMode] = useState(false);
+  const theme = hypeMode ? C_HYPE : C;
 
   // Lift request sheet
   const [showLiftSheet, setShowLiftSheet] = useState(false);
@@ -140,6 +183,26 @@ export default function HomeScreen() {
     void fetchHypeEvents().then(setHypeEvents).catch(() => {});
   }, []);
 
+  // Load sponsors once on mount.
+  useEffect(() => {
+    void fetchSponsors().then(setSponsors).catch(() => {});
+  }, []);
+
+  // Hydrate Hype mode from the last session (defaults to off, no flash).
+  useEffect(() => {
+    void AsyncStorage.getItem(HYPE_MODE_STORAGE_KEY).then((v) => {
+      if (v === "1") setHypeMode(true);
+    }).catch(() => {});
+  }, []);
+
+  const toggleHypeMode = () => {
+    setHypeMode((prev) => {
+      const next = !prev;
+      void AsyncStorage.setItem(HYPE_MODE_STORAGE_KEY, next ? "1" : "0").catch(() => {});
+      return next;
+    });
+  };
+
   const openLiftSheet = () => {
     // Reset to the pulsing placeholder; the live poll below fills it in for the
     // selected place.
@@ -170,16 +233,12 @@ export default function HomeScreen() {
     };
   }, [showLiftSheet, selectedDropoff, userLocation]);
 
-  // Tapping a place on the map or selecting a suggestion routes based on role.
-  // Passengers see the RequestLiftSheet; drivers go straight to drive mode.
+  // Tapping a place on the map or selecting a suggestion opens the passenger
+  // lift request sheet. (Driving is initiated from notifications for now.)
   const rideSelect = (name: string, lat: number, lng: number) => {
     setSelectedPlace(name);
     setSelectedDropoff({ latitude: lat, longitude: lng });
-    if (role === "driver") {
-      router.push(`/driveOnlineScreen?destName=${encodeURIComponent(name)}&destLat=${lat}&destLng=${lng}`);
-    } else {
-      openLiftSheet();
-    }
+    openLiftSheet();
   };
 
   const handleLiftRequest = () => {
@@ -298,11 +357,7 @@ export default function HomeScreen() {
     if (item.kind === "geo" || item.kind === "favorite" || item.kind === "history") {
       addToHistory({ displayName: item.displayName, lat: item.lat, lon: item.lon });
     }
-    if (role === "driver") {
-      router.push(`/driveOnlineScreen?destName=${encodeURIComponent(item.displayName)}&destLat=${lat}&destLng=${lon}`);
-    } else {
-      openLiftSheet();
-    }
+    openLiftSheet();
   };
 
   const clearSearch = () => {
@@ -312,15 +367,16 @@ export default function HomeScreen() {
     setSelectedDropoff(null);
   };
 
-  // Passenger posts a live ride request and waits for a driver to accept.
-  const handleChoosePassengerWith = async (place: string, dropoff: LocationPoint) => {
-    if (!ensurePaymentMethodOrAlert(hasPaymentMethod, t, router, walletLoading)) return;
+  // Posts the live ride request and waits for a driver to accept. Split out of
+  // handleChoosePassengerWith so the profile-completion nudge can pause the
+  // request and resume it here when the user picks "Later".
+  const actuallyRequestRide = async (place: string, dropoff: LocationPoint) => {
     try {
       let origin = userLocation;
       if (!origin) {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status === "granted") {
-          const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          const pos = await devAwareCurrentPosition({ accuracy: Location.Accuracy.Balanced });
           origin = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
         }
       }
@@ -344,6 +400,22 @@ export default function HomeScreen() {
     } catch (err) {
       Alert.alert(t("common.error"), rideErrorMessage(err, t));
     }
+  };
+
+  // Passenger requests a ride. Two gates run before the request goes out:
+  //   1. Payment method — hard block (can't ride without a card).
+  //   2. Profile completion — soft nudge, at most once per session. "Later"
+  //      resumes the paused request via actuallyRequestRide.
+  const handleChoosePassengerWith = async (place: string, dropoff: LocationPoint) => {
+    if (!ensurePaymentMethodOrAlert(hasPaymentMethod, t, router, walletLoading)) return;
+
+    if (profileCompletionReady && !profileCompletion.isComplete && !profileNudgeShown.current) {
+      profileNudgeShown.current = true;
+      setPendingRide({ place, dropoff });
+      return;
+    }
+
+    await actuallyRequestRide(place, dropoff);
   };
 
   const syncRides = useRef(async () => {
@@ -478,8 +550,11 @@ export default function HomeScreen() {
         onPlaceSelect={rideSelect}
         favorites={favoriteRoutes}
         homeLocalisation={homeLoc ?? { lat: 0, lng: 0 }}
-        events={hypeEvents}
+        events={hypeMode ? hypeEvents : []}
         onEventSelect={setSelectedEvent}
+        hypeMode={hypeMode}
+        sponsors={sponsors}
+        onSponsorSelect={setSelectedSponsor}
       />
 
       {/* ── Floating Search Bar ─────────────────────────────────────────── */}
@@ -488,10 +563,10 @@ export default function HomeScreen() {
           intensity={70}
           tint="dark"
           experimentalBlurMethod="dimezisBlurView"
-          style={styles.searchBarBlur}
+          style={[styles.searchBarBlur, hypeMode && styles.searchBarBlurHype]}
         >
           <View style={styles.searchBarInner}>
-            <Ionicons name="search" size={20} color={C.purpleLight} />
+            <Ionicons name="search" size={20} color={theme.purpleLight} />
             <TextInput
               style={styles.searchInput}
               placeholder={t("home.searchPlaceholder") || "Where are you going?"}
@@ -513,29 +588,19 @@ export default function HomeScreen() {
                 <Ionicons name="close" size={18} color={C.text} />
               </TouchableOpacity>
             )}
-          </View>
-
-          {/* ── Role Toggle ──────────────────────────────────────────────── */}
-          <View style={styles.roleToggleWrapper}>
             <TouchableOpacity
-              style={[styles.roleToggleOption, role === "passenger" && styles.roleToggleOptionPassenger]}
-              onPress={() => setRole("passenger")}
+              style={[styles.hypeToggleBtn, hypeMode && styles.hypeToggleBtnActive]}
+              onPress={toggleHypeMode}
               activeOpacity={0.8}
             >
-              <Ionicons name="people-outline" size={14} color={role === "passenger" ? "#818cf8" : C.muted} />
-              <Text style={[styles.roleToggleText, role === "passenger" && styles.roleToggleTextPassenger]}>
-                {t("home.roleChooser.passengerTitle")}
-              </Text>
+              <Ionicons name="flame" size={18} color={hypeMode ? C.fire : C.muted} />
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.roleToggleOption, role === "driver" && styles.roleToggleOptionDriver]}
-              onPress={() => setRole("driver")}
-              activeOpacity={0.8}
+              style={styles.searchFilterBtn}
+              onPress={searchWizard.replay}
+              activeOpacity={0.7}
             >
-              <Ionicons name="car-outline" size={14} color={role === "driver" ? "#FD165A" : C.muted} />
-              <Text style={[styles.roleToggleText, role === "driver" && styles.roleToggleTextDriver]}>
-                {t("home.roleChooser.driveTitle")}
-              </Text>
+              <Ionicons name="help-circle-outline" size={18} color={C.purpleLight} />
             </TouchableOpacity>
           </View>
         </BlurView>
@@ -543,7 +608,7 @@ export default function HomeScreen() {
 
       {/* ── Suggestions Dropdown ───────────────────────────────────────────── */}
       {showSuggestions && (
-        <View style={[styles.suggestionsDropdown, { top: insets.top - 38 + 112 }]}>
+        <View style={[styles.suggestionsDropdown, { top: insets.top - 38 + 64 }]}>
           <BlurView intensity={80} tint="dark" experimentalBlurMethod="dimezisBlurView" style={styles.suggestionsBlur}>
             {isLoadingSuggestions ? (
               <View style={styles.suggestionRow}>
@@ -649,6 +714,38 @@ export default function HomeScreen() {
         }}
       />
 
+      <SponsorCard
+        sponsor={selectedSponsor}
+        onClose={() => setSelectedSponsor(null)}
+        onHeadThere={(sp) => {
+          // "Head there" continues with the normal lift process to the sponsor.
+          setSelectedSponsor(null);
+          rideSelect(sp.name, sp.lat, sp.lng);
+        }}
+      />
+
+      <WizardModal
+        visible={searchWizard.shouldShow}
+        steps={searchWizardSteps}
+        onDone={searchWizard.markSeen}
+        finalLabel={t("wizard.home.finalCta")}
+      />
+
+      {/* Soft profile-completion nudge holding a pending ride request. */}
+      <ProfileCompletionSheet
+        visible={pendingRide !== null}
+        completion={profileCompletion}
+        onCompleteNow={() => {
+          setPendingRide(null);
+          router.push("/(tabs)/profile");
+        }}
+        onLater={() => {
+          const ride = pendingRide;
+          setPendingRide(null);
+          if (ride) void actuallyRequestRide(ride.place, ride.dropoff);
+        }}
+      />
+
     </View>
   );
 }
@@ -701,6 +798,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(137, 56, 213, 0.30)",
   },
+  searchBarBlurHype: {
+    borderColor: "rgba(249, 115, 22, 0.45)",
+  },
   searchBarInner: {
     flexDirection: "row",
     alignItems: "center",
@@ -724,6 +824,25 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(137, 56, 213, 0.18)",
     alignItems: "center",
     justifyContent: "center",
+  },
+  hypeToggleBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(249, 115, 22, 0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(249, 115, 22, 0.20)",
+  },
+  hypeToggleBtnActive: {
+    backgroundColor: "rgba(249, 115, 22, 0.22)",
+    borderColor: "rgba(249, 115, 22, 0.55)",
+    shadowColor: "#f97316",
+    shadowOpacity: 0.6,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 4,
   },
 
   // ── Suggestions Dropdown ──────────────────────────────────────────────────
@@ -1053,48 +1172,5 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     minWidth: 20,
     textAlign: "center",
-  },
-
-  // ── Role Toggle (under search bar) ────────────────────────────────────────
-  roleToggleWrapper: {
-    flexDirection: "row",
-    marginHorizontal: 12,
-    marginBottom: 10,
-    backgroundColor: "rgba(255,255,255,0.05)",
-    borderRadius: 12,
-    padding: 3,
-    borderWidth: 1,
-    borderColor: "rgba(137,56,213,0.20)",
-    gap: 3,
-  },
-  roleToggleOption: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    paddingVertical: 8,
-    borderRadius: 10,
-  },
-  roleToggleOptionPassenger: {
-    backgroundColor: "rgba(99,102,241,0.20)",
-    borderWidth: 1,
-    borderColor: "rgba(99,102,241,0.35)",
-  },
-  roleToggleOptionDriver: {
-    backgroundColor: "rgba(253,22,90,0.15)",
-    borderWidth: 1,
-    borderColor: "rgba(253,22,90,0.30)",
-  },
-  roleToggleText: {
-    color: C.muted,
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  roleToggleTextPassenger: {
-    color: "#818cf8",
-  },
-  roleToggleTextDriver: {
-    color: "#FD165A",
   },
 });

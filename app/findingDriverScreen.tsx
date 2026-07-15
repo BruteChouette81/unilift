@@ -1,5 +1,7 @@
 import { useLanguage } from "@/context/LanguageContext";
+import { useActiveRide } from "@/context/ActiveRideContext";
 import { cancelRideRequest } from "@/services/rideRequestService";
+import { rideLog } from "@/utils/ride-logger";
 import { Ionicons } from "@expo/vector-icons";
 import { doc, onSnapshot } from "firebase/firestore";
 import { db } from "@/firebaseConfig";
@@ -36,6 +38,7 @@ export default function FindingDriverScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { t } = useLanguage();
+  const { setPendingRequest, clearPendingRequest } = useActiveRide();
   const params = useLocalSearchParams<{
     requestId: string;
     destination?: string;
@@ -47,6 +50,43 @@ export default function FindingDriverScreen() {
   }>();
 
   const navigatedRef = useRef(false);
+
+  // Persist the in-progress search so it can auto-resume if the passenger
+  // closes the app before a driver accepts (restored from app/_layout.tsx).
+  // The record is cleared on match, cancel, or expiry below.
+  useEffect(() => {
+    if (!params.requestId) return;
+    setPendingRequest({
+      requestId: params.requestId,
+      params: {
+        requestId: params.requestId,
+        destination: params.destination ?? "",
+        destLat: params.destLat ?? "",
+        destLng: params.destLng ?? "",
+        originLat: params.originLat ?? "",
+        originLng: params.originLng ?? "",
+        notified: params.notified ?? "0",
+      },
+    });
+  }, [
+    params.requestId,
+    params.destination,
+    params.destLat,
+    params.destLng,
+    params.originLat,
+    params.originLng,
+    params.notified,
+    setPendingRequest,
+  ]);
+
+  // After a while with no match, reassure the passenger it's still searching.
+  // The backend sweep auto-expires the request (and this screen listens for
+  // that `expired` status below), so they are never left stranded.
+  const [slow, setSlow] = React.useState(false);
+  useEffect(() => {
+    const id = setTimeout(() => setSlow(true), 45000);
+    return () => clearTimeout(id);
+  }, []);
 
   // ── Radar pulse ──────────────────────────────────────────────────────────
   const pulse1 = useRef(new Animated.Value(0)).current;
@@ -77,19 +117,25 @@ export default function FindingDriverScreen() {
         const matchedRideId = data?.matchedRideId as string | undefined;
         if (status === "matched" && matchedRideId) {
           navigatedRef.current = true;
+          // Keep the pending record: the passenger still has to swipe-confirm on
+          // matchDriverScreen, and if they pass/expire they resume searching.
+          rideLog.transition("request", "open", "matched", { requestId: params.requestId, matchedRideId });
           router.replace(
-            `/rideScreen?rideId=${matchedRideId}&Originlat=${params.originLat ?? "0"}&OriginLng=${params.originLng ?? "0"}&DestinationLat=${params.destLat ?? "0"}&DestinationLng=${params.destLng ?? "0"}&pending=false`,
+            `/matchDriverScreen?rideId=${matchedRideId}&requestId=${params.requestId}&originLat=${params.originLat ?? "0"}&originLng=${params.originLng ?? "0"}&destLat=${params.destLat ?? "0"}&destLng=${params.destLng ?? "0"}`,
           );
         } else if (status === "cancelled" || status === "expired") {
+          clearPendingRequest();
+          rideLog.transition("request", "open", status, { requestId: params.requestId });
           router.back();
         }
       },
       (error) => console.warn("rideRequest listener error", error),
     );
     return () => unsubscribe();
-  }, [params.requestId, params.originLat, params.originLng, params.destLat, params.destLng, router]);
+  }, [params.requestId, params.originLat, params.originLng, params.destLat, params.destLng, router, clearPendingRequest]);
 
   const handleCancel = async () => {
+    clearPendingRequest();
     if (params.requestId) await cancelRideRequest(params.requestId).catch(() => {});
     router.back();
   };
@@ -109,8 +155,9 @@ export default function FindingDriverScreen() {
     }),
   ).current;
 
-  const statusText =
-    Number(params.notified) > 0
+  const statusText = slow
+    ? t("finding.stillSearching")
+    : Number(params.notified) > 0
       ? t("finding.notifiedDrivers", { count: Number(params.notified) })
       : t("finding.searching");
 
@@ -119,8 +166,13 @@ export default function FindingDriverScreen() {
       {/* tap outside to cancel */}
       <TouchableOpacity style={StyleSheet.absoluteFill} onPress={handleCancel} activeOpacity={1} />
 
-      <View style={[styles.sheet, { maxHeight: SHEET_MAX_HEIGHT, paddingBottom: Math.max(insets.bottom, 16) + 16 }]}>
-        <BlurView intensity={80} tint="dark" experimentalBlurMethod="dimezisBlurView" style={styles.blur}>
+      <View style={[styles.sheet, { maxHeight: SHEET_MAX_HEIGHT }]}>
+        <BlurView
+          intensity={80}
+          tint="dark"
+          experimentalBlurMethod="dimezisBlurView"
+          style={[styles.blur, { paddingBottom: Math.max(insets.bottom, 16) + 16 }]}
+        >
 
           {/* Drag handle */}
           <View style={styles.dragZone} {...swipePan.panHandlers}>

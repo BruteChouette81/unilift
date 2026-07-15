@@ -1,4 +1,5 @@
 const functions = require("firebase-functions");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 const express = require("express");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue, Timestamp, GeoPoint } = require("firebase-admin/firestore");
@@ -26,6 +27,14 @@ const devDb  = getFirestore("uniliftdev");
 const stripeLive = require("stripe")(process.env.STRIPE_SECRET_KEY_LIVE);
 const stripeTest = require("stripe")(process.env.STRIPE_SECRET_KEY_TEST);
 
+// Scheduled jobs (sweepStaleRides, monthlyBilling) have no per-request env
+// header, so they must name a fixed database in code. Phase 1 of the ride-path
+// hardening rollout keeps them pointed at the dev database so running them can
+// NEVER touch live production data. At cutover (new production app live + old
+// clients force-gated) flip these to prodDb / stripeLive and redeploy.
+const TARGET_DB = devDb;
+const TARGET_STRIPE = stripeTest;
+
 const getDb     = (req) => req.headers["x-app-env"] === "dev" ? devDb  : prodDb;
 const getStripe = (req) => req.headers["x-app-env"] === "dev" ? stripeTest : stripeLive;
 const getStripePublishableKey = (req) =>
@@ -52,10 +61,45 @@ const authenticate = async (req, res, next) => {
 };
 
 // ── Payment Utilities (mirrors constants/pricing.ts) ────────────────────────
-const PASSENGER_RATE_CENTS_PER_KM = 25;
-const DRIVER_RATE_CENTS_PER_KM = 20;
-const MIN_CHARGE_CENTS = 100;
-const MIN_DISTANCE_KM = 0.5;
+// Fallback defaults. The live values are read from the Firestore doc
+// `config/pricing` (editable via the founder admin dashboard). These are used
+// only when that doc is missing or a field is invalid, so charges never break.
+const DEFAULT_PRICING = {
+  passengerRateCentsPerKm: 25,
+  driverRateCentsPerKm: 20,
+  minimumChargeCents: 100,
+  minimumDistanceKm: 0.5,
+};
+
+// Per-env cache of the pricing doc. Cloud Function instances are reused, so this
+// avoids a Firestore read on every ride completion. `db` is the per-request
+// dev/prod handle, so we key by env to keep uniliftdev and uniliftdefault
+// separate. TTL keeps dashboard edits taking effect within ~60s.
+const PRICING_TTL_MS = 60 * 1000;
+const pricingCache = new Map(); // env -> { value, expires }
+
+async function getPricing(db) {
+  const env = db === devDb ? "dev" : "prod";
+  const cached = pricingCache.get(env);
+  if (cached && cached.expires > Date.now()) return cached.value;
+
+  const value = { ...DEFAULT_PRICING };
+  try {
+    const snap = await db.collection("config").doc("pricing").get();
+    if (snap.exists) {
+      const data = snap.data() || {};
+      for (const key of Object.keys(DEFAULT_PRICING)) {
+        const n = Number(data[key]);
+        if (Number.isFinite(n) && n > 0) value[key] = n;
+      }
+    }
+  } catch (err) {
+    console.warn("getPricing failed, using defaults:", err.message);
+  }
+
+  pricingCache.set(env, { value, expires: Date.now() + PRICING_TTL_MS });
+  return value;
+}
 
 function haversineKm(lat1, lon1, lat2, lon2) {
   if ([lat1, lon1, lat2, lon2].some((v) => v == null || isNaN(v))) return 0;
@@ -70,9 +114,12 @@ function haversineKm(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function calculatePassengerChargeCents(distKm) {
-  const d = Math.max(distKm, MIN_DISTANCE_KM);
-  return Math.max(Math.round(d * PASSENGER_RATE_CENTS_PER_KM), MIN_CHARGE_CENTS);
+function calculatePassengerChargeCents(distKm, pricing = DEFAULT_PRICING) {
+  const d = Math.max(distKm, pricing.minimumDistanceKm);
+  return Math.max(
+    Math.round(d * pricing.passengerRateCentsPerKm),
+    pricing.minimumChargeCents,
+  );
 }
 
 // ── Helper: get or create Stripe customer ────────────────────────────────────
@@ -320,6 +367,7 @@ app.post("/rides/complete", authenticate, async (req, res) => {
     const dest = ride.destinationCoords;    // { latitude, longitude }
     const passengers = Array.isArray(confirmedPassengerIds) ? confirmedPassengerIds : [];
 
+    const pricing = await getPricing(db);
     const batch = db.batch();
     let totalEarningsCents = 0;
     const now = new Date().toISOString();
@@ -330,7 +378,7 @@ app.post("/rides/complete", authenticate, async (req, res) => {
         ? haversineKm(pickup.latitude, pickup.longitude, dest.latitude, dest.longitude)
         : haversineKm(origin.latitude, origin.longitude, dest.latitude, dest.longitude);
 
-      const chargeCents = calculatePassengerChargeCents(distKm);
+      const chargeCents = calculatePassengerChargeCents(distKm, pricing);
       totalEarningsCents += chargeCents;
 
       const userRef = db.collection("users").doc(passengerId);
@@ -351,7 +399,7 @@ app.post("/rides/complete", authenticate, async (req, res) => {
 
     // Driver earnings (matched to platform fee split)
     const driverEarningsCents = Math.round(
-      totalEarningsCents * (DRIVER_RATE_CENTS_PER_KM / PASSENGER_RATE_CENTS_PER_KM),
+      totalEarningsCents * (pricing.driverRateCentsPerKm / pricing.passengerRateCentsPerKm),
     );
 
     if (driverEarningsCents > 0) {
@@ -958,6 +1006,11 @@ const DEFAULT_DEST_RADIUS_KM = 10;
 // the dispatch to every driver within DRIVER_PROXIMITY_KM regardless of where
 // they're going.
 const MIN_DIRECTION_MATCHES = 3;
+// TEMPORARY accessibility flag. While false, dispatch ignores all proximity /
+// window / destination matching and simply notifies every user with driver mode
+// ON (users.driverModeEnabled !== false). Flip back to true to restore the
+// proximity + availability-window matching algo below once the user base grows.
+const USE_LEGACY_MATCHING = false;
 
 /** Does `now` (minutes from midnight) fall inside any of the driver's
  *  availability windows that are active today? Returns the matching window or
@@ -1008,13 +1061,21 @@ app.post("/requests/dispatch", authenticate, async (req, res) => {
     const destLabel = reqData.destination || "their destination";
     const originLabel = reqData.originLabel || "Votre position";
     const rideKm = haversineKmLatLng(pickup, dropoff);
-    const earningsCents = Math.max(Math.round(rideKm * DRIVER_RATE_CENTS_PER_KM), MIN_CHARGE_CENTS);
+    const pricing = await getPricing(db);
+    const earningsCents = Math.max(
+      Math.round(rideKm * pricing.driverRateCentsPerKm),
+      pricing.minimumChargeCents,
+    );
 
     // Drivers already reached, so the availability pass never double-notifies.
     const notifiedDriverIds = new Set();
+    // Drivers this passenger already passed on (swiped left) — don't re-notify.
+    const rejectedDrivers = new Set(
+      Array.isArray(reqData.rejectedDrivers) ? reqData.rejectedDrivers : [],
+    );
 
     const pushToDriver = async (driverId, driverDest, driverDestCoords, seatsAvailable) => {
-      if (driverId === req.uid || notifiedDriverIds.has(driverId)) return false;
+      if (driverId === req.uid || notifiedDriverIds.has(driverId) || rejectedDrivers.has(driverId)) return false;
       const { token, lang } = await getUserPushInfo(driverId, db);
       if (!token) return false;
       notifiedDriverIds.add(driverId);
@@ -1048,6 +1109,24 @@ app.post("/requests/dispatch", authenticate, async (req, res) => {
     // Drivers heading the passenger's direction (phase 1). The fallback only
     // fires when this stays below MIN_DIRECTION_MATCHES.
     let directionMatches = 0;
+
+    // ── TEMPORARY broadcast dispatch ─────────────────────────────────────────
+    // Notify every user with driver mode ON, ignoring proximity / windows /
+    // destination. Absent driverModeEnabled is treated as ON so existing users
+    // stay reachable without a migration. (Full-collection scan — intentionally
+    // simple and non-scalable; the legacy matching below is kept for later.)
+    if (!USE_LEGACY_MATCHING) {
+      const usersSnap = await db.collection("users").get();
+      await Promise.all(
+        usersSnap.docs.map(async (doc) => {
+          if (doc.id === req.uid) return;
+          const u = doc.data() || {};
+          if (u.driverModeEnabled === false) return;
+          if (await pushToDriver(doc.id, "", null, 4)) notified += 1;
+        }),
+      );
+      return res.json({ notified, directionMatches: notified });
+    }
 
     // The online live drives are reused by the fallback pass, so fetch once.
     const sessionsSnap = await db.collection("driverSessions").where("status", "==", "online").get();
@@ -1162,6 +1241,20 @@ app.post("/drivers/available", authenticate, async (req, res) => {
     const pickup = hasPickup ? { lat: oLat, lng: oLng } : dropoff;
     const seatsNeeded = Number(req.body.seats) || 1;
 
+    // TEMPORARY: while broadcast dispatch is active, the reachable count is simply
+    // every user with driver mode ON (absent = ON), minus the requester.
+    if (!USE_LEGACY_MATCHING) {
+      const usersSnap = await db.collection("users").get();
+      let enabled = 0;
+      usersSnap.docs.forEach((doc) => {
+        if (doc.id === req.uid) return;
+        const u = doc.data() || {};
+        if (u.driverModeEnabled === false) return;
+        enabled += 1;
+      });
+      return res.json({ count: enabled, directionCount: enabled, reachableCount: enabled });
+    }
+
     // Two sets, mirroring dispatch: `direction` = drivers heading the
     // passenger's way (phase 1); `reachable` = everyone who would actually be
     // pushed if the fallback fires (online within 15 km + active Ride Mode
@@ -1219,6 +1312,10 @@ app.post("/drivers/available", authenticate, async (req, res) => {
 // POST /requests/accept — a driver claims a passenger request. Atomic
 // first-wins: only succeeds if the request is still "open". Creates the ride
 // with the passenger pre-enrolled, then notifies the passenger.
+// How long the passenger has to swipe-confirm a driver after acceptance before
+// the match auto-expires (sweepStaleRides). Keep in sync with the client countdown.
+const CONFIRM_WINDOW_MS = 2 * 60 * 1000;
+
 app.post("/requests/accept", authenticate, async (req, res) => {
   const db = getDb(req);
   const env = req.headers["x-app-env"] === "dev" ? "dev" : "prod";
@@ -1331,6 +1428,13 @@ app.post("/requests/accept", authenticate, async (req, res) => {
         joinRequests: {},
         status: "planned",
         started: false,
+        // Mutual match: the passenger must swipe to confirm this driver before
+        // the ride can start. Seeded with the dispatched passenger; the deadline
+        // lets sweepStaleRides auto-expire an unconfirmed match. requestId lets
+        // reject/expire re-open the originating search.
+        pendingConfirmation: [passengerId],
+        confirmDeadlineAt: Timestamp.fromMillis(Date.now() + CONFIRM_WINDOW_MS),
+        requestId,
         maxDetourKm: routeExtras.maxDetourKm || 10,
         ...(routeExtras.baseRouteKm != null ? { baseRouteKm: routeExtras.baseRouteKm } : {}),
         ...(routeExtras.routePolyline ? { routePolyline: routeExtras.routePolyline } : {}),
@@ -1362,6 +1466,12 @@ app.post("/requests/accept", authenticate, async (req, res) => {
         destinationLat: driverDestCoords.latitude,
         destinationLng: driverDestCoords.longitude,
         maxSeat: capacity,
+        // Passenger's own pickup/dropoff — used to render the ride map correctly
+        // when the passenger opens the app from the "driver accepted" push.
+        passengerOriginLat: pickup.latitude,
+        passengerOriginLng: pickup.longitude,
+        passengerDestLat: dropoff instanceof GeoPoint ? dropoff.latitude : null,
+        passengerDestLng: dropoff instanceof GeoPoint ? dropoff.longitude : null,
       };
     });
 
@@ -1370,7 +1480,8 @@ app.post("/requests/accept", authenticate, async (req, res) => {
     if (result.error === 400) return res.status(400).json({ error: "driver origin/destination required" });
     if (result.error === 422) return res.status(422).json({ error: "not enough seats" });
 
-    // Notify the passenger their ride is confirmed.
+    // Notify the passenger a driver accepted — they must open the app and swipe
+    // to confirm the driver (mutual match) before the ride can start.
     try {
       const { token: pToken, lang: pLang } = await getUserPushInfo(result.passengerId, db);
       if (pToken) {
@@ -1379,9 +1490,17 @@ app.post("/requests/accept", authenticate, async (req, res) => {
           pToken,
           isFr ? "Un chauffeur t'a accepté ! 🎉" : "A driver accepted you! 🎉",
           isFr
-            ? "Ton trajet est confirmé. Ouvre l'app pour suivre ton chauffeur."
-            : "Your ride is confirmed. Open the app to track your driver.",
-          { type: "driver_accepted", rideId: result.rideId },
+            ? "Ouvre l'app et confirme ton chauffeur pour verrouiller ton trajet."
+            : "Open the app and confirm your driver to lock in your ride.",
+          {
+            type: "driver_accepted",
+            rideId: result.rideId,
+            requestId: requestId || "",
+            oLat: result.passengerOriginLat != null ? String(result.passengerOriginLat) : "",
+            oLng: result.passengerOriginLng != null ? String(result.passengerOriginLng) : "",
+            dLat: result.passengerDestLat != null ? String(result.passengerDestLat) : "",
+            dLng: result.passengerDestLng != null ? String(result.passengerDestLng) : "",
+          },
         );
       }
     } catch (e) {
@@ -1432,6 +1551,517 @@ app.post("/events/interest", authenticate, async (req, res) => {
     return res.json(result);
   } catch (err) {
     console.error("events/interest error:", err);
+    return res.status(500).json({ error: "internal" });
+  }
+});
+
+// ── Ride lifecycle (server-authoritative) ────────────────────────────────────
+//
+// These endpoints own every ride state transition. Once the tightened Firestore
+// rules ship (firestore.dev.rules → prod at cutover), clients can no longer PATCH
+// `rides/*` directly — they only read the ride doc and call these functions. Each
+// runs in a transaction, verifies the caller's role from the ride doc itself, and
+// derives money/state server-side (never from client-supplied values).
+
+const RIDE_LIVE_WINDOW_MS = 3 * 60 * 60 * 1000; // mirrors utils/ride-lifecycle.ts
+
+/** Read a stored GeoPoint-ish value ({latitude,longitude}) into {lat,lng}. */
+const gpLL = (g) => (g && g.latitude != null && g.longitude != null
+  ? { lat: g.latitude, lng: g.longitude }
+  : null);
+
+async function pushTo(uid, db, titleFr, titleEn, bodyFr, bodyEn, data = {}) {
+  try {
+    const { token, lang } = await getUserPushInfo(uid, db);
+    if (!token) return;
+    const fr = lang === "fr";
+    await sendPushNotification(token, fr ? titleFr : titleEn, fr ? bodyFr : bodyEn, data);
+  } catch (e) {
+    console.warn("pushTo failed", uid, e && e.message);
+  }
+}
+
+// POST /rides/start — driver starts a planned ride (locks it, blocks new joins).
+app.post("/rides/start", authenticate, async (req, res) => {
+  const db = getDb(req);
+  const { rideId } = req.body || {};
+  if (!rideId) return res.status(400).json({ error: "rideId is required" });
+  const rideRef = db.collection("rides").doc(rideId);
+  try {
+    const out = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(rideRef);
+      if (!snap.exists) return { error: 404 };
+      const ride = snap.data();
+      if (ride.driverId !== req.uid) return { error: 403 };
+      if (ride.status === "started") return { ok: true, already: true };
+      if (ride.status !== "planned") return { error: 409, status: ride.status };
+      if (!Array.isArray(ride.passengers) || ride.passengers.length === 0) {
+        return { error: 422 };
+      }
+      // Mutual-match gate: every passenger who was dispatched must have swiped
+      // to confirm this driver. Passengers who joined via the planned-ride flow
+      // are never in pendingConfirmation, so they don't block start.
+      if (Array.isArray(ride.pendingConfirmation) && ride.pendingConfirmation.length > 0) {
+        return { error: 428 };
+      }
+      tx.update(rideRef, {
+        status: "started",
+        started: true,
+        startedAt: FieldValue.serverTimestamp(),
+      });
+      return { ok: true };
+    });
+    if (out.error === 404) return res.status(404).json({ error: "ride not found" });
+    if (out.error === 403) return res.status(403).json({ error: "not the ride driver" });
+    if (out.error === 409) return res.status(409).json({ error: "ride not startable", status: out.status });
+    if (out.error === 422) return res.status(422).json({ error: "no accepted passengers" });
+    if (out.error === 428) return res.status(428).json({ error: "passengers not confirmed" });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("/rides/start error:", err);
+    return res.status(500).json({ error: "internal" });
+  }
+});
+
+// POST /rides/qr — driver mints a fresh boarding nonce (10 min). The QR payload
+// is returned base64-encoded; the passenger scans it and calls /rides/board.
+app.post("/rides/qr", authenticate, async (req, res) => {
+  const db = getDb(req);
+  const { rideId } = req.body || {};
+  if (!rideId) return res.status(400).json({ error: "rideId is required" });
+  try {
+    const rideRef = db.collection("rides").doc(rideId);
+    const snap = await rideRef.get();
+    if (!snap.exists) return res.status(404).json({ error: "ride not found" });
+    const ride = snap.data();
+    if (ride.driverId !== req.uid) return res.status(403).json({ error: "not the ride driver" });
+    if (ride.status !== "planned" && ride.status !== "started") {
+      return res.status(409).json({ error: "ride not active" });
+    }
+    const nonce = require("crypto").randomBytes(16).toString("hex");
+    const issuedAt = Date.now();
+    const expiresAt = issuedAt + 10 * 60 * 1000;
+    await rideRef.update({
+      qrToken: nonce,
+      qrTokenExpiresAt: new Date(expiresAt).toISOString(),
+    });
+    const payload = Buffer
+      .from(JSON.stringify({ rideId, driverUid: req.uid, issuedAt, expiresAt, nonce }))
+      .toString("base64");
+    return res.json({ payload, expiresAt });
+  } catch (err) {
+    console.error("/rides/qr error:", err);
+    return res.status(500).json({ error: "internal" });
+  }
+});
+
+// POST /rides/board — passenger boards by presenting the driver's QR payload.
+// All validation (nonce match, expiry, membership, no double-board) is atomic.
+app.post("/rides/board", authenticate, async (req, res) => {
+  const db = getDb(req);
+  const { rideId, qrPayload } = req.body || {};
+  if (!rideId || !qrPayload) return res.status(400).json({ error: "rideId and qrPayload are required" });
+
+  let parsed;
+  try {
+    parsed = JSON.parse(Buffer.from(String(qrPayload), "base64").toString("utf8"));
+  } catch {
+    return res.status(400).json({ error: "invalid_qr" });
+  }
+  if (parsed.rideId !== rideId) return res.status(400).json({ error: "qr_ride_mismatch" });
+
+  const rideRef = db.collection("rides").doc(rideId);
+  try {
+    const out = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(rideRef);
+      if (!snap.exists) return { error: 404 };
+      const ride = snap.data();
+      if (ride.status !== "started") return { error: 409 };
+      if (parsed.driverUid !== ride.driverId) return { error: "driver_mismatch" };
+      if (!ride.qrToken || ride.qrToken !== parsed.nonce) return { error: "nonce" };
+      const exp = Date.parse(ride.qrTokenExpiresAt || "");
+      if (!Number.isFinite(exp) || Date.now() > exp) return { error: "expired" };
+      const passengers = Array.isArray(ride.passengers) ? ride.passengers : [];
+      if (!passengers.includes(req.uid)) return { error: "not_passenger" };
+      const boarded = Array.isArray(ride.boardedPassengers) ? ride.boardedPassengers : [];
+      if (boarded.includes(req.uid)) return { ok: true, already: true };
+      tx.update(rideRef, { boardedPassengers: FieldValue.arrayUnion(req.uid) });
+      return { ok: true };
+    });
+    if (out.error === 404) return res.status(404).json({ error: "ride not found" });
+    if (out.error === 409) return res.status(409).json({ error: "ride not started" });
+    if (out.error) return res.status(403).json({ error: out.error });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("/rides/board error:", err);
+    return res.status(500).json({ error: "internal" });
+  }
+});
+
+// POST /rides/confirm-driver — passenger swipes right to confirm the matched
+// driver (mutual match). Removes them from pendingConfirmation so the driver's
+// Start gate clears. Mirrors /rides/board minus the QR/nonce check.
+app.post("/rides/confirm-driver", authenticate, async (req, res) => {
+  const db = getDb(req);
+  const { rideId } = req.body || {};
+  if (!rideId) return res.status(400).json({ error: "rideId is required" });
+  const rideRef = db.collection("rides").doc(rideId);
+  try {
+    const out = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(rideRef);
+      if (!snap.exists) return { error: 404 };
+      const ride = snap.data();
+      if (ride.status !== "planned") return { error: 409 };
+      const passengers = Array.isArray(ride.passengers) ? ride.passengers : [];
+      if (!passengers.includes(req.uid)) return { error: "not_passenger" };
+      tx.update(rideRef, {
+        pendingConfirmation: FieldValue.arrayRemove(req.uid),
+        confirmedPassengers: FieldValue.arrayUnion(req.uid),
+      });
+      return { ok: true };
+    });
+    if (out.error === 404) return res.status(404).json({ error: "ride not found" });
+    if (out.error === 409) return res.status(409).json({ error: "ride not confirmable" });
+    if (out.error) return res.status(403).json({ error: out.error });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("/rides/confirm-driver error:", err);
+    return res.status(500).json({ error: "internal" });
+  }
+});
+
+// POST /rides/reject-driver — passenger swipes left to pass on the matched
+// driver. Removes them from the ride (restores the seat), cancels the ride if it
+// becomes empty, and re-opens the originating request so the search resumes.
+app.post("/rides/reject-driver", authenticate, async (req, res) => {
+  const db = getDb(req);
+  const { rideId } = req.body || {};
+  if (!rideId) return res.status(400).json({ error: "rideId is required" });
+  const rideRef = db.collection("rides").doc(rideId);
+  try {
+    const out = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(rideRef);
+      if (!snap.exists) return { error: 404 };
+      const ride = snap.data();
+      const pending = Array.isArray(ride.pendingConfirmation) ? ride.pendingConfirmation : [];
+      if (!pending.includes(req.uid)) {
+        // Already confirmed, already gone, or ride advanced — nothing to reject.
+        return { error: 409 };
+      }
+      // Re-open the originating request (read inside the tx before any write).
+      const reqRef = ride.requestId ? db.collection("rideRequests").doc(ride.requestId) : null;
+      if (reqRef) await tx.get(reqRef);
+
+      const seats = (ride.passengerSeats || {})[req.uid];
+      const freed = Number(seats) || 1;
+      const nextPassengers = (Array.isArray(ride.passengers) ? ride.passengers : []).filter(
+        (id) => id !== req.uid,
+      );
+      const update = {
+        passengers: nextPassengers,
+        seatsAvailable: (Number(ride.seatsAvailable) || 0) + freed,
+        pendingConfirmation: FieldValue.arrayRemove(req.uid),
+        [`passengerSeats.${req.uid}`]: FieldValue.delete(),
+        [`passengerPickups.${req.uid}`]: FieldValue.delete(),
+        [`passengerDropoffs.${req.uid}`]: FieldValue.delete(),
+      };
+      if (nextPassengers.length === 0) update.status = "cancelled";
+      tx.update(rideRef, update);
+
+      if (reqRef) {
+        tx.update(reqRef, {
+          status: "open",
+          matchedRideId: FieldValue.delete(),
+          matchedDriverId: FieldValue.delete(),
+          matchedAt: FieldValue.delete(),
+          rejectedDrivers: FieldValue.arrayUnion(ride.driverId),
+        });
+      }
+      return { ok: true };
+    });
+    if (out.error === 404) return res.status(404).json({ error: "ride not found" });
+    if (out.error === 409) return res.status(409).json({ error: "nothing to reject" });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("/rides/reject-driver error:", err);
+    return res.status(500).json({ error: "internal" });
+  }
+});
+
+// POST /rides/dropoff — driver drops a passenger (or marks a no-show).
+// Normal dropoff requires the passenger to have boarded; no-show does not.
+// Confirmation is derived server-side from the driver's last broadcast position.
+app.post("/rides/dropoff", authenticate, async (req, res) => {
+  const db = getDb(req);
+  const { rideId, passengerId, noShow } = req.body || {};
+  if (!rideId || !passengerId) return res.status(400).json({ error: "rideId and passengerId are required" });
+  const rideRef = db.collection("rides").doc(rideId);
+  try {
+    const out = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(rideRef);
+      if (!snap.exists) return { error: 404 };
+      const ride = snap.data();
+      if (ride.driverId !== req.uid) return { error: 403 };
+      if (ride.status !== "started") return { error: 409 };
+      const passengers = Array.isArray(ride.passengers) ? ride.passengers : [];
+      if (!passengers.includes(passengerId)) return { error: "not_passenger" };
+      const boarded = Array.isArray(ride.boardedPassengers) ? ride.boardedPassengers : [];
+
+      if (noShow) {
+        // Never boarded → resolve without charging or rating.
+        tx.update(rideRef, { droppedPassengers: FieldValue.arrayUnion(passengerId) });
+        return { ok: true, noShow: true };
+      }
+
+      if (!boarded.includes(passengerId)) return { error: "not_boarded" };
+
+      // Server-side confirmation: driver within 3 km of the passenger's dropoff
+      // (or pickup fallback). This GATES charging — only confirmed dropoffs are
+      // billed at /rides/finish (see chargeablePassengers). A passenger dropped
+      // too far from their destination is resolved but never charged.
+      let confirmed = false;
+      const driverLoc = gpLL(ride.driverLocation);
+      const ref = gpLL((ride.passengerDropoffs || {})[passengerId]) || gpLL((ride.passengerPickups || {})[passengerId]);
+      if (driverLoc && ref) {
+        confirmed = haversineKm(driverLoc.lat, driverLoc.lng, ref.lat, ref.lng) <= 3;
+      }
+
+      const update = {
+        droppedPassengers: FieldValue.arrayUnion(passengerId),
+        pendingRatings: FieldValue.arrayUnion(passengerId),
+      };
+      if (confirmed) update.confirmedDropoffPassengers = FieldValue.arrayUnion(passengerId);
+      tx.update(rideRef, update);
+      return { ok: true, confirmed };
+    });
+    if (out.error === 404) return res.status(404).json({ error: "ride not found" });
+    if (out.error === 403) return res.status(403).json({ error: "not the ride driver" });
+    if (out.error === 409) return res.status(409).json({ error: "ride not started" });
+    if (out.error) return res.status(400).json({ error: out.error });
+    return res.json({ success: true, confirmed: !!out.confirmed, noShow: !!out.noShow });
+  } catch (err) {
+    console.error("/rides/dropoff error:", err);
+    return res.status(500).json({ error: "internal" });
+  }
+});
+
+/** Charge set = passengers who boarded AND were dropped off within the
+ *  destination radius (confirmedDropoffPassengers). A passenger dropped too far
+ *  from their destination stays in droppedPassengers but is NOT charged. */
+function chargeablePassengers(ride) {
+  const boarded = new Set(Array.isArray(ride.boardedPassengers) ? ride.boardedPassengers : []);
+  const confirmed = new Set(Array.isArray(ride.confirmedDropoffPassengers) ? ride.confirmedDropoffPassengers : []);
+  const dropped = Array.isArray(ride.droppedPassengers) ? ride.droppedPassengers : [];
+  return dropped.filter((id) => boarded.has(id) && confirmed.has(id));
+}
+
+// POST /rides/finish — driver ends the ride. Atomically: charges each
+// boarded∧dropped passenger for their booked leg (server-stored pickup→dest),
+// credits the driver, sets status=completed + paymentStatus=completed. One
+// transaction ⇒ no "processing" wedge, no split-write race, idempotent.
+app.post("/rides/finish", authenticate, async (req, res) => {
+  const db = getDb(req);
+  const { rideId } = req.body || {};
+  if (!rideId) return res.status(400).json({ error: "rideId is required" });
+  const rideRef = db.collection("rides").doc(rideId);
+  try {
+    // Load pricing before the transaction (transactions must not do external reads).
+    const pricing = await getPricing(db);
+    const out = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(rideRef);
+      if (!snap.exists) return { error: 404 };
+      const ride = snap.data();
+      if (ride.driverId !== req.uid) return { error: 403 };
+      if (ride.paymentStatus === "completed") return { ok: true, skipped: true };
+
+      const dest = gpLL(ride.destinationCoords);
+      const origin = gpLL(ride.localisation);
+      const pickups = ride.passengerPickups || {};
+      const charge = chargeablePassengers(ride);
+
+      let totalPassengerCents = 0;
+      const now = new Date().toISOString();
+      for (const pid of charge) {
+        const pu = gpLL(pickups[pid]) || origin;
+        const distKm = (pu && dest)
+          ? haversineKm(pu.lat, pu.lng, dest.lat, dest.lng)
+          : 0;
+        const cents = calculatePassengerChargeCents(distKm, pricing);
+        totalPassengerCents += cents;
+        const userRef = db.collection("users").doc(pid);
+        tx.update(userRef, { pendingChargeCents: FieldValue.increment(cents) });
+        tx.set(userRef.collection("transactions").doc(), {
+          type: "ride_charge",
+          amount: cents,
+          status: "completed",
+          description: `Ride to ${ride.destination || "destination"}`,
+          createdAt: now,
+          rideId,
+          distanceKm: Math.round(distKm * 10) / 10,
+        });
+      }
+
+      const driverEarningsCents = Math.round(
+        totalPassengerCents * (pricing.driverRateCentsPerKm / pricing.passengerRateCentsPerKm),
+      );
+      if (driverEarningsCents > 0) {
+        const driverRef = db.collection("users").doc(ride.driverId);
+        tx.update(driverRef, { pendingEarningsCents: FieldValue.increment(driverEarningsCents) });
+        tx.set(driverRef.collection("transactions").doc(), {
+          type: "ride_earning",
+          amount: driverEarningsCents,
+          status: "completed",
+          description: `Earnings — ${charge.length} passenger(s) — ${ride.destination || ""}`,
+          createdAt: now,
+          rideId,
+        });
+      }
+
+      tx.update(rideRef, { status: "completed", paymentStatus: "completed" });
+      return { ok: true, charged: charge.length, totalPassengerCents, driverEarningsCents };
+    });
+    if (out.error === 404) return res.status(404).json({ error: "ride not found" });
+    if (out.error === 403) return res.status(403).json({ error: "not the ride driver" });
+    return res.json({ success: true, skipped: !!out.skipped, chargedPassengers: out.charged || 0 });
+  } catch (err) {
+    console.error("/rides/finish error:", err);
+    return res.status(500).json({ error: "internal" });
+  }
+});
+
+// POST /rides/rate — passenger rates the driver once. Weighted average + XP are
+// computed server-side in a transaction (race-free, unspoofable).
+app.post("/rides/rate", authenticate, async (req, res) => {
+  const db = getDb(req);
+  const { rideId, stars } = req.body || {};
+  const s = Number(stars);
+  if (!rideId || !Number.isFinite(s) || s < 1 || s > 5) {
+    return res.status(400).json({ error: "rideId and stars (1-5) are required" });
+  }
+  const rideRef = db.collection("rides").doc(rideId);
+  try {
+    const out = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(rideRef);
+      if (!snap.exists) return { error: 404 };
+      const ride = snap.data();
+      const pending = Array.isArray(ride.pendingRatings) ? ride.pendingRatings : [];
+      const submitted = Array.isArray(ride.ratingsSubmitted) ? ride.ratingsSubmitted : [];
+      if (!pending.includes(req.uid)) return { error: 403 };
+      if (submitted.includes(req.uid)) return { ok: true, already: true };
+      const driverId = ride.driverId;
+
+      const driverRef = db.collection("users").doc(driverId);
+      const raterRef = db.collection("users").doc(req.uid);
+      const [driverSnap, raterSnap] = await Promise.all([tx.get(driverRef), tx.get(raterRef)]);
+      const d = driverSnap.exists ? driverSnap.data() : {};
+      const curRating = Number(d.ratings) || 0;
+      const weight = Number(d.ratingWeigth) || 0;
+      const newRating = Math.round(((curRating * weight) + s) / (weight + 1));
+
+      tx.update(driverRef, {
+        ratings: newRating,
+        ratingWeigth: weight + 1,
+        xp: FieldValue.increment(s * 20),
+        ridesCompleted: FieldValue.increment(1),
+      });
+      if (raterSnap.exists) {
+        tx.update(raterRef, {
+          xp: FieldValue.increment(Math.floor((s * 20) / 2)),
+          ridesCompleted: FieldValue.increment(1),
+        });
+      }
+      tx.update(rideRef, { ratingsSubmitted: FieldValue.arrayUnion(req.uid) });
+      return { ok: true, driverId };
+    });
+    if (out.error === 404) return res.status(404).json({ error: "ride not found" });
+    if (out.error === 403) return res.status(403).json({ error: "not eligible to rate" });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("/rides/rate error:", err);
+    return res.status(500).json({ error: "internal" });
+  }
+});
+
+// POST /rides/cancel — driver cancels a not-yet-completed ride and notifies
+// every affected passenger (so they learn even when backgrounded).
+app.post("/rides/cancel", authenticate, async (req, res) => {
+  const db = getDb(req);
+  const { rideId } = req.body || {};
+  if (!rideId) return res.status(400).json({ error: "rideId is required" });
+  const rideRef = db.collection("rides").doc(rideId);
+  try {
+    const out = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(rideRef);
+      if (!snap.exists) return { error: 404 };
+      const ride = snap.data();
+      if (ride.driverId !== req.uid) return { error: 403 };
+      if (ride.status === "completed") return { error: 409 };
+      const affected = Array.isArray(ride.passengers) ? ride.passengers.slice() : [];
+      tx.update(rideRef, { status: "cancelled", passengers: [], joinRequests: {} });
+      return { ok: true, affected };
+    });
+    if (out.error === 404) return res.status(404).json({ error: "ride not found" });
+    if (out.error === 403) return res.status(403).json({ error: "not the ride driver" });
+    if (out.error === 409) return res.status(409).json({ error: "ride already completed" });
+    await Promise.all((out.affected || []).map((pid) => pushTo(
+      pid, db,
+      "Trajet annulé", "Ride cancelled",
+      "Ton chauffeur a annulé le trajet. Ouvre l'app pour trouver un autre lift.",
+      "Your driver cancelled the ride. Open the app to find another lift.",
+      { type: "ride_cancelled", rideId },
+    )));
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("/rides/cancel error:", err);
+    return res.status(500).json({ error: "internal" });
+  }
+});
+
+// POST /rides/leave — passenger leaves a ride they were accepted into, before
+// boarding. Restores the seat and notifies the driver.
+app.post("/rides/leave", authenticate, async (req, res) => {
+  const db = getDb(req);
+  const { rideId } = req.body || {};
+  if (!rideId) return res.status(400).json({ error: "rideId is required" });
+  const rideRef = db.collection("rides").doc(rideId);
+  try {
+    const out = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(rideRef);
+      if (!snap.exists) return { error: 404 };
+      const ride = snap.data();
+      const passengers = Array.isArray(ride.passengers) ? ride.passengers : [];
+      if (!passengers.includes(req.uid)) return { ok: true, already: true };
+      const boarded = Array.isArray(ride.boardedPassengers) ? ride.boardedPassengers : [];
+      if (boarded.includes(req.uid)) return { error: 409 };
+      if (ride.status !== "planned") return { error: 409 };
+
+      const seats = (ride.passengerSeats || {})[req.uid];
+      const freed = Number(seats) || 1;
+      const nextPassengers = passengers.filter((id) => id !== req.uid);
+      const update = {
+        passengers: nextPassengers,
+        seatsAvailable: (Number(ride.seatsAvailable) || 0) + freed,
+        [`passengerSeats.${req.uid}`]: FieldValue.delete(),
+        [`passengerPickups.${req.uid}`]: FieldValue.delete(),
+        [`passengerDropoffs.${req.uid}`]: FieldValue.delete(),
+      };
+      tx.update(rideRef, update);
+      return { ok: true, driverId: ride.driverId };
+    });
+    if (out.error === 404) return res.status(404).json({ error: "ride not found" });
+    if (out.error === 409) return res.status(409).json({ error: "cannot leave after boarding/start" });
+    if (out.driverId) {
+      await pushTo(
+        out.driverId, db,
+        "Un passager a quitté", "A passenger left",
+        "Un passager a quitté ton trajet avant l'embarquement.",
+        "A passenger left your ride before boarding.",
+        { type: "passenger_left", rideId },
+      );
+    }
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("/rides/leave error:", err);
     return res.status(500).json({ error: "internal" });
   }
 });
@@ -1549,14 +2179,165 @@ exports.getAdminMetrics = functions.https.onCall(async (data, context) => {
   };
 });
 
-// ── Monthly Billing Scheduled Function (uncomment to enable) ─────────────────
-// Runs 1st of every month at 3 AM ET. Requires billing functions to be deployed.
-/*
-exports.monthlyBilling = functions.pubsub
-  .schedule("0 3 1 * *")
-  .timeZone("America/Toronto")
-  .onRun(async () => {
-    await chargeAllPassengers();
-    await payoutAllDrivers();
-  });
-*/
+// ── Scheduled: sweep stale ride state ────────────────────────────────────────
+//
+// Self-healing timeouts so no ride/request can wedge forever. Operates on
+// TARGET_DB only (dev during phase-1 rollout — flip to prodDb at cutover), so
+// deploying this can never mutate live production data.
+//
+// - rideRequests still `open` past REQUEST_TTL_MS       → expired (+ notify)
+// - rides `planned` never started past PLANNED_TTL_MS    → expired (+ notify both)
+// - rides `paymentStatus:"processing"` past PROC_TTL_MS  → reset to pending (retryable)
+// - rides `started` past the 3h live window              → expired (abandoned)
+const REQUEST_TTL_MS = 15 * 60 * 1000;
+const PLANNED_TTL_MS = 30 * 60 * 1000;
+const PROC_TTL_MS = 2 * 60 * 1000;
+
+function ageMs(value) {
+  // Accepts Firestore Timestamp, ISO string, or ms number.
+  if (value == null) return null;
+  if (typeof value === "object" && typeof value.toMillis === "function") {
+    return Date.now() - value.toMillis();
+  }
+  const ms = typeof value === "number" ? value : Date.parse(value);
+  return Number.isFinite(ms) ? Date.now() - ms : null;
+}
+
+async function sweepStaleRidesImpl(db) {
+  const summary = { requestsExpired: 0, plannedExpired: 0, processingReset: 0, startedExpired: 0, matchesExpired: 0 };
+
+  // 1. Open ride requests past their TTL.
+  const openReqs = await db.collection("rideRequests").where("status", "==", "open").get();
+  await Promise.all(openReqs.docs.map(async (doc) => {
+    const age = ageMs(doc.data().createdAt);
+    if (age == null || age < REQUEST_TTL_MS) return;
+    await doc.ref.update({ status: "expired" });
+    summary.requestsExpired += 1;
+    await pushTo(
+      doc.data().passengerId, db,
+      "Aucun chauffeur trouvé", "No driver found",
+      "Aucun chauffeur n'a répondu à ta demande. Réessaie quand tu veux.",
+      "No driver responded to your request. Try again anytime.",
+      { type: "request_expired" },
+    );
+  }));
+
+  // 2. Planned rides never started.
+  const planned = await db.collection("rides").where("status", "==", "planned").get();
+  await Promise.all(planned.docs.map(async (doc) => {
+    const r = doc.data();
+    const age = ageMs(r.createdAt || r.date);
+    if (age == null || age < PLANNED_TTL_MS) return;
+    await doc.ref.update({ status: "expired", passengers: [], joinRequests: {} });
+    summary.plannedExpired += 1;
+    await Promise.all((Array.isArray(r.passengers) ? r.passengers : []).map((pid) => pushTo(
+      pid, db,
+      "Trajet expiré", "Ride expired",
+      "Le chauffeur n'a jamais démarré le trajet. Ouvre l'app pour un autre lift.",
+      "The driver never started the ride. Open the app for another lift.",
+      { type: "ride_expired", rideId: doc.id },
+    )));
+  }));
+
+  // 3. Payment stuck in "processing".
+  const processing = await db.collection("rides").where("paymentStatus", "==", "processing").get();
+  await Promise.all(processing.docs.map(async (doc) => {
+    const age = ageMs(doc.data().processingAt);
+    // If no processingAt (legacy), still reset conservatively after the window.
+    if (age != null && age < PROC_TTL_MS) return;
+    await doc.ref.update({ paymentStatus: "pending" });
+    summary.processingReset += 1;
+  }));
+
+  // 4. Started rides abandoned past the 3h live window.
+  const started = await db.collection("rides").where("status", "==", "started").get();
+  await Promise.all(started.docs.map(async (doc) => {
+    const age = ageMs(doc.data().startedAt);
+    if (age == null || age < RIDE_LIVE_WINDOW_MS) return;
+    await doc.ref.update({ status: "expired" });
+    summary.startedExpired += 1;
+  }));
+
+  // 5. Matches the passenger never confirmed past the confirm window. Tear the
+  //    match down (free the seat, cancel the empty ride) and re-open the request
+  //    so the passenger's search resumes and the driver is unblocked.
+  const unconfirmed = await db.collection("rides").where("status", "==", "planned").get();
+  await Promise.all(unconfirmed.docs.map(async (doc) => {
+    const r = doc.data();
+    const pending = Array.isArray(r.pendingConfirmation) ? r.pendingConfirmation : [];
+    if (pending.length === 0) return;
+    const deadline = r.confirmDeadlineAt;
+    const expired = deadline && typeof deadline.toMillis === "function"
+      ? Date.now() > deadline.toMillis()
+      : (ageMs(r.createdAt) ?? 0) > CONFIRM_WINDOW_MS;
+    if (!expired) return;
+
+    // Remove every unconfirmed passenger, restore their seats, cancel if empty.
+    const seatsMap = r.passengerSeats || {};
+    const freed = pending.reduce((acc, pid) => acc + (Number(seatsMap[pid]) || 1), 0);
+    const nextPassengers = (Array.isArray(r.passengers) ? r.passengers : []).filter(
+      (id) => !pending.includes(id),
+    );
+    const update = {
+      passengers: nextPassengers,
+      seatsAvailable: (Number(r.seatsAvailable) || 0) + freed,
+      pendingConfirmation: [],
+    };
+    for (const pid of pending) {
+      update[`passengerSeats.${pid}`] = FieldValue.delete();
+      update[`passengerPickups.${pid}`] = FieldValue.delete();
+      update[`passengerDropoffs.${pid}`] = FieldValue.delete();
+    }
+    if (nextPassengers.length === 0) update.status = "cancelled";
+    await doc.ref.update(update);
+
+    if (r.requestId) {
+      await db.collection("rideRequests").doc(r.requestId).update({
+        status: "open",
+        matchedRideId: FieldValue.delete(),
+        matchedDriverId: FieldValue.delete(),
+        matchedAt: FieldValue.delete(),
+      }).catch(() => {});
+    }
+    summary.matchesExpired += 1;
+    await Promise.all(pending.map((pid) => pushTo(
+      pid, db,
+      "Match expiré", "Match expired",
+      "Tu n'as pas confirmé à temps. On te retrouve un autre chauffeur.",
+      "You didn't confirm in time. We're finding you another driver.",
+      { type: "match_expired", rideId: doc.id, requestId: r.requestId || "" },
+    )));
+  }));
+
+  return summary;
+}
+
+exports.sweepStaleRides = onSchedule(
+  { schedule: "every 5 minutes", timeZone: "America/Toronto" },
+  async () => {
+    try {
+      const summary = await sweepStaleRidesImpl(TARGET_DB);
+      console.log("sweepStaleRides:", JSON.stringify(summary));
+    } catch (err) {
+      console.error("sweepStaleRides error:", err);
+    }
+  },
+);
+
+// ── Monthly Billing Scheduled Function ───────────────────────────────────────
+// Runs 1st of every month at 3 AM ET against TARGET_DB (dev during phase-1
+// rollout — flip to prodDb/stripeLive at cutover). Charges accumulated
+// pendingChargeCents off-session; driver payout stays a ledger stub until
+// Stripe Connect lands.
+exports.monthlyBilling = onSchedule(
+  { schedule: "0 3 1 * *", timeZone: "America/Toronto" },
+  async () => {
+    try {
+      const charged = await chargeAllPassengers(TARGET_DB, TARGET_STRIPE);
+      const paid = await payoutAllDrivers(TARGET_DB);
+      console.log("monthlyBilling:", JSON.stringify({ charged: charged.length, paid: paid.length }));
+    } catch (err) {
+      console.error("monthlyBilling error:", err);
+    }
+  },
+);

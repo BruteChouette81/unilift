@@ -1,4 +1,7 @@
 {
+  "storage": {
+    "rules": "storage.rules"
+  },
   "firestore": [
     {
       "database": "uniliftdefault",
@@ -6,13 +9,27 @@
     },
     {
       "database": "uniliftdev",
-      "rules": "firestore.rules"
+      "rules": "firestore.dev.rules"
     }
   ],
   "functions": [
     {
       "source": "functions",
-      "codebase": "default",
+      "codebase": "live",
+      "disallowLegacyRuntimeConfig": true,
+      "ignore": [
+        "node_modules",
+        ".git",
+        "firebase-debug.log",
+        "firebase-debug.*.log"
+      ],
+      "predeploy": [
+        "npm --prefix \"$RESOURCE_DIR\" run lint"
+      ]
+    },
+    {
+      "source": "functions-sandbox",
+      "codebase": "sandbox",
       "disallowLegacyRuntimeConfig": true,
       "ignore": [
         "node_modules",

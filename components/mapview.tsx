@@ -1,5 +1,12 @@
 import { hypeScoreToIconSize, type HypeEvent } from "@/constants/events";
 import {
+  categoryIcon,
+  sponsorMarkerSize,
+  tierRingColor,
+  TIER_RANK,
+  type Sponsor,
+} from "@/constants/sponsors";
+import {
   devLog,
   firestoreDocumentUrl,
   withFirebaseApiKey,
@@ -45,6 +52,30 @@ const DARK_MAP_STYLE = [
   { featureType: "transit.station", elementType: "labels.text.fill", stylers: [{ color: "#9ca3af" }] },
   { featureType: "water",           elementType: "geometry", stylers: [{ color: "#080810" }] },
   { featureType: "water",           elementType: "labels.text.fill", stylers: [{ color: "#4b5563" }] },
+];
+
+// ─── Night Hype Map Style (party-night palette, Home screen only) ────────────
+const NIGHT_HYPE_MAP_STYLE = [
+  { elementType: "geometry",        stylers: [{ color: "#0a0014" }] },
+  { elementType: "labels.text.fill",stylers: [{ color: "#e09af7" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#050008" }] },
+  { featureType: "administrative",  elementType: "geometry", stylers: [{ color: "#2e0a4f" }] },
+  { featureType: "administrative.country", elementType: "labels.text.fill", stylers: [{ color: "#e09af7" }] },
+  { featureType: "administrative.land_parcel", stylers: [{ visibility: "off" }] },
+  { featureType: "administrative.locality", elementType: "labels.text.fill", stylers: [{ color: "#f97316" }] },
+  { featureType: "poi",             elementType: "labels.text.fill", stylers: [{ color: "#a855f7" }] },
+  { featureType: "poi.park",        elementType: "geometry", stylers: [{ color: "#150430" }] },
+  { featureType: "poi.park",        elementType: "labels.text.fill", stylers: [{ color: "#7c3aed" }] },
+  { featureType: "road",            elementType: "geometry", stylers: [{ color: "#3b0764" }] },
+  { featureType: "road",            elementType: "geometry.stroke", stylers: [{ color: "#1a0533" }] },
+  { featureType: "road",            elementType: "labels.text.fill", stylers: [{ color: "#e09af7" }] },
+  { featureType: "road.highway",    elementType: "geometry", stylers: [{ color: "#f97316" }] },
+  { featureType: "road.highway",    elementType: "geometry.stroke", stylers: [{ color: "#7c2d12" }] },
+  { featureType: "road.highway",    elementType: "labels.text.fill", stylers: [{ color: "#fbbf24" }] },
+  { featureType: "transit",         elementType: "geometry", stylers: [{ color: "#2e0a4f" }] },
+  { featureType: "transit.station", elementType: "labels.text.fill", stylers: [{ color: "#e09af7" }] },
+  { featureType: "water",           elementType: "geometry", stylers: [{ color: "#03000a" }] },
+  { featureType: "water",           elementType: "labels.text.fill", stylers: [{ color: "#7c3aed" }] },
 ];
 
 // ─── Marker that takes one snapshot then stops tracking ───────────────────────
@@ -100,6 +131,45 @@ function AvatarPinMarker({ uri, color }: { uri: string | null; color: string }) 
   );
 }
 
+// A branded sponsor pin: rounded logo tile wrapped in a tier-coloured glow ring.
+// Falls back to the category Ionicon when logoUrl is missing or fails to load.
+// Sized by tier so higher-paying sponsors dominate the map. Gold gets a badge.
+function SponsorPinMarker({ sponsor }: { sponsor: Sponsor }) {
+  const [imgFailed, setImgFailed] = useState(false);
+  const size = sponsorMarkerSize(sponsor.tier);
+  const ring = tierRingColor(sponsor.tier);
+  const accent = sponsor.brandColor || ring;
+  const showLogo = !!sponsor.logoUrl && !imgFailed;
+  const inner = size - 8;
+
+  return (
+    <View style={[m.pin, { shadowColor: ring }]}>
+      <View
+        style={[
+          m.sponsorRing,
+          { width: size, height: size, borderRadius: size / 2, borderColor: ring, backgroundColor: C.bg },
+        ]}
+      >
+        {showLogo ? (
+          <Image
+            source={{ uri: sponsor.logoUrl }}
+            style={{ width: inner, height: inner, borderRadius: inner / 2 }}
+            onError={() => setImgFailed(true)}
+          />
+        ) : (
+          <Ionicons name={categoryIcon(sponsor.category)} size={inner * 0.55} color={accent} />
+        )}
+      </View>
+      {sponsor.tier === "gold" && (
+        <View style={[m.sponsorBadge, { backgroundColor: ring }]}>
+          <Ionicons name="star" size={9} color="#1a1305" />
+        </View>
+      )}
+      <View style={[m.pinTip, { backgroundColor: ring }]} />
+    </View>
+  );
+}
+
 const m = StyleSheet.create({
   pin: {
     alignItems: "center",
@@ -121,6 +191,23 @@ const m = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 8,
+  },
+  sponsorRing: {
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 3,
+  },
+  sponsorBadge: {
+    position: "absolute",
+    top: -4,
+    right: -4,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1.5,
+    borderColor: "#1a1305",
   },
 });
 
@@ -201,6 +288,12 @@ interface RideMapViewProps {
   events?: HypeEvent[];
   /** Tapping an event marker opens the floating Hype card (not the lift flow). */
   onEventSelect?: (event: HypeEvent) => void;
+  /** When true, switches the map to the night-mode Hype palette. */
+  hypeMode?: boolean;
+  /** Paying sponsors; always rendered on top with tier-based size/glow. */
+  sponsors?: Sponsor[];
+  /** Tapping a sponsor marker opens the sponsor card (not the lift flow). */
+  onSponsorSelect?: (sponsor: Sponsor) => void;
 }
 
 interface DriverRideMapViewProps {
@@ -461,6 +554,7 @@ export default function RideMapView(props: RideMapViewProps) {
   const mapRef = useRef<MapView>(null);
 
   const hasHome = props.homeLocalisation.lat !== 0 || props.homeLocalisation.lng !== 0;
+  const mapStyle = props.hypeMode ? NIGHT_HYPE_MAP_STYLE : DARK_MAP_STYLE;
 
   useEffect(() => {
     (async () => {
@@ -483,6 +577,9 @@ export default function RideMapView(props: RideMapViewProps) {
     if (hasHome) coords.push({ latitude: props.homeLocalisation.lat, longitude: props.homeLocalisation.lng });
     for (const fav of props.favorites) {
       coords.push({ latitude: fav.destinationGeo.lat, longitude: fav.destinationGeo.lon });
+    }
+    for (const sp of props.sponsors ?? []) {
+      coords.push({ latitude: sp.lat, longitude: sp.lng });
     }
 
     if (coords.length === 0) return;
@@ -508,7 +605,7 @@ export default function RideMapView(props: RideMapViewProps) {
     }, 150);
     return () => clearTimeout(t);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapReady, userLocation?.latitude, userLocation?.longitude, hasHome, props.favorites.length]);
+  }, [mapReady, userLocation?.latitude, userLocation?.longitude, hasHome, props.favorites.length, props.sponsors?.length]);
 
   const handleRecenter = () => {
     if (!userLocation) return;
@@ -534,7 +631,7 @@ export default function RideMapView(props: RideMapViewProps) {
         ref={mapRef}
         style={styles.map}
         initialRegion={DEFAULT_REGION}
-        customMapStyle={DARK_MAP_STYLE}
+        customMapStyle={mapStyle}
         onMapReady={() => setMapReady(true)}
         onRegionChangeComplete={handleRegionChange}
       >
@@ -586,6 +683,22 @@ export default function RideMapView(props: RideMapViewProps) {
             <PinMarker icon="flame" color={C.fire} size={hypeScoreToIconSize(ev.score)} />
           </SnapshottingMarker>
         ))}
+
+        {/* 5 ── Sponsors (tier-sized brand pins, gold mapped last = topmost) ─── */}
+        {[...(props.sponsors ?? [])]
+          .sort((a, b) => TIER_RANK[a.tier] - TIER_RANK[b.tier])
+          .map((sp) => (
+            <SnapshottingMarker
+              key={`sponsor-${sp.id}`}
+              coordinate={{ latitude: sp.lat, longitude: sp.lng }}
+              title={sp.name}
+              description={sp.address ?? sp.tagline}
+              zIndex={TIER_RANK[sp.tier] + 10}
+              onPress={() => props.onSponsorSelect?.(sp)}
+            >
+              <SponsorPinMarker sponsor={sp} />
+            </SnapshottingMarker>
+          ))}
       </MapView>
 
       {/* ── Recenter button ───────────────────────────────────────────────── */}

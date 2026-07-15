@@ -43,8 +43,20 @@ function handleNotificationTap(data: Record<string, unknown> | undefined) {
     }).toString();
     router.push(`/acceptRideScreen?${qs}` as never);
   } else if (type === "driver_accepted" && typeof data.rideId === "string") {
-    // Passenger tapped a match notification → open the active ride screen.
-    router.push(`/rideScreen?rideId=${data.rideId}&pending=false` as never);
+    // Passenger tapped a "driver accepted" notification → open the swipe-to-
+    // confirm screen. Pass requestId (to resume searching on pass/expire) and the
+    // origin/destination coords so downstream maps render correctly (not 0,0).
+    // matchDriverScreen self-forwards to rideScreen if already confirmed.
+    const d = data as Record<string, string>;
+    const qs = new URLSearchParams({
+      rideId: d.rideId,
+      requestId: d.requestId ?? "",
+      originLat: d.oLat ?? "0",
+      originLng: d.oLng ?? "0",
+      destLat: d.dLat ?? "0",
+      destLng: d.dLng ?? "0",
+    }).toString();
+    router.push(`/matchDriverScreen?${qs}` as never);
   }
 }
 

@@ -9,15 +9,20 @@ import {
   signInToFirebaseWithApple,
 } from "@/services/authService";
 import { autoFormatDateInput, parseBirthDateInput } from "@/components/userHelper";
+import { CERT_META, CERT_ORDER } from "@/constants/certifications";
+import { Ionicons } from "@expo/vector-icons";
+import WizardModal, { type WizardStep } from "@/components/wizard/wizard-modal";
+import { useFirstRun } from "@/hooks/use-first-run";
 import LanguageToggle from "@/components/language-toggle";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as AppleAuthentication from "expo-apple-authentication";
 import { LinearGradient } from "expo-linear-gradient";
-import { useRouter } from "expo-router";
-import React, { useState, useMemo } from "react";
+import { useFocusEffect, useRouter } from "expo-router";
+import React, { useCallback, useState, useMemo } from "react";
 import {
   ActivityIndicator,
   Alert,
+  BackHandler,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -56,7 +61,7 @@ export default function SignupScreen() {
   ];
 
   // Navigation
-  const [step, setStep] = useState<1 | 2>(1);
+  const [step, setStep] = useState<1 | 2 | 3>(1);
 
   // Step 1 fields
   const [name, setName] = useState("");
@@ -68,6 +73,7 @@ export default function SignupScreen() {
   const [birthDate, setBirthDate] = useState("");
   const [school, setSchool] = useState("");
   const [termsAccepted, setTermsAccepted] = useState(false);
+
   // TODO v2: const [preferences, setPreferences] = useState<string[]>([]);
 
   // Focus states
@@ -86,6 +92,30 @@ export default function SignupScreen() {
     const lower = school.toLowerCase();
     return SCHOOLS.filter(s => s.toLowerCase().includes(lower));
   }, [school]);
+
+  // First-run wizard: explains each part of the signup form.
+  const wizard = useFirstRun("signup");
+  const wizardSteps = useMemo<WizardStep[]>(() => [
+    { icon: "sparkles-outline",      title: t("wizard.signup.step1Title"), highlight: t("wizard.signup.step1Highlight"), body: t("wizard.signup.step1Body") },
+    { icon: "person-outline",        title: t("wizard.signup.step2Title"), body: t("wizard.signup.step2Body") },
+    { icon: "school-outline",        title: t("wizard.signup.step3Title"), body: t("wizard.signup.step3Body") },
+    { icon: "notifications-outline", title: t("wizard.signup.step4Title"), highlight: t("wizard.signup.step4Highlight"), body: t("wizard.signup.step4Body") },
+    { icon: "ribbon-outline",        title: t("wizard.signup.step5Title"), body: t("wizard.signup.step5Body") },
+  ], [t]);
+
+  // Android hardware back button: step back through the form instead of
+  // exiting the signup screen, mirroring the on-screen back arrows.
+  useFocusEffect(
+    useCallback(() => {
+      const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+        if (isSubmitting) return true;
+        if (step === 1) return false;
+        setStep((s) => (s === 3 ? 2 : 1));
+        return true;
+      });
+      return () => subscription.remove();
+    }, [step, isSubmitting]),
+  );
 
   // TODO v2: const togglePreference = (key: string) => { ... };
 
@@ -141,7 +171,7 @@ export default function SignupScreen() {
   ) => {
     const res = await fetch(
       firestoreDocumentUrl("users", uid) +
-        "?updateMask.fieldPaths=name&updateMask.fieldPaths=email&updateMask.fieldPaths=createdAt&updateMask.fieldPaths=birthDate&updateMask.fieldPaths=school",
+        "?updateMask.fieldPaths=name&updateMask.fieldPaths=email&updateMask.fieldPaths=createdAt&updateMask.fieldPaths=birthDate&updateMask.fieldPaths=school&updateMask.fieldPaths=driverModeEnabled",
       {
         method: "PATCH",
         headers: {
@@ -155,6 +185,8 @@ export default function SignupScreen() {
             createdAt: { stringValue: new Date().toISOString() },
             birthDate: { stringValue: data.birthDate },
             school:    { stringValue: data.school },
+            // Driver mode is ON by default for new users; toggled from profile.
+            driverModeEnabled: { booleanValue: true },
             // TODO v2: preferences: { arrayValue: { values: data.preferences.map((p) => ({ stringValue: p })) } },
           },
         }),
@@ -164,6 +196,16 @@ export default function SignupScreen() {
     if (!res.ok) {
       throw new Error(await res.text());
     }
+  };
+
+  // Step 2 → 3: gate on accepted terms, then advance to the (optional)
+  // certification step. Account creation happens on step 3's "Get Started".
+  const handleContinueToCertification = () => {
+    if (!termsAccepted) {
+      Alert.alert(t("auth.signup.termsTitle"), t("auth.signup.termsError"));
+      return;
+    }
+    setStep(3);
   };
 
   const handleGetStarted = async () => {
@@ -239,7 +281,14 @@ export default function SignupScreen() {
           <View style={styles.dotsRow}>
             <View style={[styles.dot, step === 1 && styles.dotActive]} />
             <View style={[styles.dot, step === 2 && styles.dotActive]} />
+            <View style={[styles.dot, step === 3 && styles.dotActive]} />
           </View>
+
+          {/* Replay the explainer wizard */}
+          <Pressable onPress={wizard.replay} hitSlop={8} style={styles.helpChip}>
+            <Ionicons name="help-circle-outline" size={16} color="rgba(255,255,255,0.85)" />
+            <Text style={styles.helpChipText}>{t("wizard.replay")}</Text>
+          </Pressable>
         </LinearGradient>
 
         {/* Form area */}
@@ -247,7 +296,6 @@ export default function SignupScreen() {
           {step === 1 ? (
             <>
               <Text style={styles.title}>{t("auth.signup.title")}</Text>
-              <Text style={styles.subtitle}>{t("auth.signup.subtitle")}</Text>
 
               {/* Name */}
               <View style={[styles.inputRow, nameFocused && styles.inputRowFocused]}>
@@ -337,7 +385,7 @@ export default function SignupScreen() {
                 {t("auth.signup.alreadyAccount")} <Text style={{ fontWeight: "700" }}>{t("auth.signup.loginLink")}</Text>
               </Text>
             </>
-          ) : (
+          ) : step === 2 ? (
             <>
               {/* Step 2 header */}
               <View style={styles.step2Header}>
@@ -348,7 +396,6 @@ export default function SignupScreen() {
               </View>
 
               <Text style={styles.title}>{t("auth.signup.step2Title")}</Text>
-              <Text style={styles.subtitle}>{t("auth.signup.step2Subtitle")}</Text>
 
               {/* Birth Date */}
               <View style={[styles.inputRow, birthDateFocused && styles.inputRowFocused]}>
@@ -445,8 +492,76 @@ export default function SignupScreen() {
                 <Text style={styles.checkboxLabel}>{t("auth.signup.termsCheckbox")}</Text>
               </Pressable>
 
+              {/* Continue to certification */}
+              <Pressable onPress={handleContinueToCertification} disabled={isSubmitting} style={{ marginTop: 24 }}>
+                <LinearGradient
+                  colors={["#FD165A", "#8938D5"]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.button}
+                >
+                  <Text style={styles.buttonText}>{t("auth.signup.continueBtn")}</Text>
+                </LinearGradient>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              {/* Step 3 header */}
+              <View style={styles.step2Header}>
+                <Pressable onPress={() => setStep(2)} hitSlop={8} style={styles.backButton}>
+                  <Text style={{ fontSize: 20 }}>←</Text>
+                </Pressable>
+                <Text style={styles.stepIndicator}>{t("auth.signup.certStepIndicator")}</Text>
+              </View>
+
+              <Text style={styles.title}>{t("cert.signup.title")}</Text>
+
+              {/* Ranked preview: the trust levels, Adult → Student */}
+              <View style={{ gap: 4, marginTop: 12, marginBottom: 20 }}>
+                {CERT_ORDER.map((tier, i) => {
+                  const meta = CERT_META[tier];
+                  const reqKey =
+                    tier === "adult" ? "cert.screen.adultReq" : "cert.screen.studentReq";
+                  const last = i === CERT_ORDER.length - 1;
+                  return (
+                    <View key={tier}>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+                        <View
+                          style={{
+                            width: 34, height: 34, borderRadius: 17, borderWidth: 1.5,
+                            borderColor: meta.color, backgroundColor: meta.color + "1f",
+                            alignItems: "center", justifyContent: "center",
+                          }}
+                        >
+                          <Text style={{ color: meta.color, fontWeight: "900", fontSize: 15 }}>{i + 1}</Text>
+                        </View>
+                        <Ionicons name={meta.icon as keyof typeof Ionicons.glyphMap} size={18} color={meta.color} />
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ color: authColors.title, fontWeight: "700", fontSize: 14.5 }}>
+                            {t(meta.labelKey)}
+                          </Text>
+                          <Text style={{ color: authColors.muted, fontSize: 12 }}>{t(reqKey)}</Text>
+                        </View>
+                      </View>
+                      {!last && (
+                        <View
+                          style={{
+                            width: 2, height: 12, marginLeft: 16, marginVertical: 2,
+                            backgroundColor: "rgba(255,255,255,0.12)", borderRadius: 1,
+                          }}
+                        />
+                      )}
+                    </View>
+                  );
+                })}
+              </View>
+
+              <Text style={[styles.subtitle, { marginTop: 4, marginBottom: 24 }]}>
+                {t("cert.signup.laterNote")}
+              </Text>
+
               {/* Get Started */}
-              <Pressable onPress={handleGetStarted} disabled={isSubmitting} style={{ marginTop: 24 }}>
+              <Pressable onPress={handleGetStarted} disabled={isSubmitting}>
                 <LinearGradient
                   colors={["#FD165A", "#8938D5"]}
                   start={{ x: 0, y: 0 }}
@@ -467,6 +582,13 @@ export default function SignupScreen() {
           )}
         </View>
       </ScrollView>
+
+      <WizardModal
+        visible={wizard.shouldShow}
+        steps={wizardSteps}
+        onDone={wizard.markSeen}
+        finalLabel={t("wizard.signup.finalCta")}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -500,6 +622,23 @@ const styles = StyleSheet.create({
   dotsRow: {
     flexDirection: "row",
     gap: 8,
+  },
+  helpChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginTop: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+  },
+  helpChipText: {
+    color: "rgba(255,255,255,0.85)",
+    fontSize: 12,
+    fontWeight: "600",
   },
   dot: {
     width: 8,

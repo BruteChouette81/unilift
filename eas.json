@@ -4,13 +4,14 @@
   },
   "build": {
     "development": {
-      "environment": "preview",
+      "environment": "production",
       "channel": "development",
       "android": {
         "buildType": "apk"
       },
       "env": {
         "EXPO_PUBLIC_APP_ENV": "dev",
+        "EXPO_PUBLIC_API_BASE_URL": "https://us-central1-unilift-6e756.cloudfunctions.net/apiSandbox",
         "EXPO_PUBLIC_FIREBASE_API_KEY": "AIzaSyDQMdY0la_sZuHvumHjFl4ibfCsOe1UW6Q",
         "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN": "unilift-6e756.firebaseapp.com",
         "EXPO_PUBLIC_FIREBASE_PROJECT_ID": "unilift-6e756",
@@ -29,6 +30,7 @@
         "buildType": "apk"
       },
       "env": {
+       "EXPO_PUBLIC_API_BASE_URL": "https://api-qsxtpust2a-uc.a.run.app",
        "EXPO_PUBLIC_FIREBASE_API_KEY": "AIzaSyDQMdY0la_sZuHvumHjFl4ibfCsOe1UW6Q",
         "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN": "unilift-6e756.firebaseapp.com",
         "EXPO_PUBLIC_FIREBASE_PROJECT_ID": "unilift-6e756",
@@ -49,6 +51,7 @@
         "buildType": "app-bundle"
       },
       "env": {
+         "EXPO_PUBLIC_API_BASE_URL": "https://api-qsxtpust2a-uc.a.run.app",
          "EXPO_PUBLIC_FIREBASE_API_KEY": "AIzaSyDQMdY0la_sZuHvumHjFl4ibfCsOe1UW6Q",
         "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN": "unilift-6e756.firebaseapp.com",
         "EXPO_PUBLIC_FIREBASE_PROJECT_ID": "unilift-6e756",

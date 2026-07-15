@@ -6,9 +6,9 @@
 
 //claude --resume "ride-flow-approval-tracking"
 
+import CertBadges from "@/components/cert-badges";
 import { DriverRideMapView } from "@/components/mapview";
 import QrCodeDisplay from "@/components/QrCodeDisplay";
-import { haversineKm } from "@/hooks/use-ride-recommendations";
 import { doc, onSnapshot } from "firebase/firestore";
 import { db } from "@/firebaseConfig";
 import { generateQrToken, processRidePayments } from "@/services/paymentService";
@@ -17,7 +17,6 @@ import { formatCentsAsDollars } from "@/constants/pricing";
 import {
   cancelRideAsDriver,
   markPassengerDropped,
-  markRideCompleted,
   respondToJoinRequest,
   startRideService,
   updateDriverLocation,
@@ -31,13 +30,15 @@ import { useLanguage } from "@/context/LanguageContext";
 import { BlurView } from "expo-blur";
 import { useKeepAwake } from "expo-keep-awake";
 import * as Location from "expo-location";
+import { getDevLocationOverride } from "@/utils/dev-location";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import React, { useEffect, useRef, useState } from "react";
 import { Image as ExpoImage } from "expo-image";
-import { Alert, AppState, Linking, Modal, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, Alert, AppState, Linking, Modal, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { getMultiWaypointRoute } from "@/services/routeService";
 import { devLog, devWarn } from "@/constants/runtime-config";
+import { rideLog } from "@/utils/ride-logger";
 import { maybeShowGmapsHint } from "@/utils/gmapsHint";
 import { rideErrorMessage } from "@/utils/rideErrors";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -82,6 +83,7 @@ type PassengerProfile = {
   school?: string;
   age?: number;
   instagramHandle?: string;
+  certifications: string[];
 };
 
 function extractPassengerProfile(uid: string, doc: { fields?: Record<string, unknown> }): PassengerProfile {
@@ -93,6 +95,14 @@ function extractPassengerProfile(uid: string, doc: { fields?: Record<string, unk
   const num = (key: string): number => {
     const v = fields[key] as Record<string, unknown> | undefined;
     return Number(v?.integerValue ?? v?.doubleValue ?? 0);
+  };
+  const strArr = (key: string): string[] => {
+    const v = fields[key] as Record<string, unknown> | undefined;
+    const values = (v?.arrayValue as Record<string, unknown> | undefined)?.values;
+    if (!Array.isArray(values)) return [];
+    return values
+      .map((e) => (e as Record<string, unknown>)?.stringValue)
+      .filter((s): s is string => typeof s === "string");
   };
   const email = str("email");
   const name = str("name") || email.split("@")[0] || "Unknown";
@@ -112,6 +122,7 @@ function extractPassengerProfile(uid: string, doc: { fields?: Record<string, unk
     school: school || undefined,
     age: typeof age === "number" && age > 0 ? age : undefined,
     instagramHandle: instagramHandle || undefined,
+    certifications: strArr("certifications"),
   };
 }
 
@@ -139,9 +150,11 @@ export default function RideModeDriver() {
   const [passengerPickups, setPassengerPickups] = useState<Record<string, { latitude: number; longitude: number }>>({});
   const [passengerDropoffs, setPassengerDropoffs] = useState<Record<string, { latitude: number; longitude: number }>>({});
   const [droppedPassengers, setDroppedPassengers] = useState<string[]>([]);
-  const [confirmedDropoffPassengers, setConfirmedDropoffPassengers] = useState<string[]>([]);
   const [allPassengersDropped, setAllPassengersDropped] = useState(false);
   const [boardedPassengers, setBoardedPassengers] = useState<string[]>([]);
+  // Passengers who accepted but haven't yet swiped to confirm this driver. The
+  // ride cannot start until this is empty (mutual match gate).
+  const [pendingConfirmation, setPendingConfirmation] = useState<string[]>([]);
   const [frozenPolyline, setFrozenPolyline] = useState<string | undefined>(undefined);
 const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
@@ -330,10 +343,30 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
           return prevKey === nextKey ? prev : nextBoarded;
         });
 
+        // Mutual-match gate: passengers who still need to swipe-confirm this driver.
+        const nextPending: string[] = Array.isArray(data.pendingConfirmation) ? data.pendingConfirmation : [];
+        setPendingConfirmation((prev) => (prev.join(",") === nextPending.join(",") ? prev : nextPending));
+
+        // Dropped / confirmed — server-owned now; mirror into local state so the
+        // completion gate and per-passenger badges reflect the authoritative doc.
+        const nextDropped: string[] = Array.isArray(data.droppedPassengers) ? data.droppedPassengers : [];
+        setDroppedPassengers((prev) => (prev.join(",") === nextDropped.join(",") ? prev : nextDropped));
+        // Every accepted passenger resolved (dropped or no-show) ⇒ ride can end.
+        if (nextPassengers.length > 0 && nextPassengers.every((p) => nextDropped.includes(p))) {
+          setAllPassengersDropped(true);
+        }
+
         // setRideStarted(true) is idempotent — React bails out if value unchanged
         if (data.status === "started") {
           setRideStarted(true);
         }
+        rideLog.info("driver", `ride snapshot ${rideId}`, {
+          status: data.status,
+          paymentStatus: data.paymentStatus,
+          passengers: nextPassengers.length,
+          boarded: Array.isArray(data.boardedPassengers) ? data.boardedPassengers.length : 0,
+          dropped: nextDropped.length,
+        });
       },
       (error) => devWarn("[RIDE-DEBUG] ride listener error", error),
     );
@@ -437,6 +470,14 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
     if (locationSubRef.current || broadcastStartingRef.current) return;
     broadcastStartingRef.current = true;
     try {
+      // Dev GPS override: broadcast a single fixed position and skip the real
+      // watcher entirely so the driver location is deterministic in testing.
+      const devCoords = getDevLocationOverride();
+      if (devCoords) {
+        void updateDriverLocation(rideId, devCoords).catch(() => {});
+        return;
+      }
+
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== "granted") {
         Alert.alert(t("driverRide.permissionDeniedTitle"), t("driverRide.permissionDeniedMsg"));
@@ -535,6 +576,12 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
       Alert.alert(t("driverRide.noPassengersTitle"), t("driverRide.noPassengersMsg"));
       return;
     }
+    // Mutual-match gate — the server also enforces this (428); guard here so the
+    // driver gets an immediate, clear message instead of a round-trip error.
+    if (pendingConfirmation.length > 0) {
+      Alert.alert(t("driverRide.startRide"), t("railguards.passengersNotConfirmed"));
+      return;
+    }
 
     setLoading(true);
     try {
@@ -558,34 +605,14 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
     }
   };
 
-  const finalizeRide = async (confirmedIds: string[]) => {
+  const finalizeRide = async () => {
     setLoading(true);
+    setPaymentProcessing(true);
     try {
-      try {
-        setPaymentProcessing(true);
-        await processRidePayments(
-          rideId,
-          { lat: originCoords.latitude, lng: originCoords.longitude },
-          { lat: destCoords.latitude, lng: destCoords.longitude },
-          Object.keys(passengerPickups).length > 0
-            ? Object.fromEntries(
-                Object.entries(passengerPickups).map(([uid, loc]) => [
-                  uid,
-                  { lat: loc.latitude, lng: loc.longitude },
-                ]),
-              )
-            : undefined,
-          confirmedIds,
-        );
-      } catch (e) {
-        console.warn("Payment processing failed (non-fatal):", e);
-      } finally {
-        setPaymentProcessing(false);
-      }
-
-      // pendingRatings was already populated incrementally per passenger via
-      // markPassengerDropped — preserve it so we don't clobber the appended ids.
-      await markRideCompleted(rideId, [], true);
+      // /rides/finish atomically charges boarded∧dropped passengers, credits the
+      // driver, and marks the ride completed. Failure is surfaced (no silent loss)
+      // and the ride is NOT left half-completed — the driver can retry.
+      await processRidePayments(rideId);
 
       if (locationSubRef.current) {
         locationSubRef.current.remove();
@@ -593,15 +620,30 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
       }
 
       clearActiveRide();
-      const endMsg = confirmedIds.length === 0
-        ? t("driverRide.rideEndedNoPassengersMsg")
-        : t("driverRide.rideEndedMsg");
-      Alert.alert(t("driverRide.rideEndedTitle"), endMsg);
+      const anyCharged = passengers.some(
+        (p) => boardedPassengers.includes(p) && droppedPassengers.includes(p),
+      );
+      Alert.alert(
+        t("driverRide.rideEndedTitle"),
+        anyCharged ? t("driverRide.rideEndedMsg") : t("driverRide.rideEndedNoPassengersMsg"),
+      );
       router.replace("/");
     } catch (e) {
       Alert.alert(t("common.error"), rideErrorMessage(e, t));
     } finally {
+      setPaymentProcessing(false);
       setLoading(false);
+    }
+  };
+
+  // Optimistically mark a passenger resolved locally; the onSnapshot listener
+  // reconciles against the server-authoritative droppedPassengers set.
+  const applyLocalDropped = (pid: string) => {
+    const newDropped = droppedPassengers.includes(pid) ? droppedPassengers : [...droppedPassengers, pid];
+    setDroppedPassengers(newDropped);
+    if (passengers.length > 0 && passengers.every((p) => newDropped.includes(p))) {
+      setAllPassengersDropped(true);
+      Alert.alert(t("driverRide.allDroppedTitle"), t("driverRide.allDroppedMsg"));
     }
   };
 
@@ -610,51 +652,42 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
       Alert.alert(t("driverRide.dropoffNotBoardedTitle"), t("driverRide.dropoffNotBoardedMsg"));
       return;
     }
-    let distKm: number | null = null;
-    try {
-      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-      const ref = passengerDropoffs[pid] ?? passengerPickups[pid];
-      if (ref) {
-        distKm = haversineKm(
-          pos.coords.latitude,
-          pos.coords.longitude,
-          ref.latitude,
-          ref.longitude,
-        );
-      }
-    } catch {
-      // location unavailable — unconfirmed path
-    }
-
-    const isConfirmed = distKm !== null && distKm <= 3;
-    const distLabel = distKm !== null ? `${distKm.toFixed(1)} km` : "";
-    const msg = distKm === null
-      ? t("driverRide.dropoffNoLocationMsg")
-      : isConfirmed
-        ? t("driverRide.dropoffConfirmMsg")
-        : t("driverRide.dropoffUnconfirmedMsg", { dist: distLabel });
-
-    Alert.alert(t("driverRide.dropoffTitle"), msg, [
+    // The server derives dropoff confirmation from the driver's last broadcast
+    // position — the client no longer computes or asserts it.
+    Alert.alert(t("driverRide.dropoffTitle"), t("driverRide.dropoffConfirmGenericMsg"), [
       { text: t("common.cancel"), style: "cancel" },
       {
         text: t("common.confirm"),
         onPress: async () => {
           try {
-            await markPassengerDropped(rideId, pid, isConfirmed);
+            await markPassengerDropped(rideId, pid);
           } catch (e) {
             Alert.alert(t("common.error"), rideErrorMessage(e, t));
             return;
           }
-          const newDropped = [...droppedPassengers, pid];
-          const newConfirmed = isConfirmed
-            ? [...confirmedDropoffPassengers, pid]
-            : [...confirmedDropoffPassengers];
-          setDroppedPassengers(newDropped);
-          setConfirmedDropoffPassengers(newConfirmed);
-          if (newDropped.length === passengers.length) {
-            setAllPassengersDropped(true);
-            Alert.alert(t("driverRide.allDroppedTitle"), t("driverRide.allDroppedMsg"));
+          applyLocalDropped(pid);
+        },
+      },
+    ]);
+  };
+
+  // Resolve a passenger who never boarded (no-show): excluded from charge/rating
+  // server-side, but still counts toward "all passengers resolved" so the driver
+  // can end the ride (fixes the softlock).
+  const markNoShow = async (pid: string) => {
+    Alert.alert(t("driverRide.noShowTitle"), t("driverRide.noShowMsg"), [
+      { text: t("common.cancel"), style: "cancel" },
+      {
+        text: t("driverRide.noShowConfirm"),
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await markPassengerDropped(rideId, pid, { noShow: true });
+          } catch (e) {
+            Alert.alert(t("common.error"), rideErrorMessage(e, t));
+            return;
           }
+          applyLocalDropped(pid);
         },
       },
     ]);
@@ -766,9 +799,12 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
                       )}
                     </TouchableOpacity>
                     <View style={styles.passengerInfo}>
-                      <Text style={styles.passengerIdText} numberOfLines={1}>
-                        {passengerProfiles[req.passengerId]?.name ?? req.passengerId.slice(0, 12) + "..."}
-                      </Text>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                        <Text style={styles.passengerIdText} numberOfLines={1}>
+                          {passengerProfiles[req.passengerId]?.name ?? req.passengerId.slice(0, 12) + "..."}
+                        </Text>
+                        <CertBadges certifications={passengerProfiles[req.passengerId]?.certifications} size="compact" hideWhenEmpty />
+                      </View>
                       <Text style={styles.passengerSubtext}>{t("driverRide.wantsToJoin")}</Text>
                     </View>
                     <TouchableOpacity
@@ -818,9 +854,12 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
                       )}
                     </TouchableOpacity>
                     <View style={styles.passengerInfo}>
-                      <Text style={styles.passengerIdText} numberOfLines={1}>
-                        {passengerProfiles[pid]?.name ?? pid.slice(0, 12) + "..."}
-                      </Text>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                        <Text style={styles.passengerIdText} numberOfLines={1}>
+                          {passengerProfiles[pid]?.name ?? pid.slice(0, 12) + "..."}
+                        </Text>
+                        <CertBadges certifications={passengerProfiles[pid]?.certifications} size="compact" hideWhenEmpty />
+                      </View>
                       <Text style={styles.passengerSubtext}>{t("driverRide.accepted")}</Text>
                     </View>
                   </View>
@@ -843,16 +882,24 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
             </TouchableOpacity>
           )}
 
-          {/* Start Ride */}
-          <TouchableOpacity
-            onPress={startRideManually}
-            disabled={loading || passengers.length === 0}
-            activeOpacity={0.8}
-            style={[styles.primaryBtn, (loading || passengers.length === 0) && styles.btnDisabled]}
-          >
-            <Text style={[{fontSize: 16}, { marginRight: 6 }]}>🧭</Text>
-            <Text style={styles.btnText}>{t("driverRide.startRide")}</Text>
-          </TouchableOpacity>
+          {/* Start Ride — blocked until every dispatched passenger has swiped to
+              confirm this driver (mutual match). */}
+          {pendingConfirmation.length > 0 ? (
+            <View style={[styles.primaryBtn, styles.btnDisabled, styles.waitingConfirmChip]}>
+              <ActivityIndicator size="small" color="#e09af7" style={{ marginRight: 8 }} />
+              <Text style={styles.waitingConfirmText}>{t("driverRide.waitingForRiderConfirm")}</Text>
+            </View>
+          ) : (
+            <TouchableOpacity
+              onPress={startRideManually}
+              disabled={loading || passengers.length === 0}
+              activeOpacity={0.8}
+              style={[styles.primaryBtn, (loading || passengers.length === 0) && styles.btnDisabled]}
+            >
+              <Text style={[{fontSize: 16}, { marginRight: 6 }]}>🧭</Text>
+              <Text style={styles.btnText}>{t("driverRide.startRide")}</Text>
+            </TouchableOpacity>
+          )}
 
           {/* Cancel Ride */}
           <TouchableOpacity
@@ -899,9 +946,12 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
                       )}
                     </TouchableOpacity>
                     <View style={styles.passengerInfo}>
-                      <Text style={styles.passengerIdText} numberOfLines={1}>
-                        {passengerProfiles[pid]?.name ?? pid.slice(0, 12) + "..."}
-                      </Text>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                        <Text style={styles.passengerIdText} numberOfLines={1}>
+                          {passengerProfiles[pid]?.name ?? pid.slice(0, 12) + "..."}
+                        </Text>
+                        <CertBadges certifications={passengerProfiles[pid]?.certifications} size="compact" hideWhenEmpty />
+                      </View>
                       <Text style={styles.passengerSubtext}>
                         {isDropped
                           ? t("driverRide.droppedOff")
@@ -914,16 +964,29 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
                       <View style={styles.droppedBadge}>
                         <Text style={styles.droppedBadgeText}>{t("driverRide.droppedOff")}</Text>
                       </View>
-                    ) : (
+                    ) : isBoarded ? (
                       <TouchableOpacity
                         style={[
                           styles.dropoffBtn,
-                          (loading || paymentProcessing || !isBoarded) && styles.btnDisabled,
+                          (loading || paymentProcessing) && styles.btnDisabled,
                         ]}
                         onPress={() => dropOffPassenger(pid)}
-                        disabled={loading || paymentProcessing || !isBoarded}
+                        disabled={loading || paymentProcessing}
                       >
                         <Text style={styles.dropoffBtnText}>{t("driverRide.dropOff")}</Text>
+                      </TouchableOpacity>
+                    ) : (
+                      // Never boarded — let the driver resolve them as a no-show so
+                      // the ride can still be ended (no softlock).
+                      <TouchableOpacity
+                        style={[
+                          styles.noShowBtn,
+                          (loading || paymentProcessing) && styles.btnDisabled,
+                        ]}
+                        onPress={() => markNoShow(pid)}
+                        disabled={loading || paymentProcessing}
+                      >
+                        <Text style={styles.noShowBtnText}>{t("driverRide.noShow")}</Text>
                       </TouchableOpacity>
                     )}
                   </View>
@@ -977,7 +1040,7 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
                     {
                       text: t("driverRide.endRide"),
                       style: "destructive",
-                      onPress: () => finalizeRide(confirmedDropoffPassengers),
+                      onPress: () => finalizeRide(),
                     },
                   ]
                 );
@@ -986,6 +1049,16 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
               <Text style={styles.btnText}>{t("driverRide.endRide")}</Text>
             </TouchableOpacity>
           )}
+
+          {/* Always-available escape hatch while the ride is in progress. */}
+          <TouchableOpacity
+            style={[styles.cancelInlineBtn, (loading || paymentProcessing) && styles.btnDisabled]}
+            disabled={loading || paymentProcessing}
+            activeOpacity={0.8}
+            onPress={cancelRide}
+          >
+            <Text style={styles.cancelInlineText}>{t("driverRide.cancelRide")}</Text>
+          </TouchableOpacity>
         </View>
       )}
 
@@ -1042,6 +1115,9 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
 
                 {/* Name + XP */}
                 <Text style={styles.profileName}>{profileModal.name}</Text>
+                <View style={{ alignItems: "center", marginTop: 8 }}>
+                  <CertBadges certifications={profileModal.certifications} size="full" />
+                </View>
                 <View style={styles.profileXpRow}>
                   <Text style={styles.profileXpText}>⚡ {profileModal.xp} XP</Text>
                   {profileModal.rating > 0 && (
@@ -1333,6 +1409,19 @@ const styles = StyleSheet.create({
   btnDisabled: {
     opacity: 0.5,
   },
+  waitingConfirmChip: {
+    opacity: 1,
+    backgroundColor: "rgba(137,56,213,0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(137,56,213,0.35)",
+  },
+  waitingConfirmText: {
+    color: "#e09af7",
+    fontWeight: "700",
+    fontSize: 14,
+    textAlign: "center",
+    flexShrink: 1,
+  },
   secondaryBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -1359,6 +1448,28 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 12,
     fontWeight: "700",
+  },
+  noShowBtn: {
+    backgroundColor: "rgba(248,113,113,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(248,113,113,0.35)",
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  noShowBtnText: {
+    color: "#f87171",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  cancelInlineBtn: {
+    alignItems: "center",
+    paddingVertical: 12,
+  },
+  cancelInlineText: {
+    color: "#9ca3af",
+    fontSize: 13,
+    fontWeight: "600",
   },
   droppedBadge: {
     backgroundColor: "rgba(16,185,129,0.12)",

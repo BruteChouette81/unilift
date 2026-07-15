@@ -37,6 +37,7 @@ yarn-error.*
 
 # service account credentials
 functions/scripts/serviceAccount.json
+functions-sandbox/scripts/serviceAccount.json
 
 # typescript
 *.tsbuildinfo

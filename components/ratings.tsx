@@ -1,6 +1,5 @@
-import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
-import { updateRatings, updateXP } from "@/services/rideServices";
+import { submitRideRating } from "@/services/rideServices";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
@@ -21,7 +20,6 @@ export default function RatingScreen(props: {
   onRatingSubmitted?: (rating: number) => void;
 }) {
   const [rating, setRating] = useState(0);
-  const { user } = useAuth();
   const { t } = useLanguage();
   const router = useRouter();
 
@@ -30,8 +28,12 @@ export default function RatingScreen(props: {
       props.onRatingSubmitted(rating);
       return;
     }
-    const driverId = await updateRatings(props.rideId, rating);
-    await updateXP(user?.uid!, driverId!, rating * 20);
+    try {
+      await submitRideRating(props.rideId, rating);
+    } catch {
+      Alert.alert(t("common.error"), t("passengerRide.failedRating"));
+      return;
+    }
     Alert.alert(t("ratings.thankYou"), t("ratings.thankYouMsg", { count: rating }), [
       {
         text: t("common.ok"),

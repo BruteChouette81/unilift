@@ -5,6 +5,8 @@ type AdaptivePollingParams = {
   initialDelayMs?: number;
   maxDelayMs?: number;
   backoffFactor?: number;
+  /** Run the first poll immediately instead of waiting `initialDelayMs`. */
+  immediate?: boolean;
 };
 
 type PollCallback = () => Promise<boolean | void> | boolean | void;
@@ -16,6 +18,7 @@ export function useAdaptivePolling(
     initialDelayMs = 2000,
     maxDelayMs = 30000,
     backoffFactor = 1.8,
+    immediate = false,
   }: AdaptivePollingParams = {},
 ) {
   const savedCallback = useRef(callback);
@@ -46,11 +49,11 @@ export function useAdaptivePolling(
       }
     };
 
-    timer = setTimeout(run, delay);
+    timer = setTimeout(run, immediate ? 0 : delay);
 
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [backoffFactor, enabled, initialDelayMs, maxDelayMs]);
+  }, [backoffFactor, enabled, initialDelayMs, maxDelayMs, immediate]);
 }

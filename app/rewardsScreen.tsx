@@ -1,11 +1,17 @@
+import RewardCard from "@/components/reward-card";
+import { getRewardGroups, xpToLevel, type Reward } from "@/constants/rewards";
+import { isDev } from "@/constants/runtime-config";
 import { useLanguage } from "@/context/LanguageContext";
-import { LinearGradient } from "expo-linear-gradient";
+import { useUserProfile } from "@/context/UserProfileContext";
 import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import React from "react";
 import {
-  Platform,
+  Alert,
+  Image,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -28,7 +34,16 @@ const C = {
 export default function RewardsScreen() {
   const router = useRouter();
   const { t } = useLanguage();
+  const { userData } = useUserProfile();
   const insets = useSafeAreaInsets();
+
+  const xp = userData?.xp ?? 0;
+  const level = xpToLevel(xp);
+  const groups = getRewardGroups(t("rewards.uniliftRewards"));
+
+  const handleRedeem = (reward: Reward) => {
+    Alert.alert(t("rewards.redeemedTitle"), t("rewards.redeemedBody", { title: reward.title }));
+  };
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
@@ -45,34 +60,77 @@ export default function RewardsScreen() {
         <View style={{ width: 38 }} />
       </View>
 
-      {/* Coming soon content */}
-      <View style={styles.center}>
-        <LinearGradient
-          colors={["#1c0038", "#08001a"]}
-          style={styles.card}
-        >
-          <View style={styles.iconWrap}>
-            <Text style={{ fontSize: 48 }}>🏆</Text>
-          </View>
-          <Text style={styles.comingSoonLabel}>{t("rewards.comingSoon")}</Text>
-          <Text style={styles.title}>{t("rewards.title")}</Text>
-          <Text style={styles.subtitle}>{t("rewards.comingSoonSub")}</Text>
+      {isDev ? (
+        <ScrollView contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
+          {/* Your level summary */}
+          <LinearGradient
+            colors={["#1c0038", "#08001a"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.levelCard}
+          >
+            <View style={styles.levelTrophy}>
+              <Ionicons name="trophy" size={22} color={C.gold} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.levelLabel}>{t("rewards.yourLevel")}</Text>
+              <Text style={styles.levelValue}>{t("profile.levelShort", { level })}</Text>
+            </View>
+            <View style={styles.xpBadge}>
+              <Ionicons name="flash" size={12} color={C.gold} />
+              <Text style={styles.xpBadgeText}>{xp} XP</Text>
+            </View>
+          </LinearGradient>
 
-          <View style={styles.featureList}>
-            {[
-              { icon: "⚡", label: t("rewards.featureXp") },
-              { icon: "🎁", label: t("rewards.featureDiscounts") },
-              { icon: "🏅", label: t("rewards.featureBadges") },
-              { icon: "📊", label: t("rewards.featureLeaderboard") },
-            ].map((f) => (
-              <View key={f.label} style={styles.featureRow}>
-                <Text style={{ fontSize: 16 }}>{f.icon}</Text>
-                <Text style={styles.featureText}>{f.label}</Text>
+          {/* Reward groups by sponsor */}
+          {groups.map((group) => (
+            <View key={group.key} style={styles.group}>
+              <View style={styles.groupHeader}>
+                {group.logoUrl ? (
+                  <Image source={{ uri: group.logoUrl }} style={styles.groupLogo} />
+                ) : (
+                  <View style={styles.groupDot} />
+                )}
+                <Text style={styles.groupTitle}>{group.label}</Text>
               </View>
-            ))}
-          </View>
-        </LinearGradient>
-      </View>
+              <View style={styles.groupRewards}>
+                {group.rewards.map((reward) => (
+                  <RewardCard key={reward.id} reward={reward} xp={xp} onRedeem={handleRedeem} />
+                ))}
+              </View>
+            </View>
+          ))}
+        </ScrollView>
+      ) : (
+        /* Coming soon content (production) */
+        <View style={styles.center}>
+          <LinearGradient
+            colors={["#1c0038", "#08001a"]}
+            style={styles.card}
+          >
+            <View style={styles.iconWrap}>
+              <Text style={{ fontSize: 48 }}>🏆</Text>
+            </View>
+            <Text style={styles.comingSoonLabel}>{t("rewards.comingSoon")}</Text>
+            <Text style={styles.title}>{t("rewards.title")}</Text>
+            <Text style={styles.subtitle}>{t("rewards.comingSoonSub")}</Text>
+
+            <View style={styles.featureList}>
+              {[
+                { icon: "⚡", label: t("rewards.featureXp") },
+                { icon: "🎁", label: t("rewards.featureDiscounts") },
+                { icon: "🏅", label: t("rewards.featureBadges") },
+                { icon: "📊", label: t("rewards.featureLeaderboard") },
+              ].map((f) => (
+                <View key={f.label} style={styles.featureRow}>
+                  <Text style={{ fontSize: 16 }}>{f.icon}</Text>
+                  <Text style={styles.featureText}>{f.label}</Text>
+                </View>
+              ))}
+            </View>
+          </LinearGradient>
+        </View>
+      )}
     </View>
   );
 }
@@ -107,6 +165,65 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: "700",
   },
+
+  // ── Dev list ──────────────────────────────────────────────────────────────
+  listContent: {
+    padding: 16,
+    paddingBottom: 40,
+    gap: 20,
+  },
+  levelCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  levelTrophy: {
+    width: 46,
+    height: 46,
+    borderRadius: 14,
+    backgroundColor: "rgba(251,191,36,0.14)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(251,191,36,0.35)",
+  },
+  levelLabel: {
+    color: C.purpleLight,
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 1,
+    textTransform: "uppercase",
+  },
+  levelValue: {
+    color: C.text,
+    fontSize: 20,
+    fontWeight: "900",
+  },
+  xpBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor: "rgba(251,191,36,0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(251,191,36,0.35)",
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  xpBadgeText: { color: C.gold, fontSize: 13, fontWeight: "800" },
+
+  group: { gap: 12 },
+  groupHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
+  groupLogo: { width: 26, height: 26, borderRadius: 7, backgroundColor: "rgba(255,255,255,0.06)" },
+  groupDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: C.purple, marginHorizontal: 8 },
+  groupTitle: { color: C.text, fontSize: 17, fontWeight: "800" },
+  groupRewards: { gap: 10 },
+
+  // ── Coming soon (prod) ──────────────────────────────────────────────────────
   center: {
     flex: 1,
     justifyContent: "center",

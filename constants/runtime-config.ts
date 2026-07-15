@@ -10,6 +10,7 @@ type ExtraConfig = {
   EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID?: string;
   EXPO_PUBLIC_FIRESTORE_DATABASE_ID?: string;
   EXPO_PUBLIC_APP_ENV?: string;
+  EXPO_PUBLIC_API_BASE_URL?: string;
   EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY?: string;
   EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY_TEST?: string;
   GOOGLE_MAPS_API_KEY?: string;
@@ -76,8 +77,25 @@ export const withFirebaseApiKey = (url: string) => {
 
 export const firebaseStorageBaseUrl = `https://firebasestorage.googleapis.com/v0/b/${runtimeConfig.firebaseStorageBucket}/o`;
 
-export const apiBaseUrl = "https://api-qsxtpust2a-uc.a.run.app";
+// Two independently-deployed Cloud Functions codebases:
+//   • LIVE  — frozen at the last App Store build (functions/, exports `api`),
+//     prod-pinned (uniliftdefault + Stripe live). The shipped binary targets this.
+//   • SANDBOX — new features (functions-sandbox/, exports `apiSandbox`),
+//     hardwired to the dev data environment (uniliftdev + Stripe test).
+// Dev builds hit the sandbox; production/preview builds hit live. Overridable per
+// build via EXPO_PUBLIC_API_BASE_URL (set in eas.json / .env).
+const LIVE_API_BASE_URL = "https://api-qsxtpust2a-uc.a.run.app";
+// gen1 HTTPS functions are always reachable at this deterministic URL, so it is
+// stable without needing the run.app hash assigned on first deploy.
+const SANDBOX_API_BASE_URL =
+  "https://us-central1-unilift-6e756.cloudfunctions.net/apiSandbox";
 
+export const apiBaseUrl =
+  fromEnv("EXPO_PUBLIC_API_BASE_URL") ??
+  (isDev ? SANDBOX_API_BASE_URL : LIVE_API_BASE_URL);
+
+// The sandbox function is dev-pinned server-side and ignores this header — it is
+// kept only as a harmless belt-and-suspenders signal for dev builds.
 export function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
   if (!isDev) return fetch(url, init);
   const headers = new Headers(init.headers as HeadersInit | undefined);

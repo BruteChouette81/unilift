@@ -1,0 +1,172 @@
+rules_version = '2';
+// ─────────────────────────────────────────────────────────────────────────────
+// TIGHTENED RULESET — server-authoritative ride lifecycle.
+//
+// Applied to the DEV database (uniliftdev) only during the ride-path hardening
+// rollout; promoted to the prod database (uniliftdefault) at cutover, once the
+// new production app is live and old clients are force-gated. See
+// docs/ride-lifecycle-audit.md and the plan.
+//
+// Difference vs firestore.rules (prod/permissive):
+//   • rides/*     — ALL client writes denied. Rides are mutated exclusively by
+//                   Cloud Functions (/requests/accept, /rides/*) via the admin
+//                   SDK, which bypasses these rules. Closes W-01, W-03, W-15.
+//   • users/*     — the cross-user ratings/xp write rule is REMOVED. Ratings/XP
+//                   now flow only through /rides/rate. Closes W-05, W-10.
+//   • rideRequests read — scoped to owner / still-open / matched driver, so
+//                   matched & historical pickup coordinates aren't world-readable
+//                   (W-22). Open requests stay readable so the driver inbox works.
+// ─────────────────────────────────────────────────────────────────────────────
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+    function newDocHasFinancialFields() {
+      return request.resource.data.keys().hasAny([
+        'pendingChargeCents', 'pendingEarningsCents',
+        'stripeCustomerId', 'stripePaymentMethodId',
+        'stripePaymentMethodLast4', 'stripePaymentMethodBrand'
+      ]);
+    }
+
+    function touchesFinancialFields() {
+      return request.resource.data.diff(resource.data)
+        .affectedKeys()
+        .hasAny([
+          'pendingChargeCents', 'pendingEarningsCents',
+          'stripeCustomerId', 'stripePaymentMethodId',
+          'stripePaymentMethodLast4', 'stripePaymentMethodBrand'
+        ]);
+    }
+
+    // The `certifications` array is server-authoritative: it is granted only by
+    // the apiSandbox Cloud Function (admin SDK, which bypasses these rules) after
+    // the server verifies each tier. Clients must never write it themselves —
+    // otherwise a user could grant themselves any badge.
+    function newDocHasCertField() {
+      return request.resource.data.keys().hasAny(['certifications']);
+    }
+
+    function touchesCertField() {
+      return request.resource.data.diff(resource.data)
+        .affectedKeys()
+        .hasAny(['certifications']);
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return request.auth.uid == uid;
+    }
+
+    function isAdmin() {
+      return request.auth != null && request.auth.token.admin == true;
+    }
+
+    // ── Users ──────────────────────────────────────────────────────────────────
+    match /users/{uid} {
+
+      // Any signed-in user can read public profile fields (ride cards, profile
+      // modals, driver/passenger info).
+      allow read: if isSignedIn();
+
+      // A user can create their own document (sign-up flow).
+      allow create: if isSignedIn() && isOwner(uid)
+        && !newDocHasFinancialFields()
+        && !newDocHasCertField();
+
+      // A user can update ONLY their own document, never financial fields, and
+      // never their own certifications (server-authoritative — see above).
+      allow update: if isSignedIn() && isOwner(uid)
+        && !touchesFinancialFields()
+        && !touchesCertField();
+
+      // NOTE: the cross-user ratings/xp/ridesCompleted write rule is intentionally
+      // absent. Those fields are now written only by the /rides/rate Cloud
+      // Function after verifying the caller shared the ride.
+
+      allow delete: if false;
+    }
+
+    // Transactions subcollection — owner may read; all writes are Cloud Function–only.
+    match /users/{uid}/transactions/{txId} {
+      allow read: if isSignedIn() && isOwner(uid);
+      allow write: if false;
+    }
+
+    // Student-certification magic-link tokens — created, read and consumed only by
+    // the apiSandbox Cloud Function (admin SDK). Never accessible to clients: the
+    // token value is a bearer credential and must not be enumerable/forgeable.
+    match /certEmailTokens/{token} {
+      allow read, write: if false;
+    }
+
+    // ── Rides ──────────────────────────────────────────────────────────────────
+    // Effectively read-only for clients. Every state/money mutation
+    // (create/start/board/dropoff/finish/rate/cancel/leave/expire) happens
+    // server-side via the admin SDK. The ONE client exception is the ride's
+    // driver writing their own live GPS position (`driverLocation`) — pure
+    // telemetry, high-frequency, not used for billing — so it stays a cheap
+    // direct write rather than a per-tick Cloud Function call.
+    match /rides/{rideId} {
+      allow read: if isSignedIn();
+      allow create, delete: if false;
+      allow update: if isSignedIn()
+        && resource.data.driverId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['driverLocation']);
+    }
+
+    // ── Ride Requests ───────────────────────────────────────────────────────────
+    match /rideRequests/{requestId} {
+
+      // Owner sees their own (any status); everyone can see still-open requests
+      // (needed for the driver inbox); a matched driver can see the one they took.
+      allow read: if isSignedIn() && (
+        isOwner(resource.data.passengerId)
+        || resource.data.status == 'open'
+        || resource.data.matchedDriverId == request.auth.uid
+      );
+
+      // Only the passenger can create their own request.
+      allow create: if isSignedIn()
+        && request.resource.data.passengerId == request.auth.uid;
+
+      // Only the owner can update their request, and they cannot reassign it.
+      allow update: if isSignedIn()
+        && isOwner(resource.data.passengerId)
+        && request.resource.data.passengerId == resource.data.passengerId;
+
+      // The owner may delete (cancel) their own request.
+      allow delete: if isSignedIn() && isOwner(resource.data.passengerId);
+    }
+
+    // ── Hype Events ──────────────────────────────────────────────────────────────
+    match /events/{eventId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ── Sponsors ─────────────────────────────────────────────────────────────────
+    match /sponsors/{sponsorId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ── Config ─────────────────────────────────────────────────────────────────
+    match /config/{doc} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // ── Driver Sessions ─────────────────────────────────────────────────────────
+    match /driverSessions/{uid} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn()
+        && isOwner(uid)
+        && request.resource.data.driverId == request.auth.uid;
+      allow delete: if isSignedIn() && isOwner(uid);
+    }
+  }
+}

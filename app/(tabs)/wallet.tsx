@@ -12,10 +12,12 @@ import {
   presentPaymentSheet,
 } from "@stripe/stripe-react-native";
 import InfoButton from "@/components/info-button";
+import WizardModal, { type WizardStep } from "@/components/wizard/wizard-modal";
+import { useFirstRun } from "@/hooks/use-first-run";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -128,6 +130,16 @@ export default function WalletScreen() {
   // Re-sync card + transactions when returning to the tab or foregrounding.
   useLiveRefresh(reload);
 
+  // First-run wizard: explains how to connect a card. Auto-fires once only
+  // while the user has no payment method; always replayable from the link.
+  const cardWizard = useFirstRun("wallet-card");
+  const cardWizardSteps = useMemo<WizardStep[]>(() => [
+    { icon: "card-outline",          title: t("wizard.wallet.step1Title"), highlight: t("wizard.wallet.step1Highlight"), body: t("wizard.wallet.step1Body") },
+    { icon: "lock-closed-outline",   title: t("wizard.wallet.step2Title"), body: t("wizard.wallet.step2Body") },
+    { icon: "calendar-outline",      title: t("wizard.wallet.step3Title"), body: t("wizard.wallet.step3Body") },
+  ], [t]);
+  const showCardWizard = cardWizard.shouldShow && !paymentMethod && !loading;
+
   // ── Add Card ────────────────────────────────────────────────────────────────
   const handleAddCard = async () => {
     if (!user) return;
@@ -150,6 +162,9 @@ export default function WalletScreen() {
         customerEphemeralKeySecret: ephemeralKey,
         setupIntentClientSecret: clientSecret,
         merchantDisplayName: "UniLift",
+        applePay: {
+          merchantCountryCode: "CA",
+        },
       });
       if (initError) {
         Alert.alert(t("wallet.paymentSetupError"), initError.message);
@@ -273,26 +288,33 @@ export default function WalletScreen() {
             </TouchableOpacity>
           </View>
         ) : (
-          <TouchableOpacity
-            style={[styles.addCardBtn, actionLoading && { opacity: 0.6 }]}
-            onPress={handleAddCard}
-            disabled={actionLoading}
-            activeOpacity={0.75}
-          >
-            {actionLoading ? (
-              <ActivityIndicator size="small" color={C.purpleLight} />
-            ) : (
-              <LinearGradient
-                colors={BTN_GRADIENT}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.addCardIconGrad}
-              >
-                <Ionicons name="add" size={16} color="#fff" />
-              </LinearGradient>
-            )}
-            <Text style={styles.addCardBtnText}>{t("wallet.addCard")}</Text>
-          </TouchableOpacity>
+          <>
+            <TouchableOpacity
+              style={[styles.addCardBtn, actionLoading && { opacity: 0.6 }]}
+              onPress={handleAddCard}
+              disabled={actionLoading}
+              activeOpacity={0.75}
+            >
+              {actionLoading ? (
+                <ActivityIndicator size="small" color={C.purpleLight} />
+              ) : (
+                <LinearGradient
+                  colors={BTN_GRADIENT}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.addCardIconGrad}
+                >
+                  <Ionicons name="add" size={16} color="#fff" />
+                </LinearGradient>
+              )}
+              <Text style={styles.addCardBtnText}>{t("wallet.addCard")}</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity onPress={cardWizard.replay} style={styles.howItWorksBtn} hitSlop={8} activeOpacity={0.7}>
+              <Ionicons name="help-circle-outline" size={15} color={C.muted} />
+              <Text style={styles.howItWorksText}>{t("wizard.replay")}</Text>
+            </TouchableOpacity>
+          </>
         )}
 
         {/* ── Driver Earnings (only if driver has pending earnings) ─────────── */}
@@ -389,6 +411,14 @@ export default function WalletScreen() {
 
         <View style={{ height: 32 }} />
       </View>
+
+      <WizardModal
+        visible={showCardWizard}
+        steps={cardWizardSteps}
+        onDone={cardWizard.markSeen}
+        onComplete={() => { cardWizard.markSeen(); void handleAddCard(); }}
+        finalLabel={t("wizard.wallet.finalCta")}
+      />
     </ScrollView>
   );
 }
@@ -419,6 +449,8 @@ const styles = StyleSheet.create({
   addCardBtn:         { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: "rgba(137,56,213,0.06)", borderRadius: 16, padding: 16, borderWidth: 1, borderColor: C.border },
   addCardIconGrad:    { width: 26, height: 26, borderRadius: 8, alignItems: "center", justifyContent: "center" },
   addCardBtnText:     { color: C.purpleLight, fontSize: 14, fontWeight: "600" },
+  howItWorksBtn:      { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, paddingVertical: 10, marginTop: 2 },
+  howItWorksText:     { color: C.muted, fontSize: 12.5, fontWeight: "600" },
 
   // Earnings card
   earningsCard:    { borderRadius: 16, padding: 16, borderWidth: 1, borderColor: "rgba(52,211,153,0.20)" },

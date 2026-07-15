@@ -123,8 +123,12 @@ import { useForceUpdateConfigFetcher } from "@/hooks/use-force-update-config";
 import { useOtaUpdate } from "@/hooks/use-ota-update";
 import UpdateRequiredScreen from "@/app/updateRequiredScreen";
 import Constants from "expo-constants";
+import * as Notifications from "expo-notifications";
 import { ActiveRideProvider, useActiveRide } from "@/context/ActiveRideContext";
 import { fetchRideById } from "@/services/rideServices";
+import { fetchRideRequestById } from "@/services/rideRequestService";
+import { fetchRidePricing } from "@/services/pricingService";
+import { setRidePricing } from "@/constants/pricing";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { LanguageProvider, useLanguage } from "@/context/LanguageContext";
 import { UserProfileProvider } from "@/context/UserProfileContext";
@@ -144,7 +148,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { DriverSession } from "@/types/models";
@@ -224,9 +228,14 @@ function AppHeader() {
       <View style={styles.bannerRow}>
         <Text style={styles.bannerText}>UniLift</Text>
         {isDev && (
-          <View style={styles.devBadge}>
+          <Pressable
+            onLongPress={() => router.push("/devToolsScreen")}
+            delayLongPress={400}
+            hitSlop={8}
+            style={styles.devBadge}
+          >
             <Text style={styles.devBadgeText}>DEV</Text>
-          </View>
+          </Pressable>
         )}
 
         <TouchableOpacity
@@ -391,7 +400,7 @@ function LayoutContent() {
   const colorScheme = useColorScheme() ?? "dark";
   const router = useRouter();
   const segments = useSegments();
-  const { activeRide, clearActiveRide } = useActiveRide();
+  const { activeRide, clearActiveRide, pendingRequest, clearPendingRequest } = useActiveRide();
 
   // Single driver-session hook call — shared by DriverOnlineBanner (tabs header)
   // and GlobalDriverAvailabilityBanner (non-tabs overlay) to avoid duplicate fetches.
@@ -414,6 +423,72 @@ function LayoutContent() {
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, activeRide?.rideId, clearActiveRide]);
+
+  // Resume an in-progress ride search after the app was closed/reopened while
+  // the passenger was waiting for a driver (findingDriverScreen persists the
+  // request; see ActiveRideContext). Runs at most once per launch.
+  const resumedPendingRef = useRef(false);
+  useEffect(() => {
+    if (status !== "authenticated" || !pendingRequest || resumedPendingRef.current) return;
+    resumedPendingRef.current = true;
+    let cancelled = false;
+
+    (async () => {
+      // If the app was cold-started by tapping the "driver accepted" push,
+      // use-push-notifications already routes to the ride screen — defer to it
+      // and just clear the pending record to avoid a double navigation.
+      try {
+        const lastResponse = await Notifications.getLastNotificationResponseAsync();
+        const data = lastResponse?.notification.request.content.data as
+          | Record<string, unknown>
+          | undefined;
+        if (data?.type === "driver_accepted") {
+          if (!cancelled) clearPendingRequest();
+          return;
+        }
+      } catch {
+        // fall through to status validation
+      }
+
+      const request = await fetchRideRequestById(pendingRequest.requestId).catch(() => null);
+      if (cancelled) return;
+
+      const p = pendingRequest.params;
+      if (request?.status === "open") {
+        // Still searching — re-open the radar sheet and re-attach the listener.
+        const qs = Object.entries(p)
+          .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
+          .join("&");
+        router.push(`/findingDriverScreen?${qs}` as never);
+      } else if (request?.status === "matched" && request.matchedRideId) {
+        // Accepted while the app was closed — resume at the swipe-to-confirm
+        // screen. It self-forwards to rideScreen if the passenger already
+        // confirmed, so this is safe whether or not confirmation happened.
+        clearPendingRequest();
+        router.replace(
+          `/matchDriverScreen?rideId=${request.matchedRideId}&requestId=${pendingRequest.requestId}&originLat=${p.originLat ?? "0"}&originLng=${p.originLng ?? "0"}&destLat=${p.destLat ?? "0"}&destLng=${p.destLng ?? "0"}` as never,
+        );
+      } else {
+        // Gone / cancelled / expired — nothing to resume.
+        clearPendingRequest();
+      }
+    })();
+
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, pendingRequest?.requestId]);
+
+  // Hydrate live ride pricing from Firestore (config/pricing) once authenticated,
+  // so in-app fare estimates match what the server actually charges. Fail-open:
+  // leaves the hardcoded defaults in place on any error.
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    let cancelled = false;
+    fetchRidePricing()
+      .then((pricing) => { if (!cancelled) setRidePricing(pricing); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [status]);
 
   usePushNotifications();
 
@@ -561,13 +636,27 @@ function LayoutContent() {
               name="findingDriverScreen"
               options={{
                 headerShown: false,
-                presentation: "transparentModal",
+                // A full-screen card (NOT a modal). Presenting this as a
+                // transparentModal made every downstream passenger screen
+                // (matchDriverScreen → rideScreen) inherit the reused modal
+                // container via router.replace, so the whole flow rendered
+                // inside a modal. Keeping it a card keeps the chain card↔card.
                 animation: "slide_from_bottom",
-                contentStyle: { backgroundColor: "transparent" },
+                contentStyle: { backgroundColor: BG },
+              }}
+            />
+            <Stack.Screen
+              name="matchDriverScreen"
+              options={{
+                headerShown: false,
+                animation: "slide_from_bottom",
+                gestureEnabled: false,
               }}
             />
             <Stack.Screen name="rewardsScreen" options={{ headerShown: false }} />
+            <Stack.Screen name="certificationScreen" options={{ headerShown: false }} />
             <Stack.Screen name="acceptRideScreen" options={{ headerShown: false }} />
+            {isDev && <Stack.Screen name="devToolsScreen" options={{ headerShown: false }} />}
             <Stack.Screen name="onboardingScreen" options={{ headerShown: false }} />
             <Stack.Screen name="countdown-confirmation" options={{ headerShown: false }} />
           </Stack>

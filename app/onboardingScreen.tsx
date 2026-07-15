@@ -49,6 +49,10 @@ const C = {
 const BTN_GRADIENT = ["#FD165A", "#8938D5"] as const;
 const ACTIVE_DAY_GRADIENT = ["#FD165A", "#8938D5"] as const;
 
+// Driver mode is a simple ON/OFF (default ON) for now — the recurring-availability
+// planning step is hidden. Flip to `true` to re-enable window configuration here.
+const SHOW_DRIVER_STEP = false;
+
 type Coords = { latitude: number; longitude: number };
 
 function makeId(): string {
@@ -282,7 +286,8 @@ export default function OnboardingScreen() {
         />
         <Text style={styles.hint}>{t("onboarding.homeHint")}</Text>
 
-        {/* ── Driver availability ───────────────────────────────────────── */}
+        {/* ── Driver availability (hidden for now — see SHOW_DRIVER_STEP) ── */}
+        {SHOW_DRIVER_STEP && (<>
         <View style={[styles.labelRow, { marginTop: 28 }]}>
           <Ionicons name="car-sport-outline" size={16} color={C.purpleLight} />
           <Text style={styles.label}>{t("onboarding.driverLabel")}</Text>
@@ -358,6 +363,7 @@ export default function OnboardingScreen() {
           </View>
         )}
         <Text style={styles.hint}>{t("onboarding.driverHint")}</Text>
+        </>)}
 
         {/* ── Favorite places ───────────────────────────────────────────── */}
         <View style={[styles.labelRow, { marginTop: 28 }]}>

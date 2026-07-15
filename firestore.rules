@@ -177,6 +177,24 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin();
     }
 
+    // ── Sponsors ─────────────────────────────────────────────────────────────────
+    // Paying partner businesses shown on the home map. Any signed-in user may read.
+    // Writes are restricted to founder admins (custom claim) so the admin dashboard
+    // can create/edit/delete sponsors. Regular clients cannot write.
+    match /sponsors/{sponsorId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ── Config ─────────────────────────────────────────────────────────────────
+    // App-wide editable config (e.g. `config/pricing` — ride per-km rates). Any
+    // signed-in user may read (app + Cloud Function need the values); only
+    // founder admins (custom claim) may write, via the admin dashboard.
+    match /config/{doc} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
     // ── Driver Sessions ─────────────────────────────────────────────────────────
     // A driver's live "online to drive" state. Doc id == driver uid. Readable by
     // any signed-in user (so dispatch/matching can see online drivers); only the

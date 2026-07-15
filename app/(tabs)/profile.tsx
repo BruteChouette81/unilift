@@ -4,9 +4,10 @@ import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   LayoutAnimation,
   Modal,
   Platform,
@@ -14,18 +15,25 @@ import {
   RefreshControl,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TouchableOpacity,
   UIManager,
   View,
 } from "react-native";
 
+import CertBadges from "@/components/cert-badges";
 import FavoriteRouteCard from "@/components/favorite-rides";
 import InfoButton from "@/components/info-button";
+import ProfileCompletionCard from "@/components/profile-completion-card";
+import WizardModal, { type WizardStep } from "@/components/wizard/wizard-modal";
+import { useFirstRun } from "@/hooks/use-first-run";
 import { PassengerRidesList } from "@/components/profile/passenger-rides-list";
 import { PlannedRidesList } from "@/components/profile/planned-rides-list";
 import { InterestedEventsList } from "@/components/profile/interested-events-list";
 
+import { useUserProfile } from "@/context/UserProfileContext";
+import { patchUserField } from "@/components/userHelper";
 import { useProfileAvatar } from "@/hooks/use-profile-avatar";
 import { useProfileData } from "@/hooks/use-profile-data";
 import { useLiveRefresh } from "@/hooks/use-live-refresh";
@@ -108,10 +116,21 @@ const ProfileScreen = () => {
   const { user, loading } = useAuth();
   const { t } = useLanguage();
   const { userData, rides, refreshing, onRefresh } = useProfileData(user);
+  const { updateUserData } = useUserProfile();
   const [cardExpanded, setCardExpanded] = useState(false);
+  const [driverToggleSaving, setDriverToggleSaving] = useState(false);
 
   // Re-sync profile + rides when returning to the tab or foregrounding the app.
   useLiveRefresh(onRefresh);
+
+  // First-run guided tour: XP, rewards, certification, settings.
+  const tour = useFirstRun("profile-tour");
+  const tourSteps = useMemo<WizardStep[]>(() => [
+    { icon: "trophy-outline", title: t("wizard.profile.step1Title"), highlight: t("wizard.profile.step1Highlight"), body: t("wizard.profile.step1Body") },
+    { icon: "gift-outline",   title: t("wizard.profile.step2Title"), body: t("wizard.profile.step2Body") },
+    { icon: "ribbon-outline", title: t("wizard.profile.step3Title"), body: t("wizard.profile.step3Body") },
+    { icon: "settings-outline", title: t("wizard.profile.step4Title"), body: t("wizard.profile.step4Body") },
+  ], [t]);
 
   const toggleCard = () => {
     LayoutAnimation.configureNext({
@@ -138,6 +157,26 @@ const ProfileScreen = () => {
     onRefresh,
     onRideStarted: () => {},
   });
+
+  // Simple driver-mode ON/OFF toggle. Optimistic update, then PATCH the user doc.
+  const toggleDriverMode = useCallback(
+    async (next: boolean) => {
+      if (!user || driverToggleSaving) return;
+      setDriverToggleSaving(true);
+      updateUserData({ driverModeEnabled: next });
+      try {
+        const token = await user.getIdToken();
+        await patchUserField(token, user.uid, { driverModeEnabled: { booleanValue: next } });
+      } catch (err) {
+        console.warn("Driver mode toggle failed:", err);
+        updateUserData({ driverModeEnabled: !next });
+        Alert.alert(t("driverMode.saveFailedTitle"), t("driverMode.saveFailedMsg"));
+      } finally {
+        setDriverToggleSaving(false);
+      }
+    },
+    [user, driverToggleSaving, updateUserData, t],
+  );
 
   const manageRide = useCallback(
     (rideId: string, payload: StartRidePayload) => {
@@ -185,8 +224,15 @@ const ProfileScreen = () => {
         </View>
       </Modal>
 
-      {/* ── Floating Settings Button ─────────────────────────────────────────── */}
+      {/* ── Floating Settings + Help Buttons ─────────────────────────────────── */}
       <View style={styles.settingsBtnRow} pointerEvents="box-none">
+        <TouchableOpacity
+          style={styles.settingsBtn}
+          onPress={tour.replay}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="help-circle-outline" size={20} color={C.purpleLight} />
+        </TouchableOpacity>
         <TouchableOpacity
           style={styles.settingsBtn}
           onPress={() => router.push("/settingsScreen")}
@@ -199,6 +245,8 @@ const ProfileScreen = () => {
       <ScrollView
         style={styles.container}
         showsVerticalScrollIndicator={false}
+        contentInsetAdjustmentBehavior="never"
+        automaticallyAdjustContentInsets={false}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.purpleLight} />
         }
@@ -241,6 +289,13 @@ const ProfileScreen = () => {
                     <Ionicons name="flash" size={10} color={C.gold} />
                     <Text style={styles.levelPillText}>{t("profile.level", { level })}</Text>
                   </View>
+                  <Pressable
+                    onPress={() => router.push("/certificationScreen")}
+                    hitSlop={8}
+                    style={{ marginTop: 8, alignSelf: "flex-start" }}
+                  >
+                    <CertBadges certifications={safeUserData.certifications} size="medium" />
+                  </Pressable>
                 </View>
 
                 <Ionicons
@@ -351,9 +406,12 @@ const ProfileScreen = () => {
             </LinearGradient>
           </Pressable>
 
+          {/* ── Complete Your Profile (self-hides once done) ──────────────────── */}
+          <ProfileCompletionCard onPickAvatar={pickImage} />
+
           {/* ── Driver Mode Glass Card ───────────────────────────────────────── */}
           {(() => {
-            const driverOn = !!(safeUserData.driverDays && safeUserData.driverDays.length > 0);
+            const driverOn = safeUserData.driverModeEnabled !== false;
             const accent   = driverOn ? "#4ade80" : "#6b7280";
             const accentFaint = driverOn ? "rgba(74,222,128,0.18)" : "rgba(107,114,128,0.12)";
             const accentBorder = driverOn ? "rgba(74,222,128,0.3)" : "rgba(107,114,128,0.22)";
@@ -364,10 +422,7 @@ const ProfileScreen = () => {
               ? ["#4ade80", "#16a34a"] as const
               : ["#4b5563", "#374151"] as const;
             return (
-              <Pressable
-                onPress={() => router.push("/driverModeScreen")}
-                style={[styles.driverCard, { borderColor: accentBorder, shadowColor: accent }]}
-              >
+              <View style={[styles.driverCard, { borderColor: accentBorder, shadowColor: accent }]}>
                 <LinearGradient colors={bgGrad} style={styles.driverCardInner}>
                   <View style={styles.driverCardRow}>
                     <View style={[styles.driverIconWrap, { backgroundColor: accentFaint, borderColor: driverOn ? "rgba(74,222,128,0.25)" : "rgba(107,114,128,0.2)" }]}>
@@ -376,17 +431,17 @@ const ProfileScreen = () => {
                     <View style={styles.driverInfo}>
                       <Text style={styles.driverTitle}>{t("profile.settings.driverMode")}</Text>
                       <Text style={[styles.driverStatus, { color: driverOn ? "rgba(74,222,128,0.8)" : "#6b7280" }]}>
-                        {driverOn
-                          ? t("driverMode.activeDays", { count: safeUserData.driverDays!.length })
-                          : t("driverMode.off")}
+                        {driverOn ? t("driverMode.onSub") : t("driverMode.off")}
                       </Text>
                     </View>
-                    <View style={[styles.driverBadge, driverOn && styles.driverBadgeActive]}>
-                      <Text style={[styles.driverBadgeText, driverOn && styles.driverBadgeTextActive]}>
-                        {driverOn ? "ON" : "OFF"}
-                      </Text>
-                    </View>
-                    <Ionicons name="chevron-forward" size={16} color={driverOn ? "rgba(74,222,128,0.5)" : "rgba(107,114,128,0.5)"} style={{ marginLeft: 6 }} />
+                    <Switch
+                      value={driverOn}
+                      onValueChange={toggleDriverMode}
+                      disabled={driverToggleSaving}
+                      trackColor={{ false: "#374151", true: "rgba(74,222,128,0.5)" }}
+                      thumbColor={driverOn ? "#4ade80" : "#9ca3af"}
+                      ios_backgroundColor="#374151"
+                    />
                   </View>
                   <LinearGradient
                     colors={accentGrad}
@@ -395,7 +450,7 @@ const ProfileScreen = () => {
                     style={styles.driverAccentLine}
                   />
                 </LinearGradient>
-              </Pressable>
+              </View>
             );
           })()}
 
@@ -468,6 +523,13 @@ const ProfileScreen = () => {
           <View style={{ height: 100 }} />
         </View>
       </ScrollView>
+
+      <WizardModal
+        visible={tour.shouldShow}
+        steps={tourSteps}
+        onDone={tour.markSeen}
+        finalLabel={t("wizard.profile.finalCta")}
+      />
     </View>
   );
 };
@@ -497,6 +559,7 @@ const styles = StyleSheet.create({
     zIndex: 20,
     flexDirection: "row",
     justifyContent: "flex-end",
+    gap: 10,
     paddingRight: 18,
   },
   settingsBtn: {

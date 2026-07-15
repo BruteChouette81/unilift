@@ -1,12 +1,18 @@
 import { acceptRideRequest } from "@/services/driverSessionService";
 import { fetchRideRequestById } from "@/services/rideRequestService";
 import { fetchUserDocument } from "@/services/userService";
+import { getMultiWaypointRoute } from "@/services/routeService";
 import { calculateAgeFromBirthDate } from "@/components/userHelper";
+import CertBadges from "@/components/cert-badges";
+import { DriverRideMapView } from "@/components/mapview";
 import { useLanguage } from "@/context/LanguageContext";
+import { haversineKm } from "@/hooks/use-ride-recommendations";
+import type { LocationPoint } from "@/types/models";
 import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Location from "expo-location";
+import { devAwareCurrentPosition } from "@/utils/dev-location";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { getAuth } from "firebase/auth";
 import React, { useEffect, useState } from "react";
@@ -14,13 +20,13 @@ import {
   ActivityIndicator,
   Alert,
   Dimensions,
-  Image,
   Modal,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { Image as ExpoImage } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 type PassengerProfile = {
@@ -33,6 +39,7 @@ type PassengerProfile = {
   school?: string;
   age?: number;
   instagramHandle?: string;
+  certifications: string[];
 };
 
 function extractPassengerProfile(uid: string, doc: { fields?: Record<string, unknown> }): PassengerProfile {
@@ -44,6 +51,14 @@ function extractPassengerProfile(uid: string, doc: { fields?: Record<string, unk
   const num = (key: string): number => {
     const v = fields[key] as Record<string, unknown> | undefined;
     return Number(v?.integerValue ?? v?.doubleValue ?? 0);
+  };
+  const strArr = (key: string): string[] => {
+    const v = fields[key] as Record<string, unknown> | undefined;
+    const values = (v?.arrayValue as Record<string, unknown> | undefined)?.values;
+    if (!Array.isArray(values)) return [];
+    return values
+      .map((e) => (e as Record<string, unknown>)?.stringValue)
+      .filter((s): s is string => typeof s === "string");
   };
   const email = str("email");
   const name = str("name") || email.split("@")[0] || "Passenger";
@@ -60,6 +75,7 @@ function extractPassengerProfile(uid: string, doc: { fields?: Record<string, unk
     school: str("school") || undefined,
     age: typeof age === "number" && age > 0 ? age : undefined,
     instagramHandle: str("instagramHandle") || undefined,
+    certifications: strArr("certifications"),
   };
 }
 
@@ -111,6 +127,15 @@ export default function AcceptRideScreen() {
   // after the request was already taken/cancelled, incl. cold start).
   const [unavailable, setUnavailable] = useState(false);
 
+  // Map coords: passenger pickup + drop-off (fetched) and the driver's own start
+  // (live GPS). With these three points we can plot the trip on the map and show
+  // the total distance driver → pickup → drop-off.
+  const [pickup, setPickup] = useState<LocationPoint | null>(null);
+  const [dropoff, setDropoff] = useState<LocationPoint | null>(null);
+  const [driverOrigin, setDriverOrigin] = useState<LocationPoint | null>(null);
+  const [totalKm, setTotalKm] = useState<number | null>(null);
+  const [routePolyline, setRoutePolyline] = useState<string | undefined>(undefined);
+
   const fareCents = parseInt(params.fare ?? "0", 10);
   const rawDestination = params.destination ?? "";
   const origin = params.origin ?? "";
@@ -118,7 +143,6 @@ export default function AcceptRideScreen() {
   const isHomeLabel = /^(home|maison)$/i.test(rawDestination.trim());
   const destination = isHomeLabel && riderHomeAddress ? riderHomeAddress : rawDestination;
   const seats = parseInt(params.seats ?? "", 10) || 0;
-  const rideKm = parseFloat(params.rideKm ?? "");
   const driverDest = params.driverDest ?? "";
   const driverDestLat = parseFloat(params.driverDestLat ?? "");
   const driverDestLng = parseFloat(params.driverDestLng ?? "");
@@ -143,17 +167,61 @@ export default function AcceptRideScreen() {
     void load();
   }, [params.riderId]);
 
-  // Re-validate the request when the screen opens (cold start / late tap).
+  // Re-validate the request when the screen opens (cold start / late tap) and
+  // capture the passenger pickup + drop-off coords for the map (the push payload
+  // only carries labels, so these come from the request doc).
   useEffect(() => {
     if (!params.requestId) return;
     let active = true;
     fetchRideRequestById(params.requestId)
       .then((r) => {
-        if (active && (!r || r.status !== "open")) setUnavailable(true);
+        if (!active) return;
+        if (!r || r.status !== "open") setUnavailable(true);
+        if (r?.origin) setPickup(r.origin);
+        if (r?.destinationCoords) setDropoff(r.destinationCoords);
       })
       .catch(() => {});
     return () => { active = false; };
   }, [params.requestId]);
+
+  // Capture the driver's own location on mount so the map + total distance start
+  // from where they actually are. Falls back to the pickup if GPS is denied.
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        let granted = (await Location.getForegroundPermissionsAsync()).status === "granted";
+        if (!granted) {
+          granted = (await Location.requestForegroundPermissionsAsync()).status === "granted";
+        }
+        if (!granted) return;
+        const pos = await devAwareCurrentPosition({ accuracy: Location.Accuracy.Balanced });
+        if (active) setDriverOrigin({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
+      } catch { /* map falls back to pickup-centred */ }
+    })();
+    return () => { active = false; };
+  }, []);
+
+  // Total trip distance (driver start → pickup → drop-off): instant haversine
+  // estimate first, then refined with the road distance + polyline for the map.
+  useEffect(() => {
+    if (!pickup || !dropoff) return;
+    const start = driverOrigin ?? pickup;
+    const estimate =
+      haversineKm(start.latitude, start.longitude, pickup.latitude, pickup.longitude) +
+      haversineKm(pickup.latitude, pickup.longitude, dropoff.latitude, dropoff.longitude);
+    if (Number.isFinite(estimate)) setTotalKm(estimate);
+
+    let active = true;
+    getMultiWaypointRoute([start, pickup, dropoff])
+      .then((route) => {
+        if (!active || !route) return;
+        if (Number.isFinite(route.total.distanceKm)) setTotalKm(route.total.distanceKm);
+        if (route.overviewPolyline) setRoutePolyline(route.overviewPolyline);
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [pickup, dropoff, driverOrigin]);
 
   const handleAccept = async () => {
     if (accepting || !params.requestId) return;
@@ -164,7 +232,7 @@ export default function AcceptRideScreen() {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status === "granted") {
-          const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          const pos = await devAwareCurrentPosition({ accuracy: Location.Accuracy.Balanced });
           gps = { lat: pos.coords.latitude, lng: pos.coords.longitude };
         }
       } catch { /* may rely on an online session instead */ }
@@ -182,9 +250,12 @@ export default function AcceptRideScreen() {
           : undefined;
 
       const ride = await acceptRideRequest(params.requestId, fallback);
-      // Go to the waiting zone so the driver can accept more passengers before starting.
+      // Do NOT auto-start: the passenger must first swipe to confirm this driver
+      // (mutual match). Land in driver mode "planned/waiting" — the Start button
+      // on riderScreen is gated on pendingConfirmation and unlocks once the
+      // passenger confirms. Auto-starting here would hit the server's 428 gate.
       router.replace(
-        `/driverRequestsScreen?readyRideId=${ride.rideId}&readyMaxSeat=${ride.maxSeat}&readyOriginLat=${ride.originLat}&readyOriginLng=${ride.originLng}&readyDest=${encodeURIComponent(ride.destination)}&readyDestLat=${ride.destinationLat}&readyDestLng=${ride.destinationLng}&readyPassengerName=${encodeURIComponent(riderName ?? "")}&readyPassengerAvatar=${encodeURIComponent(riderAvatar ?? "")}&readyPassengerId=${encodeURIComponent(params.riderId ?? "")}` as never,
+        `/riderScreen?rideId=${ride.rideId}&maxSeat=${ride.maxSeat}&Originlat=${ride.originLat}&OriginLng=${ride.originLng}&Destination=${encodeURIComponent(ride.destination ?? "")}&DestinationLat=${ride.destinationLat}&DestinationLng=${ride.destinationLng}&started=false&autostart=false` as never,
       );
     } catch (err: any) {
       if (err?.code === "ALREADY_TAKEN") {
@@ -198,12 +269,41 @@ export default function AcceptRideScreen() {
     }
   };
 
+  const mapOrigin = driverOrigin ?? pickup;
   return (
-    <View style={styles.overlay}>
-      <TouchableOpacity style={StyleSheet.absoluteFill} onPress={() => router.back()} activeOpacity={1} />
+    <View style={styles.root}>
+      {/* Map background: driver start → passenger pickup → passenger drop-off */}
+      {pickup && dropoff ? (
+        <View style={StyleSheet.absoluteFill}>
+          <DriverRideMapView
+            origin={mapOrigin ?? pickup}
+            destination={dropoff}
+            passengers={undefined}
+            passengerPickups={params.riderId ? { [params.riderId]: pickup } : undefined}
+            frozenPolyline={routePolyline}
+          />
+        </View>
+      ) : null}
 
-      <View style={[styles.sheet, { maxHeight: SHEET_MAX_HEIGHT, paddingBottom: Math.max(insets.bottom, 16) + 16 }]}>
-        <BlurView intensity={80} tint="dark" experimentalBlurMethod="dimezisBlurView" style={styles.blur}>
+      {/* Back — the map is now interactive, so tap-to-dismiss is replaced by this. */}
+      <TouchableOpacity
+        style={[styles.backBtn, { top: insets.top + 8 }]}
+        onPress={() => router.back()}
+        activeOpacity={0.8}
+        hitSlop={10}
+      >
+        <Ionicons name="chevron-back" size={22} color={C.text} />
+      </TouchableOpacity>
+
+      {/* Bottom sheet — box-none lets touches fall through to the map above it. */}
+      <View style={styles.sheetWrap} pointerEvents="box-none">
+      <View style={[styles.sheet, { maxHeight: SHEET_MAX_HEIGHT }]}>
+        <BlurView
+          intensity={80}
+          tint="dark"
+          experimentalBlurMethod="dimezisBlurView"
+          style={[styles.blur, { paddingBottom: Math.max(insets.bottom, 16) + 16 }]}
+        >
 
           {/* Drag handle */}
           <View style={styles.dragZone}>
@@ -221,16 +321,25 @@ export default function AcceptRideScreen() {
             disabled={!profile}
           >
             {riderAvatar ? (
-              <Image source={{ uri: riderAvatar }} style={styles.avatar} />
+              <ExpoImage
+                source={{ uri: riderAvatar }}
+                style={styles.avatar}
+                contentFit="cover"
+                cachePolicy="memory-disk"
+                recyclingKey={riderAvatar}
+              />
             ) : (
               <View style={styles.avatarFallback}>
                 <Ionicons name="person" size={22} color={C.purpleLight} />
               </View>
             )}
             <View style={styles.riderTextGroup}>
-              <Text style={styles.riderName} numberOfLines={1}>
-                {riderName ?? t("acceptRide.passenger")}
-              </Text>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                <Text style={styles.riderName} numberOfLines={1}>
+                  {riderName ?? t("acceptRide.passenger")}
+                </Text>
+                <CertBadges certifications={profile?.certifications} size="compact" hideWhenEmpty />
+              </View>
               <Text style={styles.riderSub}>
                 {profile ? t("driverInbox.viewProfile") : t("acceptRide.seeking")}
               </Text>
@@ -270,8 +379,8 @@ export default function AcceptRideScreen() {
               </View>
               <View style={styles.statDivider} />
               <View style={styles.statCol}>
-                <Text style={styles.statValue}>{Number.isFinite(rideKm) ? `${rideKm.toFixed(1)} km` : "—"}</Text>
-                <Text style={styles.statLabel}>{t("acceptRide.rideDistance")}</Text>
+                <Text style={styles.statValue}>{totalKm != null ? `${totalKm.toFixed(1)} km` : "—"}</Text>
+                <Text style={styles.statLabel}>{t("acceptRide.totalTrip")}</Text>
               </View>
             </LinearGradient>
           </View>
@@ -309,6 +418,7 @@ export default function AcceptRideScreen() {
 
         </BlurView>
       </View>
+      </View>
 
       {/* Extended passenger profile */}
       <Modal
@@ -327,7 +437,13 @@ export default function AcceptRideScreen() {
               <>
                 <View style={styles.profileAvatarWrap}>
                   {profile.avatar ? (
-                    <Image source={{ uri: profile.avatar }} style={styles.profileAvatar} />
+                    <ExpoImage
+                      source={{ uri: profile.avatar }}
+                      style={styles.profileAvatar}
+                      contentFit="cover"
+                      cachePolicy="memory-disk"
+                      recyclingKey={profile.avatar}
+                    />
                   ) : (
                     <View style={[styles.profileAvatar, styles.profileAvatarFallback]}>
                       <Ionicons name="person" size={32} color={C.purpleLight} />
@@ -335,6 +451,9 @@ export default function AcceptRideScreen() {
                   )}
                 </View>
                 <Text style={styles.profileName}>{profile.name}</Text>
+                <View style={{ alignItems: "center", marginTop: 8 }}>
+                  <CertBadges certifications={profile.certifications} size="full" />
+                </View>
                 <View style={styles.profileXpRow}>
                   <Text style={styles.profileXpText}>⚡ {profile.xp} XP</Text>
                   {profile.rating > 0 && (
@@ -380,10 +499,26 @@ export default function AcceptRideScreen() {
 }
 
 const styles = StyleSheet.create({
-  overlay: {
+  root: {
     flex: 1,
+    backgroundColor: C.bg,
+  },
+  sheetWrap: {
+    ...StyleSheet.absoluteFillObject,
     justifyContent: "flex-end",
-    backgroundColor: "rgba(0,0,0,0.55)",
+  },
+  backBtn: {
+    position: "absolute",
+    left: 14,
+    zIndex: 10,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(8,8,16,0.72)",
+    borderWidth: 1,
+    borderColor: C.border,
   },
   sheet: {
     borderTopLeftRadius: 28,

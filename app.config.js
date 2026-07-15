@@ -2,7 +2,7 @@ module.exports = ({ config }) => ({
   ...config,
   name: "UniLift",
   slug: "unilift",
-  version: "1.2.3",
+  version: "1.3.1",
   orientation: "portrait",
   icon: "./assets/images/icon.png",
   scheme: "unilift",
@@ -67,6 +67,13 @@ module.exports = ({ config }) => ({
     "expo-apple-authentication",
     "expo-notifications",
     [
+      "@stripe/stripe-react-native",
+      {
+        merchantIdentifier: "merchant.com.unilift.unilift",
+        enableGooglePay: false,
+      },
+    ],
+    [
       "expo-splash-screen",
       {
         image: "./assets/images/splash-icon.png",
@@ -107,6 +114,7 @@ module.exports = ({ config }) => ({
     EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID:      process.env.EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID,
     EXPO_PUBLIC_FIRESTORE_DATABASE_ID:        process.env.EXPO_PUBLIC_FIRESTORE_DATABASE_ID,
     EXPO_PUBLIC_APP_ENV:                      process.env.EXPO_PUBLIC_APP_ENV,
+    EXPO_PUBLIC_API_BASE_URL:                 process.env.EXPO_PUBLIC_API_BASE_URL,
     EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY:       process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY,
     EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY_TEST:  process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY_TEST,
     GOOGLE_MAPS_API_KEY:                      process.env.GOOGLE_MAPS_API_KEY,

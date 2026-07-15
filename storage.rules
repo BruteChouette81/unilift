@@ -1,0 +1,27 @@
+rules_version = '2';
+
+// Firebase Storage rules. Governs both the dev and prod buckets (a single default
+// bucket is shared).
+//   • profiles/*   — avatars. Any signed-in user may read (ride cards show
+//                    avatars); signed-in users may write their own file.
+// Identity documents are NOT stored here — adult verification runs through Stripe
+// Identity, which holds the images. Nothing else is writable.
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Avatars — readable by any signed-in user, writable only by their owner.
+    match /profiles/{fileName} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // Everything else — deny by default.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

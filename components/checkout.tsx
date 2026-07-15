@@ -3,14 +3,15 @@ import { useEffect, useState } from "react";
 
 import { Text, TouchableOpacity, View } from "react-native";
 
-const API_URL = "https://api-qsxtpust2a-uc.a.run.app"
+import { apiBaseUrl, apiFetch } from "@/constants/runtime-config";
+
 //https://docs.stripe.com/payments/accept-a-payment?platform=react-native&ui=payment-sheet&lang=node
 export default function CheckoutScreen() {
   const { initPaymentSheet, presentPaymentSheet } = useStripe();
   const [loading, setLoading] = useState(false);
 
   const fetchPaymentSheetParams = async () => {
-    const response = await fetch(`${API_URL}/payment-sheet`, {
+    const response = await apiFetch(`${apiBaseUrl}/payment-sheet`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

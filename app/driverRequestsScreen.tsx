@@ -7,8 +7,8 @@ import { acceptRideRequest, updateDriverSessionLocation } from "@/services/drive
 import { collection, doc, onSnapshot, query, where } from "firebase/firestore";
 import { db } from "@/firebaseConfig";
 import { devLog, devWarn } from "@/constants/runtime-config";
+import CertBadges from "@/components/cert-badges";
 import { DriverRideMapView } from "@/components/mapview";
-import { startRideService } from "@/services/rideServices";
 import { fetchUserDocument } from "@/services/userService";
 import { calculateAgeFromBirthDate } from "@/components/userHelper";
 import type { DriverSession, LocationPoint, RideRequest } from "@/types/models";
@@ -16,6 +16,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Location from "expo-location";
+import { devAwareCurrentPosition } from "@/utils/dev-location";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { getAuth } from "firebase/auth";
 import React, { useEffect, useRef, useState } from "react";
@@ -50,6 +51,7 @@ type PassengerProfile = {
   school?: string;
   age?: number;
   instagramHandle?: string;
+  certifications: string[];
 };
 
 function extractPassengerProfile(uid: string, doc: { fields?: Record<string, unknown> }): PassengerProfile {
@@ -61,6 +63,14 @@ function extractPassengerProfile(uid: string, doc: { fields?: Record<string, unk
   const num = (key: string): number => {
     const v = fields[key] as Record<string, unknown> | undefined;
     return Number(v?.integerValue ?? v?.doubleValue ?? 0);
+  };
+  const strArr = (key: string): string[] => {
+    const v = fields[key] as Record<string, unknown> | undefined;
+    const values = (v?.arrayValue as Record<string, unknown> | undefined)?.values;
+    if (!Array.isArray(values)) return [];
+    return values
+      .map((e) => (e as Record<string, unknown>)?.stringValue)
+      .filter((s): s is string => typeof s === "string");
   };
   const email = str("email");
   const name = str("name") || email.split("@")[0] || "Unknown";
@@ -77,6 +87,7 @@ function extractPassengerProfile(uid: string, doc: { fields?: Record<string, unk
     school: str("school") || undefined,
     age: typeof age === "number" && age > 0 ? age : undefined,
     instagramHandle: str("instagramHandle") || undefined,
+    certifications: strArr("certifications"),
   };
 }
 
@@ -169,6 +180,7 @@ export default function DriverRequestsScreen() {
           uid: passengerId,
           name: fallbackName ?? "Passenger",
           xp: 0, rating: 0, avatar: fallbackAvatar ?? null, ridesCompleted: 0,
+          certifications: [],
         });
       }
     } catch {
@@ -176,6 +188,7 @@ export default function DriverRequestsScreen() {
         uid: passengerId,
         name: fallbackName ?? "Passenger",
         xp: 0, rating: 0, avatar: fallbackAvatar ?? null, ridesCompleted: 0,
+        certifications: [],
       });
     } finally {
       setProfileLoading(false);
@@ -229,7 +242,7 @@ export default function DriverRequestsScreen() {
       try {
         const { status } = await Location.getForegroundPermissionsAsync();
         if (status !== "granted") return;
-        const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        const pos = await devAwareCurrentPosition({ accuracy: Location.Accuracy.Balanced });
         await updateDriverSessionLocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
       } catch { /* non-fatal */ }
     };
@@ -294,20 +307,16 @@ export default function DriverRequestsScreen() {
     }
   };
 
-  // Start the accepted drive from this waiting screen. Marks the ride started
-  // server-side, then opens the live ride screen already in-progress.
+  // Open the accepted drive from this waiting screen. Does NOT start the ride:
+  // the passenger must first swipe to confirm this driver (mutual match), so we
+  // drop the driver into riderScreen "planned/waiting" where the Start button is
+  // gated on pendingConfirmation and unlocks once the passenger confirms.
   const handleStartDrive = async () => {
     if (!readyRide || starting) return;
     setStarting(true);
-    try {
-      await startRideService(readyRide.rideId);
-      router.replace(
-        `/riderScreen?rideId=${readyRide.rideId}&maxSeat=${readyRide.maxSeat}&Originlat=${readyRide.originLat}&OriginLng=${readyRide.originLng}&Destination=${encodeURIComponent(readyRide.destination)}&DestinationLat=${readyRide.destinationLat}&DestinationLng=${readyRide.destinationLng}&started=true&autostart=true`,
-      );
-    } catch {
-      Alert.alert(t("common.error"), t("driverInbox.startFailed"));
-      setStarting(false);
-    }
+    router.replace(
+      `/riderScreen?rideId=${readyRide.rideId}&maxSeat=${readyRide.maxSeat}&Originlat=${readyRide.originLat}&OriginLng=${readyRide.originLng}&Destination=${encodeURIComponent(readyRide.destination)}&DestinationLat=${readyRide.destinationLat}&DestinationLng=${readyRide.destinationLng}&started=false&autostart=false`,
+    );
   };
 
   const handleGoOffline = async () => {
@@ -346,6 +355,9 @@ export default function DriverRequestsScreen() {
                 )}
               </View>
               <Text style={styles.profileName}>{profileModal.name}</Text>
+              <View style={{ alignItems: "center", marginTop: 8 }}>
+                <CertBadges certifications={profileModal.certifications} size="full" />
+              </View>
               <View style={styles.profileXpRow}>
                 <Text style={styles.profileXpText}>⚡ {profileModal.xp} XP</Text>
                 {profileModal.rating > 0 && (
@@ -522,7 +534,10 @@ export default function DriverRequestsScreen() {
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <TouchableOpacity onPress={() => openPassengerProfile(item.passengerId, item.passengerName, item.passengerAvatar)} activeOpacity={0.75}>
-            <Text style={styles.passengerName} numberOfLines={1}>{item.passengerName ?? t("rides.unknownDriver")}</Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <Text style={styles.passengerName} numberOfLines={1}>{item.passengerName ?? t("rides.unknownDriver")}</Text>
+              <CertBadges certifications={passengerProfiles[item.passengerId]?.certifications} size="compact" hideWhenEmpty />
+            </View>
             <Text style={styles.viewProfileHint}>{t("driverInbox.viewProfile")}</Text>
           </TouchableOpacity>
           <View style={styles.metaRow}>
