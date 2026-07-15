@@ -2,7 +2,7 @@ module.exports = ({ config }) => ({
   ...config,
   name: "UniLift",
   slug: "unilift",
-  version: "1.3.1",
+  version: "1.3.2",
   orientation: "portrait",
   icon: "./assets/images/icon.png",
   scheme: "unilift",
