@@ -14,6 +14,7 @@ import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Location from "expo-location";
 import { devAwareCurrentPosition } from "@/utils/dev-location";
+import { devLog } from "@/constants/runtime-config";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -46,7 +47,7 @@ import { useSearchHistory } from "@/hooks/use-search-history";
 import { useWallet } from "@/context/WalletContext";
 import { createRideRequest } from "@/services/rideRequestService";
 import { dispatchRideRequest, fetchAvailableDriverCount } from "@/services/driverSessionService";
-import { fetchHypeEvents } from "@/services/eventService";
+import { useHypeEvents } from "@/hooks/use-hype-events";
 import { fetchSponsors } from "@/services/sponsorService";
 import type { FavoriteRoute, LocationPoint, Ride } from "@/types/models";
 import { ensurePaymentMethodOrAlert } from "@/utils/ensurePaymentMethod";
@@ -118,8 +119,9 @@ export default function HomeScreen() {
     { icon: "map-outline",      title: t("wizard.home.step4Title"), body: t("wizard.home.step4Body") },
   ], [t]);
 
-  // Hype-map events (Firestore-backed) + the tapped event's floating card.
-  const [hypeEvents, setHypeEvents] = useState<HypeEvent[]>([]);
+  // Hype-map events (cache-first: cached flames paint instantly, then a
+  // background fetch revalidates) + the tapped event's floating card.
+  const hypeEvents = useHypeEvents();
   const [selectedEvent, setSelectedEvent] = useState<HypeEvent | null>(null);
 
   // Sponsors (Firestore-backed) + the tapped sponsor's card. Always shown on the map.
@@ -178,11 +180,6 @@ export default function HomeScreen() {
     void getLoc();
   }, []);
 
-  // Load Hype-map events once on mount.
-  useEffect(() => {
-    void fetchHypeEvents().then(setHypeEvents).catch(() => {});
-  }, []);
-
   // Load sponsors once on mount.
   useEffect(() => {
     void fetchSponsors().then(setSponsors).catch(() => {});
@@ -196,11 +193,16 @@ export default function HomeScreen() {
   }, []);
 
   const toggleHypeMode = () => {
+    devLog(
+      `[HYPE-DEBUG] flame tapped — hypeMode ${hypeMode} -> ${!hypeMode}; ` +
+      `${hypeEvents.length} event(s) will be passed to the map`,
+    );
     setHypeMode((prev) => {
       const next = !prev;
       void AsyncStorage.setItem(HYPE_MODE_STORAGE_KEY, next ? "1" : "0").catch(() => {});
       return next;
     });
+    devLog("[HYPE-DEBUG] setHypeMode dispatched (crash after this = render/native layer)");
   };
 
   const openLiftSheet = () => {

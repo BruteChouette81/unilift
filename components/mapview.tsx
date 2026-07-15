@@ -556,6 +556,12 @@ export default function RideMapView(props: RideMapViewProps) {
   const hasHome = props.homeLocalisation.lat !== 0 || props.homeLocalisation.lng !== 0;
   const mapStyle = props.hypeMode ? NIGHT_HYPE_MAP_STYLE : DARK_MAP_STYLE;
 
+  devLog(
+    `[HYPE-DEBUG] RideMapView render — hypeMode=${props.hypeMode} ` +
+    `mapStyle=${props.hypeMode ? "NIGHT_HYPE" : "DARK"} ` +
+    `events=${props.events?.length ?? 0} sponsors=${props.sponsors?.length ?? 0} mapReady=${mapReady}`,
+  );
+
   useEffect(() => {
     (async () => {
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -672,17 +678,28 @@ export default function RideMapView(props: RideMapViewProps) {
         ))}
 
         {/* 4 ── Hype Events (flame size scales with score 1–10, renders last = on top) ─ */}
-        {props.events?.map((ev) => (
-          <SnapshottingMarker
-            key={ev.id}
-            coordinate={{ latitude: ev.lat, longitude: ev.lng }}
-            title={ev.name}
-            description={ev.venue}
-            onPress={() => props.onEventSelect?.(ev)}
-          >
-            <PinMarker icon="flame" color={C.fire} size={hypeScoreToIconSize(ev.score)} />
-          </SnapshottingMarker>
-        ))}
+        {props.events?.map((ev) => {
+          const badCoord = !Number.isFinite(ev.lat) || !Number.isFinite(ev.lng);
+          const size = hypeScoreToIconSize(ev.score);
+          devLog(
+            `[HYPE-DEBUG] rendering event marker id=${ev.id} lat=${ev.lat} lng=${ev.lng} ` +
+            `size=${size}${badCoord ? "  <<< INVALID COORD — native map will crash on this" : ""}`,
+          );
+          return (
+            <SnapshottingMarker
+              key={ev.id}
+              coordinate={{ latitude: ev.lat, longitude: ev.lng }}
+              title={ev.name}
+              description={ev.venue}
+              onPress={() => {
+                devLog(`[HYPE-DEBUG] event marker pressed id=${ev.id} — opening card`);
+                props.onEventSelect?.(ev);
+              }}
+            >
+              <PinMarker icon="flame" color={C.fire} size={size} />
+            </SnapshottingMarker>
+          );
+        })}
 
         {/* 5 ── Sponsors (tier-sized brand pins, gold mapped last = topmost) ─── */}
         {[...(props.sponsors ?? [])]

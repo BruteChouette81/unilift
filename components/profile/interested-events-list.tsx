@@ -1,7 +1,7 @@
 import { clampHypeScore, type HypeEvent } from "@/constants/events";
 import { useLanguage } from "@/context/LanguageContext";
 import { useUserProfile } from "@/context/UserProfileContext";
-import { fetchHypeEvents, toggleEventInterest } from "@/services/eventService";
+import { fetchHypeEvents, loadCachedHypeEvents, toggleEventInterest } from "@/services/eventService";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import React, { useCallback, useEffect, useState } from "react";
@@ -34,7 +34,9 @@ export function InterestedEventsList() {
     if (ids.length === 0) { setEvents([]); return; }
     setLoading(true);
     try {
-      const all = await fetchHypeEvents();
+      // null = fetch failed; fall back to the cached set rather than showing
+      // an empty saved-events list.
+      const all = (await fetchHypeEvents()) ?? (await loadCachedHypeEvents());
       const set = new Set(ids);
       setEvents(all.filter((e) => set.has(e.id)));
     } catch {

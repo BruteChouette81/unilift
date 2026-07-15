@@ -1,4 +1,5 @@
 import { clampHypeScore, type HypeEvent } from "@/constants/events";
+import { devLog } from "@/constants/runtime-config";
 import { useLanguage } from "@/context/LanguageContext";
 import { useUserProfile } from "@/context/UserProfileContext";
 import { fetchEventById, toggleEventInterest } from "@/services/eventService";
@@ -78,9 +79,15 @@ export default function HypeEventCard({
   // can tell whether a change came from another device.
   const serverCountRef = useRef<number | null>(null);
 
+  devLog(
+    `[HYPE-DEBUG] HypeEventCard render — event=${event ? event.id : "null"} ` +
+    `score=${score} count=${count} interested=${interested}`,
+  );
+
   // On new event: show cached count immediately, then let the server confirm.
   useEffect(() => {
     if (!event) return;
+    devLog(`[HYPE-DEBUG] HypeEventCard opened for id=${event.id}, loading cached count`);
     const propCount = event.attendeeCount ?? 0;
     serverCountRef.current = null;
     loadCachedCount(event.id).then((cached) => {

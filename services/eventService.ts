@@ -1,5 +1,6 @@
 import { apiFetch, apiBaseUrl, firestoreBaseUrl, firestoreCollectionUrl, withFirebaseApiKey } from "@/constants/runtime-config";
 import { clampHypeScore, type HypeEvent } from "@/constants/events";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getAuth } from "firebase/auth";
 
 const BASE_URL = firestoreCollectionUrl("events");
@@ -14,6 +15,58 @@ const readNumber = (v: unknown, fallback = 0): number => {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
 };
+
+// ─── Hype-event cache ────────────────────────────────────────────────────────
+// The Hype map used to render nothing until the network round-trip finished, so
+// flames appeared seconds after the toggle. Events change rarely, so the last
+// known set is persisted and painted immediately while a fresh fetch revalidates
+// in the background. Two layers:
+//   • memory — survives tab switches, readable synchronously (zero-frame paint)
+//   • disk   — survives app restarts, one async hop on cold start
+// Bump the key's version suffix if the HypeEvent shape ever changes.
+const EVENTS_CACHE_KEY = "unilift:hypeEvents:v1";
+
+let memoryCache: HypeEvent[] | null = null;
+
+/** Last known events, readable synchronously. `null` = nothing cached yet this
+ *  process. Use as a `useState` initializer so cached flames paint on frame 1. */
+export function getCachedHypeEventsSync(): HypeEvent[] | null {
+  return memoryCache;
+}
+
+/** Last known events — memory first, then disk. `[]` when nothing is cached. */
+export async function loadCachedHypeEvents(): Promise<HypeEvent[]> {
+  if (memoryCache !== null) return memoryCache;
+  try {
+    const raw = await AsyncStorage.getItem(EVENTS_CACHE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    // Re-validate coordinates on read: a corrupt entry reaching a native Marker
+    // is a hard crash, not a caught exception.
+    const events = parsed.filter(
+      (e): e is HypeEvent =>
+        isRecord(e) &&
+        typeof e.id === "string" &&
+        typeof e.name === "string" &&
+        Number.isFinite(e.lat) &&
+        Number.isFinite(e.lng),
+    );
+    memoryCache = events;
+    return events;
+  } catch {
+    return [];
+  }
+}
+
+async function saveCachedHypeEvents(events: HypeEvent[]): Promise<void> {
+  memoryCache = events;
+  try {
+    await AsyncStorage.setItem(EVENTS_CACHE_KEY, JSON.stringify(events));
+  } catch {
+    // cache write failing is non-fatal — the in-memory layer still serves this session
+  }
+}
 
 async function authHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = {};
@@ -95,9 +148,13 @@ export async function fetchEventById(eventId: string): Promise<HypeEvent | null>
   }
 }
 
-/** Fetch the top 50 Hype-map events from Firestore, ordered by score.
- *  Returns [] on any failure so the map still renders. */
-export async function fetchHypeEvents(): Promise<HypeEvent[]> {
+/** Fetch the top 50 Hype-map events from Firestore, ordered by score, and
+ *  refresh the cache on success.
+ *
+ *  Returns `null` on failure — distinct from `[]`, which means the collection
+ *  really is empty. Callers must not overwrite cached events with a `null`, or
+ *  an offline refresh would wipe the flames off the map. */
+export async function fetchHypeEvents(): Promise<HypeEvent[] | null> {
   try {
     const res = await fetch(withFirebaseApiKey(`${firestoreBaseUrl}:runQuery`), {
       method: "POST",
@@ -110,13 +167,15 @@ export async function fetchHypeEvents(): Promise<HypeEvent[]> {
         },
       }),
     });
-    if (!res.ok) return [];
+    if (!res.ok) return null;
     const data = (await res.json()) as Array<{ document?: unknown }>;
-    return data
+    const events = data
       .filter((entry) => entry.document != null)
       .map((entry) => parseEvent(entry.document))
       .filter((e): e is HypeEvent => e !== null);
+    await saveCachedHypeEvents(events);
+    return events;
   } catch {
-    return [];
+    return null;
   }
 }
