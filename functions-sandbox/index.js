@@ -299,22 +299,14 @@ app.get("/wallet/transactions", authenticate, async (req, res) => {
   }
 });
 
-// ── Rides: Complete (server-side payment processing) ─────────────────────────
+// ── Rides: Can Join ─────────────────────────────────────────────────────────
 //
-// Called by the driver when all passengers have been dropped off.
-// Verifies the caller is the ride's driver, then in a single Firestore batch:
-//   - increments pendingChargeCents on each confirmed passenger's user doc
-//   - writes a ride_charge transaction record for each passenger
-//   - increments pendingEarningsCents on the driver's user doc
-//   - writes a ride_earning transaction record for the driver
-//   - marks paymentStatus = "completed" on the ride doc
-//
-// The accumulated pendingChargeCents values are collected at month-end via
-// /billing/charge-monthly (off-session Stripe PaymentIntent, real card charge).
-//
-
-// ── Can Join ────────────────────────────────────────────────────────────────
-// Verifies the requesting user has a payment method attached before joining.
+// NOTE: the legacy POST /rides/complete lived here. It was removed because it
+// charged whatever passenger ids the *client* put in `confirmedPassengerIds` —
+// no boarded check, no dropped check, no dropoff-radius check — so a driver
+// could be paid for a passenger dropped nowhere near their destination. All
+// ride payment now goes through POST /rides/finish, which derives the charge set
+// server-side via chargeablePassengers().
 app.post("/rides/can-join", authenticate, async (req, res) => {
   const db = getDb(req);
   try {
@@ -326,108 +318,6 @@ app.post("/rides/can-join", authenticate, async (req, res) => {
   } catch (err) {
     console.error("can-join error", err);
     return res.status(500).json({ error: "internal" });
-  }
-});
-
-app.post("/rides/complete", authenticate, async (req, res) => {
-  const db = getDb(req);
-  const { rideId, confirmedPassengerIds } = req.body;
-  if (!rideId) {
-    return res.status(400).json({ error: "rideId is required" });
-  }
-
-  const rideRef = db.collection("rides").doc(rideId);
-  const rideSnap = await rideRef.get();
-  if (!rideSnap.exists) {
-    return res.status(404).json({ error: "Ride not found" });
-  }
-
-  const ride = rideSnap.data();
-
-  // Only the driver can complete the ride's payment
-  if (ride.driverId !== req.uid) {
-    return res.status(403).json({ error: "Only the driver can complete this ride" });
-  }
-
-  // Idempotency: skip if already processed
-  if (ride.paymentStatus === "completed" || ride.paymentStatus === "processing") {
-    return res.json({ success: true, skipped: true });
-  }
-
-  // Lock the ride to prevent concurrent completion
-  await rideRef.update({ paymentStatus: "processing" });
-
-  try {
-    const origin = ride.localisation;       // { latitude, longitude }
-    const dest = ride.destinationCoords;    // { latitude, longitude }
-    const passengers = Array.isArray(confirmedPassengerIds) ? confirmedPassengerIds : [];
-
-    const pricing = await getPricing(db);
-    const batch = db.batch();
-    let totalEarningsCents = 0;
-    const now = new Date().toISOString();
-
-    for (const passengerId of passengers) {
-      const pickup = ride.passengerPickups?.[passengerId];
-      const distKm = pickup
-        ? haversineKm(pickup.latitude, pickup.longitude, dest.latitude, dest.longitude)
-        : haversineKm(origin.latitude, origin.longitude, dest.latitude, dest.longitude);
-
-      const chargeCents = calculatePassengerChargeCents(distKm, pricing);
-      totalEarningsCents += chargeCents;
-
-      const userRef = db.collection("users").doc(passengerId);
-      // Accumulate charge — collected at month end via /billing/charge-monthly
-      batch.update(userRef, {
-        pendingChargeCents: FieldValue.increment(chargeCents),
-      });
-      batch.set(userRef.collection("transactions").doc(), {
-        type: "ride_charge",
-        amount: chargeCents,
-        status: "completed",
-        description: `Ride to ${ride.destination ?? "destination"}`,
-        createdAt: now,
-        rideId,
-        distanceKm: Math.round(distKm * 10) / 10,
-      });
-    }
-
-    // Driver earnings (matched to platform fee split)
-    const driverEarningsCents = Math.round(
-      totalEarningsCents * (pricing.driverRateCentsPerKm / pricing.passengerRateCentsPerKm),
-    );
-
-    if (driverEarningsCents > 0) {
-      const driverRef = db.collection("users").doc(ride.driverId);
-      batch.update(driverRef, {
-        pendingEarningsCents: FieldValue.increment(driverEarningsCents),
-      });
-      batch.set(driverRef.collection("transactions").doc(), {
-        type: "ride_earning",
-        amount: driverEarningsCents,
-        status: "completed",
-        description: `Earnings — ${passengers.length} passenger(s) — ${ride.destination ?? ""}`,
-        createdAt: now,
-        rideId,
-      });
-    }
-
-    // Mark payment done
-    batch.update(rideRef, { paymentStatus: "completed" });
-
-    await batch.commit();
-
-    res.json({
-      success: true,
-      chargedPassengers: passengers.length,
-      totalPassengerChargesCents: totalEarningsCents,
-      driverEarningsCents,
-    });
-  } catch (err) {
-    // Release lock so the client can retry
-    await rideRef.update({ paymentStatus: "pending" }).catch(() => {});
-    console.error("/rides/complete error:", err);
-    res.status(500).json({ error: err.message });
   }
 });
 
@@ -475,19 +365,45 @@ function driverMotivationalBody(earningsCents, requestId = "", lang = "en") {
   return messages[seed % messages.length];
 }
 
+/** Send one Expo push. Returns true only when Expo accepted the ticket.
+ *
+ *  Expo answers 200 even when it rejects the message (bad/stale token →
+ *  `{ data: { status: "error", details: { error: "DeviceNotRegistered" } } }`),
+ *  so the body must be inspected — otherwise a device that silently stopped
+ *  receiving pushes is indistinguishable from a healthy one. Never throws:
+ *  callers treat a failed send as "this driver wasn't reached". */
 async function sendPushNotification(expoPushToken, title, body, data = {}, subtitle = undefined) {
   const payload = { to: expoPushToken, sound: "default", title, body, data };
   if (subtitle) payload.subtitle = subtitle;
-  const response = await fetch("https://exp.host/--/api/v2/push/send", {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Accept-Encoding": "gzip, deflate",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-  return response.json();
+  try {
+    const response = await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Accept-Encoding": "gzip, deflate",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      console.warn("push send HTTP error", response.status, await response.text().catch(() => ""));
+      return false;
+    }
+    const json = await response.json();
+    const ticket = json && json.data;
+    if (ticket && ticket.status === "error") {
+      console.warn("push ticket error", {
+        token: expoPushToken,
+        message: ticket.message,
+        details: ticket.details,
+      });
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.warn("push send failed", expoPushToken, e && e.message);
+    return false;
+  }
 }
 
 async function getUserPushToken(uid, db) {
@@ -516,8 +432,8 @@ app.post("/notifications/send", authenticate, async (req, res) => {
     if (!token) {
       return res.status(404).json({ error: "User has no push token" });
     }
-    const result = await sendPushNotification(token, title, body, data ?? {});
-    res.json({ success: true, result });
+    const delivered = await sendPushNotification(token, title, body, data ?? {});
+    res.json({ success: delivered });
   } catch (err) {
     console.error("/notifications/send:", err);
     res.status(500).json({ error: err.message });
@@ -1001,6 +917,12 @@ const DEFAULT_DEST_RADIUS_KM = 10;
 // the dispatch to every driver within DRIVER_PROXIMITY_KM regardless of where
 // they're going.
 const MIN_DIRECTION_MATCHES = 3;
+// TEMPORARY accessibility flag. While false, dispatch ignores all proximity /
+// window / destination matching and simply notifies every user with driver mode
+// ON (users.driverModeEnabled !== false). Flip back to true to restore the
+// proximity + availability-window matching algo below once the user base grows.
+// Mirrors functions/index.js — keep the two in sync.
+const USE_LEGACY_MATCHING = false;
 
 /** Does `now` (minutes from midnight) fall inside any of the driver's
  *  availability windows that are active today? Returns the matching window or
@@ -1068,9 +990,12 @@ app.post("/requests/dispatch", authenticate, async (req, res) => {
       if (driverId === req.uid || notifiedDriverIds.has(driverId) || rejectedDrivers.has(driverId)) return false;
       const { token, lang } = await getUserPushInfo(driverId, db);
       if (!token) return false;
+      // Claim the driver before awaiting so concurrent passes can't double-send.
+      // A failed send still counts as claimed — retrying the same dead token
+      // inside one dispatch would just fail again.
       notifiedDriverIds.add(driverId);
       const isFr = lang === "fr";
-      await sendPushNotification(
+      return sendPushNotification(
         token,
         isFr
           ? `🚗 ${passengerName} cherche un lift — +${formatFrCA(earningsCents)}`
@@ -1092,13 +1017,30 @@ app.post("/requests/dispatch", authenticate, async (req, res) => {
         },
         `📍 ${originLabel} → ${destLabel}`,
       );
-      return true;
     };
 
     let notified = 0;
     // Drivers heading the passenger's direction (phase 1). The fallback only
     // fires when this stays below MIN_DIRECTION_MATCHES.
     let directionMatches = 0;
+
+    // ── TEMPORARY broadcast dispatch ─────────────────────────────────────────
+    // Notify every user with driver mode ON, ignoring proximity / windows /
+    // destination. Absent driverModeEnabled is treated as ON so existing users
+    // stay reachable without a migration. (Full-collection scan — intentionally
+    // simple and non-scalable; the legacy matching below is kept for later.)
+    if (!USE_LEGACY_MATCHING) {
+      const usersSnap = await db.collection("users").get();
+      await Promise.all(
+        usersSnap.docs.map(async (doc) => {
+          if (doc.id === req.uid) return;
+          const u = doc.data() || {};
+          if (u.driverModeEnabled === false) return;
+          if (await pushToDriver(doc.id, "", null, 4)) notified += 1;
+        }),
+      );
+      return res.json({ notified, directionMatches: notified });
+    }
 
     // The online live drives are reused by the fallback pass, so fetch once.
     const sessionsSnap = await db.collection("driverSessions").where("status", "==", "online").get();
@@ -1212,6 +1154,28 @@ app.post("/drivers/available", authenticate, async (req, res) => {
     const hasPickup = oLat != null && oLng != null;
     const pickup = hasPickup ? { lat: oLat, lng: oLng } : dropoff;
     const seatsNeeded = Number(req.body.seats) || 1;
+
+    // TEMPORARY: while broadcast dispatch is active, the reachable count is simply
+    // every user with driver mode ON (absent = ON), minus the requester.
+    //
+    // PORT AT CUTOVER: unlike functions/index.js, this also requires an
+    // expoPushToken, so the number the passenger sees is exactly the number of
+    // drivers /requests/dispatch would actually reach — a user who never granted
+    // notifications can't be pushed, so counting them inflates the stat.
+    // `rejectedDrivers` is the one dispatch filter we can't apply here: it lives
+    // on the rideRequests doc, which doesn't exist yet when this stat is polled.
+    if (!USE_LEGACY_MATCHING) {
+      const usersSnap = await db.collection("users").get();
+      let enabled = 0;
+      usersSnap.docs.forEach((doc) => {
+        if (doc.id === req.uid) return;
+        const u = doc.data() || {};
+        if (u.driverModeEnabled === false) return;
+        if (!u.expoPushToken) return;
+        enabled += 1;
+      });
+      return res.json({ count: enabled, directionCount: enabled, reachableCount: enabled });
+    }
 
     // Two sets, mirroring dispatch: `direction` = drivers heading the
     // passenger's way (phase 1); `reachable` = everyone who would actually be
@@ -1382,7 +1346,9 @@ app.post("/requests/accept", authenticate, async (req, res) => {
         passengers: [passengerId],
         passengerSeats: { [passengerId]: seatsNeeded },
         passengerPickups: { [passengerId]: pickup },
-        passengerDropoffs: dropoff instanceof GeoPoint ? { [passengerId]: dropoff } : {},
+        // Never leave this empty: it is the reference point for the dropoff
+        // radius check, and a missing entry used to fall back to the pickup.
+        passengerDropoffs: { [passengerId]: dropoff instanceof GeoPoint ? dropoff : driverDestCoords },
         joinRequests: {},
         status: "planned",
         started: false,
@@ -1523,10 +1489,59 @@ app.post("/events/interest", authenticate, async (req, res) => {
 
 const RIDE_LIVE_WINDOW_MS = 3 * 60 * 60 * 1000; // mirrors utils/ride-lifecycle.ts
 
+/** Max distance (km) between the driver at dropoff and the passenger's
+ *  destination for the leg to be billable. Mirrored in constants/ride-geo.ts and
+ *  in functions/index.js — change all three together. */
+const DROPOFF_CONFIRM_RADIUS_KM = 3;
+
 /** Read a stored GeoPoint-ish value ({latitude,longitude}) into {lat,lng}. */
 const gpLL = (g) => (g && g.latitude != null && g.longitude != null
   ? { lat: g.latitude, lng: g.longitude }
   : null);
+
+/** Reference point for the dropoff radius check: the passenger's own dropoff,
+ *  else the ride's destination.
+ *
+ *  NEVER the pickup. Falling back to the pickup (as this used to) meant that
+ *  dropping a passenger where you collected them scored as an in-range delivery
+ *  and billed them — the driver got paid for going nowhere. Falling back to
+ *  destinationCoords also keeps this consistent with /rides/finish, which prices
+ *  the leg as pickup → destinationCoords. */
+function dropoffReference(ride, passengerId) {
+  return gpLL((ride.passengerDropoffs || {})[passengerId]) || gpLL(ride.destinationCoords);
+}
+
+/** Single source of truth for "is this leg billable".
+ *
+ *  `driverLat/Lng` is the fix the driver's device took at the moment they tapped
+ *  Drop off. `ride.driverLocation` is only a fallback for app builds that predate
+ *  that parameter — it is throttled telemetry that can be minutes stale, and a
+ *  stationary driver stops emitting it entirely.
+ *
+ *  Returns { ok, distanceKm, reason }. Fails closed: anything we can't measure
+ *  is not billable. */
+function evaluateDropoff(ride, passengerId, driverLat, driverLng) {
+  let lat = Number(driverLat);
+  let lng = Number(driverLng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    // Legacy client fallback — remove once app adoption is complete.
+    const stored = gpLL(ride.driverLocation);
+    if (!stored) return { ok: false, distanceKm: null, reason: "no_driver_location" };
+    lat = stored.lat;
+    lng = stored.lng;
+  }
+  const ref = dropoffReference(ride, passengerId);
+  if (!ref) return { ok: false, distanceKm: null, reason: "no_destination" };
+  const distanceKm = haversineKm(lat, lng, ref.lat, ref.lng);
+  const ok = distanceKm <= DROPOFF_CONFIRM_RADIUS_KM;
+  return {
+    ok,
+    distanceKm,
+    driverLat: lat,
+    driverLng: lng,
+    reason: ok ? null : "out_of_range",
+  };
+}
 
 async function pushTo(uid, db, titleFr, titleEn, bodyFr, bodyEn, data = {}) {
   try {
@@ -1748,10 +1763,15 @@ app.post("/rides/reject-driver", authenticate, async (req, res) => {
 
 // POST /rides/dropoff — driver drops a passenger (or marks a no-show).
 // Normal dropoff requires the passenger to have boarded; no-show does not.
-// Confirmation is derived server-side from the driver's last broadcast position.
+//
+// Confirmation is derived server-side from `driverLat`/`driverLng` — the fix the
+// driver's device took when they tapped Drop off — measured against the
+// passenger's destination. The client cannot assert the outcome, and the measured
+// distance is recorded on the ride doc so /rides/finish re-derives the charge set
+// instead of trusting a boolean.
 app.post("/rides/dropoff", authenticate, async (req, res) => {
   const db = getDb(req);
-  const { rideId, passengerId, noShow } = req.body || {};
+  const { rideId, passengerId, noShow, driverLat, driverLng } = req.body || {};
   if (!rideId || !passengerId) return res.status(400).json({ error: "rideId and passengerId are required" });
   const rideRef = db.collection("rides").doc(rideId);
   try {
@@ -1773,44 +1793,66 @@ app.post("/rides/dropoff", authenticate, async (req, res) => {
 
       if (!boarded.includes(passengerId)) return { error: "not_boarded" };
 
-      // Server-side confirmation: driver within 3 km of the passenger's dropoff
-      // (or pickup fallback). This GATES charging — only confirmed dropoffs are
-      // billed at /rides/finish (see chargeablePassengers). A passenger dropped
-      // too far from their destination is resolved but never charged.
-      let confirmed = false;
-      const driverLoc = gpLL(ride.driverLocation);
-      const ref = gpLL((ride.passengerDropoffs || {})[passengerId]) || gpLL((ride.passengerPickups || {})[passengerId]);
-      if (driverLoc && ref) {
-        confirmed = haversineKm(driverLoc.lat, driverLoc.lng, ref.lat, ref.lng) <= 3;
-      }
+      // This GATES charging — only confirmed dropoffs are billed at /rides/finish
+      // (see chargeablePassengers). A passenger dropped too far from their
+      // destination is resolved and rated, but never charged, and the driver
+      // earns nothing for that leg.
+      const ev = evaluateDropoff(ride, passengerId, driverLat, driverLng);
 
       const update = {
         droppedPassengers: FieldValue.arrayUnion(passengerId),
         pendingRatings: FieldValue.arrayUnion(passengerId),
+        [`dropoffAt.${passengerId}`]: new Date().toISOString(),
       };
-      if (confirmed) update.confirmedDropoffPassengers = FieldValue.arrayUnion(passengerId);
+      if (ev.distanceKm != null) {
+        // Recorded so the charge is re-derivable (and disputable) after the fact.
+        update[`dropoffDistanceKm.${passengerId}`] = Math.round(ev.distanceKm * 100) / 100;
+        update[`dropoffDriverLocation.${passengerId}`] = new GeoPoint(ev.driverLat, ev.driverLng);
+      }
+      if (ev.ok) update.confirmedDropoffPassengers = FieldValue.arrayUnion(passengerId);
       tx.update(rideRef, update);
-      return { ok: true, confirmed };
+      return { ok: true, confirmed: ev.ok, distanceKm: ev.distanceKm, reason: ev.reason };
     });
     if (out.error === 404) return res.status(404).json({ error: "ride not found" });
     if (out.error === 403) return res.status(403).json({ error: "not the ride driver" });
     if (out.error === 409) return res.status(409).json({ error: "ride not started" });
     if (out.error) return res.status(400).json({ error: out.error });
-    return res.json({ success: true, confirmed: !!out.confirmed, noShow: !!out.noShow });
+    return res.json({
+      success: true,
+      confirmed: !!out.confirmed,
+      noShow: !!out.noShow,
+      distanceKm: out.distanceKm != null ? out.distanceKm : null,
+      radiusKm: DROPOFF_CONFIRM_RADIUS_KM,
+      reason: out.reason || null,
+    });
   } catch (err) {
     console.error("/rides/dropoff error:", err);
     return res.status(500).json({ error: "internal" });
   }
 });
 
-/** Charge set = passengers who boarded AND were dropped off within the
- *  destination radius (confirmedDropoffPassengers). A passenger dropped too far
- *  from their destination stays in droppedPassengers but is NOT charged. */
+/** Charge set = passengers who boarded AND were dropped off within
+ *  DROPOFF_CONFIRM_RADIUS_KM of their destination. A passenger dropped too far
+ *  from their destination stays in droppedPassengers but is NOT charged, and the
+ *  driver earns nothing for that leg (earnings are derived from the passenger
+ *  total in /rides/finish).
+ *
+ *  Prefers the distance recorded at dropoff time so the charge is re-derived from
+ *  the measurement rather than trusting a stored boolean. The
+ *  confirmedDropoffPassengers fallback covers only rides that were already in
+ *  flight when this shipped — safe because the tightened Firestore rules make
+ *  that array unwritable by clients. */
 function chargeablePassengers(ride) {
   const boarded = new Set(Array.isArray(ride.boardedPassengers) ? ride.boardedPassengers : []);
   const confirmed = new Set(Array.isArray(ride.confirmedDropoffPassengers) ? ride.confirmedDropoffPassengers : []);
   const dropped = Array.isArray(ride.droppedPassengers) ? ride.droppedPassengers : [];
-  return dropped.filter((id) => boarded.has(id) && confirmed.has(id));
+  const distances = ride.dropoffDistanceKm || {};
+  return dropped.filter((id) => {
+    if (!boarded.has(id)) return false;
+    const d = Number(distances[id]);
+    if (Number.isFinite(d)) return d <= DROPOFF_CONFIRM_RADIUS_KM;
+    return confirmed.has(id);
+  });
 }
 
 // POST /rides/finish — driver ends the ride. Atomically: charges each
@@ -2330,6 +2372,51 @@ function assertDevEnv(db) {
   }
 }
 
+// POST /dev/dispatch-report — explain who /requests/dispatch would notify and,
+// for everyone it would skip, why. There is no console on a TestFlight build, so
+// without this "nobody got the notification" is opaque: you cannot tell a broken
+// push token from an unmatched driver from a wrong-database user doc.
+// Returns the same set /drivers/available counts, so a mismatch between the two
+// is immediately visible. Read-only — sends nothing.
+app.post("/dev/dispatch-report", authenticate, async (req, res) => {
+  const db = getDb(req);
+  try {
+    assertDevEnv(db);
+    const usersSnap = await db.collection("users").get();
+    const rows = [];
+    usersSnap.docs.forEach((doc) => {
+      const u = doc.data() || {};
+      const isSelf = doc.id === req.uid;
+      const driverModeEnabled = u.driverModeEnabled !== false;
+      const hasPushToken = Boolean(u.expoPushToken);
+      let skipReason = null;
+      if (isSelf) skipReason = "self (the requester is never notified)";
+      else if (!driverModeEnabled) skipReason = "driverModeEnabled is false";
+      else if (!hasPushToken) skipReason = "no expoPushToken on the user doc";
+      rows.push({
+        uid: doc.id,
+        name: u.name || u.email || "(unnamed)",
+        driverModeEnabled,
+        hasPushToken,
+        wouldNotify: skipReason === null,
+        skipReason,
+      });
+    });
+    rows.sort((a, b) => Number(b.wouldNotify) - Number(a.wouldNotify));
+    return res.json({
+      matching: USE_LEGACY_MATCHING ? "proximity" : "broadcast",
+      database: "uniliftdev",
+      totalUsers: rows.length,
+      wouldNotify: rows.filter((r) => r.wouldNotify).length,
+      me: rows.find((r) => r.uid === req.uid) ?? null,
+      drivers: rows,
+    });
+  } catch (err) {
+    console.error("/dev/dispatch-report error:", err);
+    return res.status(500).json({ error: err.message || "internal" });
+  }
+});
+
 // POST /dev/seed-request — create an OPEN rideRequest for the caller (passenger),
 // bypassing the client GPS fix and the saved-payment-method gate. Fixed default
 // coordinates (two points ~2 km apart) so dropoff-range logic is deterministic.
@@ -2407,7 +2494,8 @@ app.post("/dev/accept-as-bot", authenticate, async (req, res) => {
         passengers: [r.passengerId],
         passengerSeats: { [r.passengerId]: Number(r.seatsRequested) || 1 },
         passengerPickups: { [r.passengerId]: pickup },
-        passengerDropoffs: dropoff instanceof GeoPoint ? { [r.passengerId]: dropoff } : {},
+        // Never empty — this is what /dev/dropoff range-checks against.
+        passengerDropoffs: { [r.passengerId]: dropoff instanceof GeoPoint ? dropoff : pickup },
         joinRequests: {},
         status: "planned",
         started: false,
@@ -2478,31 +2566,62 @@ app.post("/dev/auto-board", authenticate, async (req, res) => {
   }
 });
 
-// POST /dev/dropoff { rideId, passengerId?, confirmed? } — drop a passenger on
-// the bot's behalf. `confirmed` toggles the confirmed-dropoff branch (charged +
-// rated) vs. the unconfirmed/out-of-range branch (sent home, no rating).
+// POST /dev/dropoff { rideId, passengerId?, driverLat, driverLng } — drop a
+// passenger on the bot driver's behalf.
+//
+// There is NO `confirmed` override. This runs the SAME evaluateDropoff() gate as
+// POST /rides/dropoff — it used to take `confirmed` straight from the body
+// (defaulting to true), which meant the dev harness never exercised the radius
+// check and happily paid the driver for a passenger dropped anywhere.
+// `driverLat/driverLng` is where you are pretending the bot is; the Dev Ride
+// Panel feeds it from LOCATION_PRESETS. The server decides the outcome.
+//
+// The `started` and `boarded` preconditions are enforced here too, so the harness
+// rehearses the real route rather than a laxer one.
 app.post("/dev/dropoff", authenticate, async (req, res) => {
   const db = getDb(req);
   try {
     assertDevEnv(db);
-    const { rideId } = req.body || {};
+    const { rideId, driverLat, driverLng } = req.body || {};
     const passengerId = req.body?.passengerId || req.uid;
-    const confirmed = req.body?.confirmed !== false; // default confirmed
     if (!rideId) return res.status(400).json({ error: "rideId is required" });
     const rideRef = db.collection("rides").doc(rideId);
     const out = await db.runTransaction(async (tx) => {
       const snap = await tx.get(rideRef);
       if (!snap.exists) return { error: 404 };
+      const ride = snap.data();
+      if (ride.status !== "started") return { error: 409, status: ride.status };
+      const boarded = Array.isArray(ride.boardedPassengers) ? ride.boardedPassengers : [];
+      if (!boarded.includes(passengerId)) return { error: "not_boarded" };
+
+      const ev = evaluateDropoff(ride, passengerId, driverLat, driverLng);
+
       const update = {
         droppedPassengers: FieldValue.arrayUnion(passengerId),
         pendingRatings: FieldValue.arrayUnion(passengerId),
+        [`dropoffAt.${passengerId}`]: new Date().toISOString(),
       };
-      if (confirmed) update.confirmedDropoffPassengers = FieldValue.arrayUnion(passengerId);
+      if (ev.distanceKm != null) {
+        update[`dropoffDistanceKm.${passengerId}`] = Math.round(ev.distanceKm * 100) / 100;
+        update[`dropoffDriverLocation.${passengerId}`] = new GeoPoint(ev.driverLat, ev.driverLng);
+        // Mirror into the telemetry field so the passenger's live map moves the
+        // way a real driver's broadcast would have moved it.
+        update.driverLocation = new GeoPoint(ev.driverLat, ev.driverLng);
+      }
+      if (ev.ok) update.confirmedDropoffPassengers = FieldValue.arrayUnion(passengerId);
       tx.update(rideRef, update);
-      return { ok: true };
+      return { ok: true, confirmed: ev.ok, distanceKm: ev.distanceKm, reason: ev.reason };
     });
     if (out.error === 404) return res.status(404).json({ error: "ride not found" });
-    return res.json({ success: true, confirmed });
+    if (out.error === 409) return res.status(409).json({ error: "ride not started", status: out.status });
+    if (out.error) return res.status(400).json({ error: out.error });
+    return res.json({
+      success: true,
+      confirmed: !!out.confirmed,
+      distanceKm: out.distanceKm != null ? out.distanceKm : null,
+      radiusKm: DROPOFF_CONFIRM_RADIUS_KM,
+      reason: out.reason || null,
+    });
   } catch (err) {
     console.error("/dev/dropoff error:", err);
     return res.status(500).json({ error: err.message || "internal" });
@@ -2553,12 +2672,28 @@ app.post("/dev/finish", authenticate, async (req, res) => {
       if (driverEarningsCents > 0) {
         const driverRef = db.collection("users").doc(ride.driverId);
         tx.set(driverRef, { pendingEarningsCents: FieldValue.increment(driverEarningsCents) }, { merge: true });
+        // Mirrors /rides/finish. Without this the bot's pendingEarningsCents and
+        // its transaction list diverge, which makes "was the driver paid?" hard
+        // to assert when testing the dropoff-radius gate.
+        tx.set(driverRef.collection("transactions").doc(), {
+          type: "ride_earning",
+          amount: driverEarningsCents,
+          status: "completed",
+          description: `[DEV] Earnings — ${charge.length} passenger(s) — ${ride.destination || ""}`,
+          createdAt: now,
+          rideId,
+        });
       }
       tx.update(rideRef, { status: "completed", paymentStatus: "completed" });
       return { ok: true, charged: charge.length, totalPassengerCents, driverEarningsCents };
     });
     if (out.error === 404) return res.status(404).json({ error: "ride not found" });
-    return res.json({ success: true, skipped: !!out.skipped, chargedPassengers: out.charged || 0 });
+    return res.json({
+      success: true,
+      skipped: !!out.skipped,
+      chargedPassengers: out.charged || 0,
+      driverEarningsCents: out.driverEarningsCents || 0,
+    });
   } catch (err) {
     console.error("/dev/finish error:", err);
     return res.status(500).json({ error: err.message || "internal" });
@@ -2805,6 +2940,10 @@ async function sweepStaleRidesImpl(db) {
   }));
 
   // 3. Payment stuck in "processing".
+  // Nothing writes "processing" any more — it was the non-atomic lock held by the
+  // removed /rides/complete route (/rides/finish does the whole charge in one
+  // transaction). Kept for a release or two to unwedge docs already stuck in it.
+  // TODO: delete once no ride doc has paymentStatus == "processing".
   const processing = await db.collection("rides").where("paymentStatus", "==", "processing").get();
   await Promise.all(processing.docs.map(async (doc) => {
     const age = ageMs(doc.data().processingAt);

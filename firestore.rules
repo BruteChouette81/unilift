@@ -45,10 +45,6 @@ service cloud.firestore {
       return rideData.driverId == request.auth.uid;
     }
 
-    function isRidePassenger(rideData) {
-      return request.auth.uid in rideData.passengers;
-    }
-
     // Founder admin: gated by a Firebase Auth custom claim ({ admin: true }) set
     // on the founder accounts via functions/scripts/set-admin-claims.js. Used by
     // the founder-only admin dashboard to edit config collections (events).
@@ -94,6 +90,46 @@ service cloud.firestore {
     // ── Rides ──────────────────────────────────────────────────────────────────
     match /rides/{rideId} {
 
+      // Fields that decide who gets paid, how much, and whether the ride is over.
+      // Every one of these is written exclusively by the Cloud Functions, which
+      // use the admin SDK and bypass these rules entirely — so denying all client
+      // writes here costs the server nothing.
+      //
+      // This list is the whole point of the dropoff-radius fix: a driver used to
+      // be able to PATCH confirmedDropoffPassengers directly and then call
+      // /rides/finish, collecting a fare for a passenger dropped nowhere near
+      // their destination. Adding a field here is the correct reflex whenever a
+      // new field starts feeding billing.
+      function touchesRideMoneyFields() {
+        return request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'driverId',
+          'paymentStatus',
+          'boardedPassengers',
+          'droppedPassengers',
+          'confirmedDropoffPassengers',
+          'dropoffDistanceKm',
+          'dropoffDriverLocation',
+          'dropoffAt',
+          'pendingRatings',
+          'ratingsSubmitted',
+          'pendingConfirmation',
+          'confirmDeadlineAt',
+          'requestId',
+          'started',
+          'startedAt'
+        ]);
+      }
+
+      // Pickup/dropoff coordinates ARE billing inputs: /rides/finish prices the
+      // leg as passengerPickups[pid] → destinationCoords, and /rides/dropoff
+      // range-checks the driver against passengerDropoffs[pid]. They may only be
+      // written while the ride is still `planned` — once it starts, they freeze.
+      // `.get()` with a default so a legacy doc missing `status` doesn't hard-deny
+      // (a missing key would otherwise abort rule evaluation).
+      function isPlannedRide() {
+        return resource.data.get('status', 'planned') == 'planned';
+      }
+
       // Any signed-in user can read rides (home screen, explore tab, etc.)
       allow read: if isSignedIn();
 
@@ -101,45 +137,65 @@ service cloud.firestore {
       allow create: if isSignedIn()
         && request.resource.data.driverId == request.auth.uid;
 
-      allow update: if isSignedIn() && (
+      allow update: if isSignedIn()
+        && !touchesRideMoneyFields()
+        && (
 
-        // ── Driver operations ─────────────────────────────────────────────────
-        // The driver of this ride may update any operational field except
-        // paymentStatus (set exclusively by /rides/complete Cloud Function).
-        // This explicitly covers per-passenger dropoff fields:
-        //   droppedPassengers, confirmedDropoffPassengers, pendingRatings.
-        (isRideDriver(resource.data)
-          && !request.resource.data.diff(resource.data)
-                .affectedKeys()
-                .hasAny(['driverId', 'paymentStatus']))
+          // ── Driver GPS telemetry ─────────────────────────────────────────────
+          // services/rideServices.ts updateDriverLocation(). Feeds the passenger's
+          // live map ONLY. The dropoff radius check reads a fresh fix supplied in
+          // the /rides/dropoff request body, not this field.
+          (isRideDriver(resource.data)
+            && request.resource.data.diff(resource.data)
+                  .affectedKeys()
+                  .hasOnly(['driverLocation']))
 
-        ||
+          ||
 
-        // ── Passenger operations ───────────────────────────────────────────────
-        // Accepted passengers may update a limited set of fields on the ride doc:
-        // their pickup/dropoff coordinates, boarding status, and rating records.
-        (isRidePassenger(resource.data)
-          && request.resource.data.diff(resource.data)
-                .affectedKeys()
-                .hasOnly([
-                  'boardedPassengers',
-                  'passengerPickups',
-                  'passengerDropoffs',
-                  'ratingsSubmitted'
-                ]))
+          // ── Driver accepts / rejects a join request ───────────────────────────
+          // services/rideServices.ts respondToJoinRequest(), called from
+          // app/riderScreen.tsx. Planned rides only — see isPlannedRide().
+          // TODO: move to POST /rides/respond-join, then delete this clause and
+          //       this block collapses to the firestore.dev.rules version.
+          (isRideDriver(resource.data)
+            && isPlannedRide()
+            && request.resource.data.diff(resource.data)
+                  .affectedKeys()
+                  .hasOnly([
+                    'passengers',
+                    'seatsAvailable',
+                    'joinRequests',
+                    'passengerSeats',
+                    'passengerPickups',
+                    'passengerDropoffs'
+                  ]))
 
-        ||
+          ||
 
-        // ── Join-request operations ────────────────────────────────────────────
-        // Any signed-in user may send or cancel a join request. Only joinRequests
-        // is allowed here — the passengers array and seatsAvailable are
-        // exclusively mutated by the driver (via the driver path above), so a
-        // passenger cannot quit an accepted ride or remove another passenger
-        // through this path.
-        (request.resource.data.diff(resource.data)
-          .affectedKeys()
-          .hasOnly(['joinRequests']))
-      );
+          // ── Join-request send / cancel ───────────────────────────────────────
+          // Any signed-in user may send or cancel a join request. Only
+          // joinRequests is allowed here — the passengers array and seatsAvailable
+          // are mutated exclusively by the driver (clause above), so a passenger
+          // cannot quit an accepted ride or remove another passenger this way.
+          (request.resource.data.diff(resource.data)
+            .affectedKeys()
+            .hasOnly(['joinRequests']))
+
+          ||
+
+          // ── Lazy client-side expiry of a stale ride ──────────────────────────
+          // cleanupExpiredRide / cleanupAbandonedStartedRide, called from
+          // app/(tabs)/index.tsx. Terminal and one-way: only ever writes
+          // status:"expired", never re-opens a ride, and cannot touch money fields
+          // (guarded above).
+          // TODO: delete once sweepStaleRides runs against uniliftdefault — today
+          //       TARGET_DB = devDb (functions/index.js), so production has NO
+          //       server-side expiry and this clause is load-bearing.
+          (request.resource.data.get('status', '') == 'expired'
+            && request.resource.data.diff(resource.data)
+                  .affectedKeys()
+                  .hasOnly(['status', 'passengers', 'joinRequests']))
+        );
 
       // Rides are never hard-deleted from the client — they are marked expired.
       allow delete: if false;

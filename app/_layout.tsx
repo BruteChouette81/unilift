@@ -400,7 +400,13 @@ function LayoutContent() {
   const colorScheme = useColorScheme() ?? "dark";
   const router = useRouter();
   const segments = useSegments();
-  const { activeRide, clearActiveRide, pendingRequest, clearPendingRequest } = useActiveRide();
+  const {
+    activeRide,
+    clearActiveRide,
+    pendingRequest,
+    clearPendingRequest,
+    pendingRequestHydrated,
+  } = useActiveRide();
 
   // Single driver-session hook call — shared by DriverOnlineBanner (tabs header)
   // and GlobalDriverAvailabilityBanner (non-tabs overlay) to avoid duplicate fetches.
@@ -426,11 +432,26 @@ function LayoutContent() {
 
   // Resume an in-progress ride search after the app was closed/reopened while
   // the passenger was waiting for a driver (findingDriverScreen persists the
-  // request; see ActiveRideContext). Runs at most once per launch.
+  // request; see ActiveRideContext).
+  //
+  // This only ever resumes a request *restored from storage at launch*. A request
+  // created during this session already pushed findingDriverScreen itself — that
+  // screen is what writes the pending record, so reacting to it here would push a
+  // second copy of the screen the user is already looking at. Hence the guard is
+  // armed as soon as auth + hydration are both ready, whether or not a request
+  // exists: everything after that first pass is by definition in-session.
   const resumedPendingRef = useRef(false);
+
+  // Allow one resume per authenticated session (sign out → sign in re-arms).
   useEffect(() => {
-    if (status !== "authenticated" || !pendingRequest || resumedPendingRef.current) return;
+    if (status !== "authenticated") resumedPendingRef.current = false;
+  }, [status]);
+
+  useEffect(() => {
+    if (status !== "authenticated" || !pendingRequestHydrated) return;
+    if (resumedPendingRef.current) return;
     resumedPendingRef.current = true;
+    if (!pendingRequest) return; // nothing was stored at launch — nothing to resume
     let cancelled = false;
 
     (async () => {
@@ -476,7 +497,7 @@ function LayoutContent() {
 
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, pendingRequest?.requestId]);
+  }, [status, pendingRequestHydrated, pendingRequest?.requestId]);
 
   // Hydrate live ride pricing from Firestore (config/pricing) once authenticated,
   // so in-app fare estimates match what the server actually charges. Fail-open:

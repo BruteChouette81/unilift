@@ -1,6 +1,7 @@
 import {
   apiFetch,
   apiBaseUrl,
+  devWarn,
   firestoreBaseUrl,
   firestoreCollectionUrl,
   firestoreDocumentUrl,
@@ -201,14 +202,20 @@ export async function fetchMyDriverSession(): Promise<DriverSession | null> {
 }
 
 /** Count drivers a passenger could currently reach for a trip (live "drivers
- *  available" stat) — no notifications are sent. Mirrors dispatch matching. */
+ *  available" stat) — no notifications are sent. Mirrors dispatch matching.
+ *
+ *  Returns `null` when the count could not be determined (signed out, backend
+ *  error, no network). Callers must render that as "unknown", never as 0 — a
+ *  confident "0 drivers available" that is really a failed request is
+ *  indistinguishable from a genuinely empty city, and hid a broken apiBaseUrl
+ *  for a long time. */
 export async function fetchAvailableDriverCount(params: {
   origin?: LocationPoint | null;
   destination: { lat: number; lng: number };
   seats?: number;
-}): Promise<number> {
+}): Promise<number | null> {
   const user = getAuth().currentUser;
-  if (!user) return 0;
+  if (!user) return null;
   try {
     const token = await user.getIdToken();
     const res = await apiFetch(`${apiBaseUrl}/drivers/available`, {
@@ -221,11 +228,16 @@ export async function fetchAvailableDriverCount(params: {
         ...(params.seats ? { seats: params.seats } : {}),
       }),
     });
-    if (!res.ok) return 0;
+    if (!res.ok) {
+      devWarn("[drivers/available] HTTP", res.status, await res.text().catch(() => ""));
+      return null;
+    }
     const data = await res.json().catch(() => ({}));
-    return Number(data?.count) || 0;
-  } catch {
-    return 0;
+    const count = Number(data?.count);
+    return Number.isFinite(count) ? count : null;
+  } catch (e) {
+    devWarn("[drivers/available] failed", apiBaseUrl, e);
+    return null;
   }
 }
 

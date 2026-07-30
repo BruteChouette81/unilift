@@ -5,6 +5,8 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import { AppState } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { type AuthState, type AuthStatus } from "@/types/models";
+import { isDev } from "@/constants/runtime-config";
+import { goOffline } from "@/services/driverSessionService";
 import {
   ensureSessionIsValid,
   signInWithApple as signInWithAppleService,
@@ -160,6 +162,13 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
         setAuthActionLoading(true);
         try {
+          // End any live driver session first — it needs a valid ID token, and
+          // nothing server-side expires sessions, so signing out while online
+          // would otherwise leave the driver advertised forever. Dev-gated and
+          // best-effort: it must never be able to block a sign-out.
+          if (isDev) {
+            try { await goOffline(); } catch { /* non-fatal */ }
+          }
           await signOutService();
           // Keep navigation state deterministic even if auth listener is delayed.
           setUser(null);

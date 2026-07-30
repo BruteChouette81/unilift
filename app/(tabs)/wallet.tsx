@@ -17,7 +17,7 @@ import { useFirstRun } from "@/hooks/use-first-run";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -51,6 +51,11 @@ const BALANCE_GRADIENT  = ["#1c0038", "#08001a"] as const;
 const CARD_GRADIENT     = ["#1e1b4b", "#0d1224"] as const;
 const EARNINGS_GRADIENT = ["#052e16", "#0d1224"] as const;
 const BTN_GRADIENT      = ["#FD165A", "#8938D5"] as const;
+
+// Safety net for `presentPaymentSheet` — generous enough that a user filling in
+// card details is never cut off, short enough that a sheet which failed to
+// present can't strand the UI in a permanent spinner.
+const PAYMENT_SHEET_TIMEOUT_MS = 120_000;
 
 type IoniconsName = React.ComponentProps<typeof Ionicons>["name"];
 
@@ -126,6 +131,11 @@ export default function WalletScreen() {
   } = useWallet();
 
   const [actionLoading, setActionLoading] = useState(false);
+  // Same-tick re-entrancy guard: two taps in one frame both read the stale
+  // `actionLoading`, and a second initPaymentSheet orphans the first sheet.
+  const addCardInFlight = useRef(false);
+  // Set when the wizard's final CTA is tapped; consumed once the modal is gone.
+  const pendingAddCard = useRef(false);
 
   // Re-sync card + transactions when returning to the tab or foregrounding.
   useLiveRefresh(reload);
@@ -142,7 +152,8 @@ export default function WalletScreen() {
 
   // ── Add Card ────────────────────────────────────────────────────────────────
   const handleAddCard = async () => {
-    if (!user) return;
+    if (!user || addCardInFlight.current) return;
+    addCardInFlight.current = true;
     setActionLoading(true);
     try {
       const token = await user.getIdToken();
@@ -171,7 +182,10 @@ export default function WalletScreen() {
         return;
       }
 
-      const { error: presentError } = await presentPaymentSheet();
+      // Hard backstop: if the sheet can never present, the native completion
+      // handler is never called and this promise would otherwise hang forever,
+      // leaving the button stuck in its disabled spinner state.
+      const { error: presentError } = await presentPaymentSheet({ timeout: PAYMENT_SHEET_TIMEOUT_MS });
       if (presentError) {
         if (presentError.code !== "Canceled") {
           Alert.alert(t("wallet.paymentFailed"), presentError.message);
@@ -183,10 +197,11 @@ export default function WalletScreen() {
       const freshToken = await user.getIdToken();
       const { paymentMethod: pm } = await confirmPaymentMethod(freshToken, setupIntentId);
       setPaymentMethod(pm);          // instant optimistic feedback
-      await reload();                // reconcile with backend truth (shared state)
+      void reload();                 // reconcile in the background — never block the spinner
     } catch (err: any) {
       Alert.alert(t("wallet.unexpectedError"), err.message ?? t("wallet.somethingWrong"));
     } finally {
+      addCardInFlight.current = false;
       setActionLoading(false);
     }
   };
@@ -416,7 +431,15 @@ export default function WalletScreen() {
         visible={showCardWizard}
         steps={cardWizardSteps}
         onDone={cardWizard.markSeen}
-        onComplete={() => { cardWizard.markSeen(); void handleAddCard(); }}
+        // The Stripe sheet must wait for `onDismissed` — presenting it from here
+        // targets the wizard's own view controller while it is tearing down, and
+        // the native present silently never completes.
+        onComplete={() => { pendingAddCard.current = true; cardWizard.markSeen(); }}
+        onDismissed={() => {
+          if (!pendingAddCard.current) return;
+          pendingAddCard.current = false;
+          void handleAddCard();
+        }}
         finalLabel={t("wizard.wallet.finalCta")}
       />
     </ScrollView>

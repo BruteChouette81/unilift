@@ -867,11 +867,16 @@ export async function respondToJoinRequest(
   const passengerLoc = existingEntry.location ?? { geoPointValue: { latitude: 0, longitude: 0 } };
   mergedPP[passengerId] = passengerLoc;
 
-  // Build passengerDropoffs map — copy dropoff from join request if present
+  // Build passengerDropoffs map — copy the dropoff from the join request, falling
+  // back to the ride's own destination. Never leave the entry missing: it is the
+  // reference point for the server's dropoff radius check, and an absent entry
+  // used to fall back to the passenger's *pickup*, which made "drop them where
+  // you collected them" score as an in-range delivery and bill them for it.
   const existingPD = fields.passengerDropoffs?.mapValue?.fields ?? {};
   const mergedPD: Record<string, unknown> = { ...existingPD };
-  if (existingEntry.dropoff) {
-    mergedPD[passengerId] = existingEntry.dropoff;
+  const dropoffRef = existingEntry.dropoff ?? fields.destinationCoords;
+  if (dropoffRef) {
+    mergedPD[passengerId] = dropoffRef;
   }
 
   const updateDoc = {
@@ -941,19 +946,45 @@ export async function updateDriverLocation(
   }
 }
 
-/** Driver drops a passenger (or marks a no-show). Server derives confirmation
- *  and charge eligibility — the client only names the passenger. */
+/** Outcome of a dropoff, as decided by the server. `confirmed` is what gates
+ *  billing: an unconfirmed leg is resolved and rated but never charged, and the
+ *  driver earns nothing for it. */
+export interface DropoffResult {
+  success: boolean;
+  confirmed: boolean;
+  noShow: boolean;
+  /** Measured driver→destination distance in km, or null if it couldn't be measured. */
+  distanceKm: number | null;
+  /** The radius the server compared against. */
+  radiusKm: number;
+  /** null when confirmed; otherwise "out_of_range" | "no_driver_location" | "no_destination". */
+  reason: string | null;
+}
+
+/** Driver drops a passenger (or marks a no-show).
+ *
+ *  `driverLocation` is the fix taken when the driver tapped Drop off; the server
+ *  measures it against the passenger's destination to decide whether the leg is
+ *  billable. The client cannot assert that outcome — it only reports where the
+ *  driver was and reads back the server's decision. */
 export async function markPassengerDropped(
   rideId: string,
   passengerId: string,
-  opts?: { noShow?: boolean },
-): Promise<void> {
-  await apiPostRide("/rides/dropoff", {
+  opts?: { noShow?: boolean; driverLocation?: LocationPoint | null },
+): Promise<DropoffResult> {
+  const result = await apiPostRide<DropoffResult>("/rides/dropoff", {
     rideId,
     passengerId,
     ...(opts?.noShow ? { noShow: true } : {}),
+    ...(opts?.driverLocation
+      ? {
+          driverLat: opts.driverLocation.latitude,
+          driverLng: opts.driverLocation.longitude,
+        }
+      : {}),
   });
   invalidateRidesCache();
+  return result;
 }
 
 /** Passenger submits their rating of the driver (1–5). Server-authoritative. */

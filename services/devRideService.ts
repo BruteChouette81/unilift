@@ -64,16 +64,35 @@ export function devAutoBoard(rideId: string): Promise<{ success: boolean }> {
   return devPost("/dev/auto-board", { rideId });
 }
 
-/** Drop the current user (or a given passenger). `confirmed=false` = out-of-range branch. */
+/** Drop the current user (or a given passenger) through the REAL dropoff-radius
+ *  gate — the same `evaluateDropoff()` that `/rides/dropoff` uses.
+ *
+ *  `driverLat`/`driverLng` is where you are pretending the bot driver is; the
+ *  server measures it against the passenger's destination and decides. There is
+ *  deliberately no `confirmed` flag: the dev route used to accept one (defaulting
+ *  to true), which meant the harness never exercised the gate and reported the
+ *  driver as paid for a passenger dropped anywhere at all. */
 export function devDropoff(
   rideId: string,
-  opts: { passengerId?: string; confirmed?: boolean } = {},
-): Promise<{ success: boolean; confirmed: boolean }> {
+  opts: { passengerId?: string; driverLat: number; driverLng: number },
+): Promise<{
+  success: boolean;
+  confirmed: boolean;
+  distanceKm: number | null;
+  radiusKm: number;
+  reason: string | null;
+}> {
   return devPost("/dev/dropoff", { rideId, ...opts });
 }
 
-/** End + charge the ride on the bot's behalf. */
-export function devFinishRide(rideId: string): Promise<{ success: boolean; chargedPassengers: number }> {
+/** End + charge the ride on the bot's behalf. Only legs the server measured as
+ *  in-range are charged, so `chargedPassengers: 0` is the expected result after
+ *  an out-of-range dropoff. */
+export function devFinishRide(rideId: string): Promise<{
+  success: boolean;
+  chargedPassengers: number;
+  driverEarningsCents: number;
+}> {
   return devPost("/dev/finish", { rideId });
 }
 
@@ -95,4 +114,29 @@ export function devForceStatus(params: DevForceStatusParams): Promise<{ success:
 /** Expire/clean every dev-seeded request + ride involving the current user. */
 export function devReset(): Promise<{ success: boolean; requests: number; rides: number }> {
   return devPost("/dev/reset", {});
+}
+
+export interface DevDispatchDriverRow {
+  uid: string;
+  name: string;
+  driverModeEnabled: boolean;
+  hasPushToken: boolean;
+  wouldNotify: boolean;
+  skipReason: string | null;
+}
+
+export interface DevDispatchReport {
+  matching: "broadcast" | "proximity";
+  database: string;
+  totalUsers: number;
+  wouldNotify: number;
+  me: DevDispatchDriverRow | null;
+  drivers: DevDispatchDriverRow[];
+}
+
+/** Who would `/requests/dispatch` notify right now, and why is everyone else
+ *  skipped? Read-only — sends no pushes. The only way to answer "nobody got the
+ *  notification" on a TestFlight build, where there is no console. */
+export function devDispatchReport(): Promise<DevDispatchReport> {
+  return devPost<DevDispatchReport>("/dev/dispatch-report", {});
 }

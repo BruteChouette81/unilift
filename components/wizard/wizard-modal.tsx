@@ -2,9 +2,11 @@ import { useLanguage } from "@/context/LanguageContext";
 import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
+  InteractionManager,
   Modal,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -45,6 +47,13 @@ type Props = {
    * (e.g. open the Stripe card sheet) while skipping should not.
    */
   onComplete?: () => void;
+  /**
+   * Called once the modal has *fully* finished dismissing. Anything that
+   * presents a native view controller (e.g. the Stripe payment sheet) must wait
+   * for this — starting it from `onComplete` presents from a modal that is still
+   * on screen, which UIKit refuses without ever calling back.
+   */
+  onDismissed?: () => void;
   /** Label for the final step's primary button. Defaults to common.done. */
   finalLabel?: string;
 };
@@ -54,13 +63,30 @@ type Props = {
  * and a Skip affordance. Styled from the app's purple→pink glass tokens.
  * Persistence lives in the caller (via useFirstRun) — this is purely presentational.
  */
-export default function WizardModal({ visible, steps, onDone, onComplete, finalLabel }: Props) {
+export default function WizardModal({ visible, steps, onDone, onComplete, onDismissed, finalLabel }: Props) {
   const { t } = useLanguage();
   const [index, setIndex] = useState(0);
+
+  // Kept in a ref so the dismissal effect below can stay keyed on `visible`
+  // alone — callers pass an inline arrow, so depending on it would re-run (and
+  // cancel) the pending callback on every render.
+  const onDismissedRef = useRef(onDismissed);
+  onDismissedRef.current = onDismissed;
+  const wasVisible = useRef(visible);
 
   // Reset to the first slide whenever the wizard is (re)opened.
   useEffect(() => {
     if (visible) setIndex(0);
+  }, [visible]);
+
+  // `Modal.onDismiss` is iOS-only, so everywhere else we synthesise the
+  // "fully dismissed" signal once the hide transition has settled.
+  useEffect(() => {
+    const was = wasVisible.current;
+    wasVisible.current = visible;
+    if (Platform.OS === "ios" || visible || !was) return;
+    const task = InteractionManager.runAfterInteractions(() => onDismissedRef.current?.());
+    return () => task.cancel();
   }, [visible]);
 
   if (steps.length === 0) return null;
@@ -76,7 +102,14 @@ export default function WizardModal({ visible, steps, onDone, onComplete, finalL
   const back = () => setIndex((i) => Math.max(0, i - 1));
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onDone} statusBarTranslucent>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onDone}
+      onDismiss={Platform.OS === "ios" ? onDismissed : undefined}
+      statusBarTranslucent
+    >
       <View style={styles.overlay}>
         <View style={styles.card}>
           <BlurView intensity={90} tint="dark" experimentalBlurMethod="dimezisBlurView" style={styles.blur}>

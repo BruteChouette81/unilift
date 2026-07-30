@@ -10,17 +10,19 @@
  * driver, start / board / dropoff / finish — force any outcome, mock GPS, and
  * read the live ride log on-device, with no second phone or camera scan.
  */
-import { isDev } from "@/constants/runtime-config";
+import { apiBaseUrl, appEnv, isDev, runtimeConfig } from "@/constants/runtime-config";
 import { useActiveRide } from "@/context/ActiveRideContext";
 import {
   devAcceptAsBot,
   devAutoBoard,
+  devDispatchReport,
   devDropoff,
   devFinishRide,
   devForceStatus,
   devReset,
   devSeedRequest,
   devStartRide,
+  type DevDispatchReport,
 } from "@/services/devRideService";
 import {
   clearRideLog,
@@ -79,6 +81,7 @@ export default function DevToolsScreen() {
   const [gpsPreset, setGpsPreset] = useState<string | null>(null);
   const [logs, setLogs] = useState<RideLogEntry[]>([]);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
+  const [report, setReport] = useState<DevDispatchReport | null>(null);
 
   useEffect(() => subscribeRideLog(setLogs), []);
 
@@ -116,6 +119,31 @@ export default function DevToolsScreen() {
       const { rideId: newRideId } = await devAcceptAsBot(rid);
       setRideId(newRideId);
     });
+
+  /** Drop the passenger from a given position and show what the server decided.
+   *  The distance and the confirmed flag both come back from the server — nothing
+   *  here can force the outcome, which is the point of the panel. */
+  const reportDropoff = async (targetRideId: string, from: DevCoords) => {
+    const r = await devDropoff(targetRideId, {
+      driverLat: from.latitude,
+      driverLng: from.longitude,
+    });
+    const dist = r.distanceKm != null ? `${r.distanceKm.toFixed(2)} km` : "not measured";
+    Alert.alert(
+      r.confirmed ? "Dropoff confirmed — will be charged" : "Dropoff out of range — no charge",
+      `distance: ${dist}\nlimit: ${r.radiusKm} km${r.reason ? `\nreason: ${r.reason}` : ""}`,
+    );
+  };
+
+  /** End + charge. `chargedPassengers: 0` is the correct result after an
+   *  out-of-range dropoff — the driver earns nothing for that leg. */
+  const reportFinish = async (targetRideId: string) => {
+    const r = await devFinishRide(targetRideId);
+    Alert.alert(
+      "Ride finished",
+      `charged passengers: ${r.chargedPassengers}\ndriver earnings: ${r.driverEarningsCents} ¢`,
+    );
+  };
 
   const applyGps = (key: string, coords: DevCoords | null) => {
     setDevLocationOverride(coords);
@@ -164,12 +192,15 @@ export default function DevToolsScreen() {
             onPress={() => currentRideId && run("start", () => devStartRide(currentRideId).then(() => {}))} />
           <Btn label="Auto-board (skip QR scan)" icon="qr-code" loading={busy === "board"}
             onPress={() => currentRideId && run("board", () => devAutoBoard(currentRideId).then(() => {}))} />
-          <Btn label="Dropoff — confirmed (charged + rated)" icon="checkmark-circle" color={C.green} loading={busy === "dropC"}
-            onPress={() => currentRideId && run("dropC", () => devDropoff(currentRideId, { confirmed: true }).then(() => {}))} />
-          <Btn label="Dropoff — out of range (no charge)" icon="alert-circle" color={C.amber} loading={busy === "dropU"}
-            onPress={() => currentRideId && run("dropU", () => devDropoff(currentRideId, { confirmed: false }).then(() => {}))} />
+          {/* These two buttons pick a POSITION, not an outcome. The server runs
+              the real radius check on it and decides whether the leg is billable —
+              which is the only way this panel can actually prove the gate works. */}
+          <Btn label="Dropoff — at destination (in range)" icon="checkmark-circle" color={C.green} loading={busy === "dropC"}
+            onPress={() => currentRideId && run("dropC", () => reportDropoff(currentRideId, DEFAULT_DEST))} />
+          <Btn label="Dropoff — out of range (Montréal)" icon="alert-circle" color={C.amber} loading={busy === "dropU"}
+            onPress={() => currentRideId && run("dropU", () => reportDropoff(currentRideId, LOCATION_PRESETS.faraway))} />
           <Btn label="Finish + charge" icon="flag" color={C.green} loading={busy === "finish"}
-            onPress={() => currentRideId && run("finish", () => devFinishRide(currentRideId).then(() => {}))} />
+            onPress={() => currentRideId && run("finish", () => reportFinish(currentRideId))} />
         </Section>
 
         <Section title="Force outcomes">
@@ -196,6 +227,37 @@ export default function DevToolsScreen() {
               <Text style={[styles.gpsChipText, gpsPreset === null && styles.gpsChipTextActive]}>real</Text>
             </Pressable>
           </View>
+        </Section>
+
+        <Section title="Dispatch diagnostics">
+          <View style={styles.kvBox}>
+            <Kv label="app env" value={appEnv} ok={isDev} />
+            <Kv label="api" value={apiBaseUrl || "(empty!)"} ok={Boolean(apiBaseUrl)} />
+            <Kv label="database" value={runtimeConfig.firestoreDatabaseId} ok={runtimeConfig.firestoreDatabaseId === "uniliftdev"} />
+            {report && (
+              <>
+                <Kv label="matching" value={report.matching} ok={report.matching === "broadcast"} />
+                <Kv label="my push token" value={report.me?.hasPushToken ? "registered" : "MISSING"} ok={Boolean(report.me?.hasPushToken)} />
+                <Kv label="my driver mode" value={report.me?.driverModeEnabled ? "on" : "off"} ok={Boolean(report.me?.driverModeEnabled)} />
+                <Kv label="would notify" value={`${report.wouldNotify} of ${report.totalUsers} users`} ok={report.wouldNotify > 0} />
+              </>
+            )}
+          </View>
+          <Btn label="Run dispatch report" icon="pulse" color={C.blue} loading={busy === "report"}
+            onPress={() => run("report", async () => setReport(await devDispatchReport()))} />
+          {report?.drivers.map((d) => (
+            <View key={d.uid} style={styles.driverRow}>
+              <Ionicons
+                name={d.wouldNotify ? "checkmark-circle" : "close-circle"}
+                size={15}
+                color={d.wouldNotify ? C.green : C.muted}
+              />
+              <Text style={styles.driverName} numberOfLines={1}>{d.name}</Text>
+              <Text style={styles.driverReason} numberOfLines={1}>
+                {d.wouldNotify ? "would be notified" : d.skipReason}
+              </Text>
+            </View>
+          ))}
         </Section>
 
         <Section title="Reset">
@@ -272,6 +334,19 @@ function Btn({
   );
 }
 
+/** One diagnostic line: green when the value is what a working dev build should
+ *  show, amber when it's the likely cause of whatever you're debugging. */
+function Kv({ label, value, ok }: { label: string; value: string; ok: boolean }) {
+  return (
+    <View style={styles.kvRow}>
+      <Text style={styles.kvLabel}>{label}</Text>
+      <Text style={[styles.kvValue, { color: ok ? C.green : C.amber }]} numberOfLines={1}>
+        {value}
+      </Text>
+    </View>
+  );
+}
+
 function IdChip({ label, value }: { label: string; value: string | null }) {
   return (
     <View style={styles.idChip}>
@@ -308,6 +383,15 @@ const styles = StyleSheet.create({
   btn: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: C.card, borderRadius: 12, borderWidth: 1, borderColor: C.border, paddingVertical: 12, paddingHorizontal: 12, marginBottom: 8 },
   btnIcon: { width: 30, height: 30, borderRadius: 8, alignItems: "center", justifyContent: "center" },
   btnText: { color: C.text, fontSize: 14, fontWeight: "600", flex: 1 },
+
+  kvBox: { backgroundColor: "#05050c", borderRadius: 10, borderWidth: 1, borderColor: C.border, padding: 10, marginBottom: 8 },
+  kvRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 3 },
+  kvLabel: { color: C.muted, fontSize: 11, width: 104 },
+  kvValue: { fontSize: 11, fontWeight: "700", flex: 1 },
+
+  driverRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 5, paddingHorizontal: 4 },
+  driverName: { color: C.text, fontSize: 12, fontWeight: "600", maxWidth: 130 },
+  driverReason: { color: C.muted, fontSize: 11, flex: 1 },
 
   gpsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   gpsChip: { backgroundColor: C.card, borderRadius: 20, borderWidth: 1, borderColor: C.border, paddingHorizontal: 14, paddingVertical: 8 },

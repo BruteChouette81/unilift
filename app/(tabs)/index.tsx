@@ -14,7 +14,7 @@ import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Location from "expo-location";
 import { devAwareCurrentPosition } from "@/utils/dev-location";
-import { devLog } from "@/constants/runtime-config";
+import { devLog, devWarn, isDev } from "@/constants/runtime-config";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -95,6 +95,10 @@ export default function HomeScreen() {
   const [homeLoc, setHomeLoc] = useState<{ lat: number; lng: number } | undefined>();
   const [favoriteRoutes, setFavoriteRoutes] = useState<FavoriteRoute[]>([]);
   const [userLocation, setUserLocation] = useState<LocationPoint | null>(null);
+  // Mirror of userLocation for effects that must read the latest fix without
+  // taking it as a dependency (see the driver-count poll below).
+  const userLocationRef = useRef<LocationPoint | null>(null);
+  userLocationRef.current = userLocation;
   const { user } = useAuth();
   const { activeRide } = useActiveRide();
   const { hasPaymentMethod, loading: walletLoading } = useWallet();
@@ -142,7 +146,9 @@ export default function HomeScreen() {
 
   // Lift request sheet
   const [showLiftSheet, setShowLiftSheet] = useState(false);
-  const [availableDrivers, setAvailableDrivers] = useState<number | undefined>(undefined);
+  // `undefined` = first poll in flight, `null` = lookup failed. Both render the
+  // pulsing placeholder rather than a misleading 0. See fetchAvailableDriverCount.
+  const [availableDrivers, setAvailableDrivers] = useState<number | null | undefined>(undefined);
 
   // Selected destination (drives the on-demand lift request)
   const [selectedPlace, setSelectedPlace] = useState("");
@@ -180,8 +186,12 @@ export default function HomeScreen() {
     void getLoc();
   }, []);
 
-  // Load sponsors once on mount.
+  // Load sponsors once on mount. Skipped in dev: partner pins are hidden from
+  // the dev map for now, so the fetch would be a wasted Firestore read. With
+  // `sponsors` left empty the map renders no partner markers and the sponsor
+  // card can never open (it is only reachable by tapping a marker).
   useEffect(() => {
+    if (isDev) return;
     void fetchSponsors().then(setSponsors).catch(() => {});
   }, []);
 
@@ -212,16 +222,20 @@ export default function HomeScreen() {
     setShowLiftSheet(true);
   };
 
-  // Live driver count — while the lift sheet is open, poll the backend which
-  // mirrors dispatch matching (online live drives + active Ride Mode windows,
-  // deduped, filtered by the selected destination). A raw driverSessions
-  // listener would miss Ride Mode (offline) drivers entirely.
+  // Live driver count — while the lift sheet is open, poll the backend, which
+  // returns exactly the set /requests/dispatch would notify. A raw driverSessions
+  // listener would be wrong twice over: it misses Ride Mode (offline) drivers,
+  // and it can't know who actually has a usable push token.
+  //
+  // The pickup is read from a ref so a GPS tick doesn't tear down and restart the
+  // interval — with location updating faster than 12 s the poll could otherwise
+  // be reset before it ever fired.
   useEffect(() => {
     if (!showLiftSheet || !selectedDropoff) return;
     let cancelled = false;
     const refresh = async () => {
       const count = await fetchAvailableDriverCount({
-        origin: userLocation,
+        origin: userLocationRef.current,
         destination: { lat: selectedDropoff.latitude, lng: selectedDropoff.longitude },
         seats: 1,
       });
@@ -233,7 +247,7 @@ export default function HomeScreen() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [showLiftSheet, selectedDropoff, userLocation]);
+  }, [showLiftSheet, selectedDropoff]);
 
   // Tapping a place on the map or selecting a suggestion opens the passenger
   // lift request sheet. (Driving is initiated from notifications for now.)
@@ -372,7 +386,14 @@ export default function HomeScreen() {
   // Posts the live ride request and waits for a driver to accept. Split out of
   // handleChoosePassengerWith so the profile-completion nudge can pause the
   // request and resume it here when the user picks "Later".
+  //
+  // A ref (not state) guards re-entrancy: state wouldn't have re-rendered in time
+  // to block a second tap landing in the same frame, which would post two separate
+  // rideRequests docs.
+  const requestInFlightRef = useRef(false);
   const actuallyRequestRide = async (place: string, dropoff: LocationPoint) => {
+    if (requestInFlightRef.current) return;
+    requestInFlightRef.current = true;
     try {
       let origin = userLocation;
       if (!origin) {
@@ -393,14 +414,23 @@ export default function HomeScreen() {
       });
       const requestId = resjson.name.split("/").pop() ?? "";
 
+      // A dispatch failure is not fatal — the request doc exists and drivers may
+      // come online later — but it must not be silent: "nobody was notified" and
+      // "the dispatch call itself failed" look identical on findingDriverScreen.
       let notified = 0;
-      try { notified = (await dispatchRideRequest(requestId)).notified; } catch { /* drivers may come online later */ }
+      try {
+        notified = (await dispatchRideRequest(requestId)).notified;
+      } catch (e) {
+        devWarn("[dispatch] failed for request", requestId, e);
+      }
 
       router.push(
         `/findingDriverScreen?requestId=${requestId}&destination=${encodeURIComponent(place)}&destLat=${dropoff.latitude}&destLng=${dropoff.longitude}&originLat=${origin.latitude}&originLng=${origin.longitude}&notified=${notified}`,
       );
     } catch (err) {
       Alert.alert(t("common.error"), rideErrorMessage(err, t));
+    } finally {
+      requestInFlightRef.current = false;
     }
   };
 

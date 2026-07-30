@@ -30,7 +30,8 @@ import { useLanguage } from "@/context/LanguageContext";
 import { BlurView } from "expo-blur";
 import { useKeepAwake } from "expo-keep-awake";
 import * as Location from "expo-location";
-import { getDevLocationOverride } from "@/utils/dev-location";
+import { devAwareCurrentPosition, getDevLocationOverride } from "@/utils/dev-location";
+import { DROPOFF_CONFIRM_RADIUS_KM } from "@/constants/ride-geo";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import React, { useEffect, useRef, useState } from "react";
@@ -150,6 +151,10 @@ export default function RideModeDriver() {
   const [passengerPickups, setPassengerPickups] = useState<Record<string, { latitude: number; longitude: number }>>({});
   const [passengerDropoffs, setPassengerDropoffs] = useState<Record<string, { latitude: number; longitude: number }>>({});
   const [droppedPassengers, setDroppedPassengers] = useState<string[]>([]);
+  // Legs the server measured as in-range at dropoff — the only ones that bill.
+  // Server-owned and unwritable by the client; mirrored here so the driver can
+  // see which legs will pay before ending the ride.
+  const [confirmedDropoffs, setConfirmedDropoffs] = useState<string[]>([]);
   const [allPassengersDropped, setAllPassengersDropped] = useState(false);
   const [boardedPassengers, setBoardedPassengers] = useState<string[]>([]);
   // Passengers who accepted but haven't yet swiped to confirm this driver. The
@@ -351,6 +356,10 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
         // completion gate and per-passenger badges reflect the authoritative doc.
         const nextDropped: string[] = Array.isArray(data.droppedPassengers) ? data.droppedPassengers : [];
         setDroppedPassengers((prev) => (prev.join(",") === nextDropped.join(",") ? prev : nextDropped));
+        const nextConfirmed: string[] = Array.isArray(data.confirmedDropoffPassengers)
+          ? data.confirmedDropoffPassengers
+          : [];
+        setConfirmedDropoffs((prev) => (prev.join(",") === nextConfirmed.join(",") ? prev : nextConfirmed));
         // Every accepted passenger resolved (dropped or no-show) ⇒ ride can end.
         if (nextPassengers.length > 0 && nextPassengers.every((p) => nextDropped.includes(p))) {
           setAllPassengersDropped(true);
@@ -504,9 +513,17 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
   };
 
   // Build the ordered route coords for Google Maps:
-  // origin → non-dropped pickups → non-dropped dropoffs → destination.
+  // origin → non-dropped pickups → non-dropped dropoffs → [destination].
   // Passing `includeDropped = true` keeps all passengers (used at ride start
   // before anyone has been dropped).
+  //
+  // The driver's own destination is only appended when at least one active
+  // passenger has NO explicit dropoff — those passengers ride all the way to
+  // the ride destination, so it is a real stop. When every active passenger has
+  // their own dropoff, the navigation ends at the last dropoff: the driver's
+  // destination is where they happen to be heading afterwards (often home), not
+  // part of the ride, and routing them there made Google Maps keep navigating
+  // after the final drop-off.
   const buildRouteCoords = (includeDropped = false): { latitude: number; longitude: number }[] => {
     const activePassengers = includeDropped
       ? passengers
@@ -517,18 +534,29 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
     const dropoffs = activePassengers
       .map((uid) => passengerDropoffs[uid])
       .filter((l): l is { latitude: number; longitude: number } => !!l);
-    const coords = [originCoords, ...pickups, ...dropoffs, destCoords];
+    const ridesToDestination = activePassengers.some((uid) => !passengerDropoffs[uid]);
+    const destIsReal = destCoords.latitude !== 0 || destCoords.longitude !== 0;
+    const coords = [
+      originCoords,
+      ...pickups,
+      ...dropoffs,
+      ...(ridesToDestination && destIsReal ? [destCoords] : []),
+    ];
     devLog("[RIDE-DEBUG] buildRouteCoords", {
       activePassengers: activePassengers.length,
       pickups: pickups.length,
       dropoffs: dropoffs.length,
+      ridesToDestination,
       totalCoords: coords.length,
     });
     return coords;
   };
 
   const openGoogleMaps = async (coords: { latitude: number; longitude: number }[]) => {
-    if (coords.length === 0) return;
+    // Fewer than two points means there is nothing left to navigate to (every
+    // passenger has been dropped off). Never fall back to the driver's own
+    // destination here — the ride is over.
+    if (coords.length < 2) return;
 
     // Web URL: google.com/maps/dir/LAT,LNG/LAT,LNG/... supports arbitrary stops
     const path = coords.map(c => `${c.latitude},${c.longitude}`).join('/');
@@ -620,8 +648,15 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
       }
 
       clearActiveRide();
+      // Mirrors the server's chargeablePassengers(): a leg only bills if it was
+      // boarded, dropped, AND measured in range of the destination. Checking only
+      // boarded∩dropped here told the driver they'd been paid for out-of-range
+      // dropoffs that the server had correctly refused to charge.
       const anyCharged = passengers.some(
-        (p) => boardedPassengers.includes(p) && droppedPassengers.includes(p),
+        (p) =>
+          boardedPassengers.includes(p) &&
+          droppedPassengers.includes(p) &&
+          confirmedDropoffs.includes(p),
       );
       Alert.alert(
         t("driverRide.rideEndedTitle"),
@@ -647,25 +682,81 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
     }
   };
 
+  /** A fresh fix for the dropoff radius check, or null if we can't get one in
+   *  time. Bounded so a slow/absent GPS lock can't hang the Drop off button.
+   *  devAwareCurrentPosition honours the Dev Ride Panel's GPS override. */
+  const getDropoffFix = async (): Promise<{ latitude: number; longitude: number } | null> => {
+    try {
+      const pos = await Promise.race([
+        devAwareCurrentPosition({ accuracy: Location.Accuracy.High }),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
+      ]);
+      if (!pos) return null;
+      return { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
+    } catch (e) {
+      devWarn("dropoff: could not read current position", e);
+      return null;
+    }
+  };
+
+  /** Send the dropoff and report the server's billing decision back to the
+   *  driver. The outcome used to be silently discarded, so a driver only found
+   *  out a leg was unpaid at the end of the ride — if at all. */
+  const submitDropoff = async (
+    pid: string,
+    fix: { latitude: number; longitude: number } | null,
+  ) => {
+    let result;
+    try {
+      result = await markPassengerDropped(rideId, pid, { driverLocation: fix });
+    } catch (e) {
+      Alert.alert(t("common.error"), rideErrorMessage(e, t));
+      return;
+    }
+    applyLocalDropped(pid);
+
+    if (result.confirmed) {
+      Alert.alert(t("driverRide.dropoffPaidTitle"), t("driverRide.dropoffPaidMsg"));
+      return;
+    }
+    Alert.alert(
+      t("driverRide.dropoffNotPaidTitle"),
+      result.distanceKm != null
+        ? t("driverRide.dropoffNotPaidMsg", {
+            dist: `${result.distanceKm.toFixed(1)} km`,
+            km: result.radiusKm ?? DROPOFF_CONFIRM_RADIUS_KM,
+          })
+        : t("driverRide.dropoffNotPaidNoLocationMsg"),
+    );
+  };
+
   const dropOffPassenger = async (pid: string) => {
     if (!boardedPassengers.includes(pid)) {
       Alert.alert(t("driverRide.dropoffNotBoardedTitle"), t("driverRide.dropoffNotBoardedMsg"));
       return;
     }
-    // The server derives dropoff confirmation from the driver's last broadcast
-    // position — the client no longer computes or asserts it.
+    // The server decides whether this leg is billable, by measuring the fix below
+    // against the passenger's destination. The client only reports where we are.
     Alert.alert(t("driverRide.dropoffTitle"), t("driverRide.dropoffConfirmGenericMsg"), [
       { text: t("common.cancel"), style: "cancel" },
       {
         text: t("common.confirm"),
         onPress: async () => {
-          try {
-            await markPassengerDropped(rideId, pid);
-          } catch (e) {
-            Alert.alert(t("common.error"), rideErrorMessage(e, t));
+          const fix = await getDropoffFix();
+          if (!fix) {
+            // Without a fix the leg cannot be confirmed and so cannot be charged.
+            // Say so up front rather than letting the driver discover it later.
+            Alert.alert(t("driverRide.dropoffTitle"), t("driverRide.dropoffNoLocationMsg"), [
+              { text: t("common.cancel"), style: "cancel" },
+              {
+                text: t("driverRide.dropoffAnywayUnpaid"),
+                style: "destructive",
+                onPress: () => void submitDropoff(pid, null),
+              },
+            ]);
             return;
           }
-          applyLocalDropped(pid);
+          await submitDropoff(pid, fix);
         },
       },
     ]);
@@ -927,6 +1018,9 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
               {passengers.map((pid) => {
                 const isDropped = droppedPassengers.includes(pid);
                 const isBoarded = boardedPassengers.includes(pid);
+                // Dropped but out of range of their destination ⇒ this leg pays
+                // nothing. Surface it now, not after the ride is over.
+                const isUnpaidLeg = isDropped && isBoarded && !confirmedDropoffs.includes(pid);
                 return (
                   <View key={pid} style={styles.passengerCard}>
                     <TouchableOpacity
@@ -961,8 +1055,10 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
                       </Text>
                     </View>
                     {isDropped ? (
-                      <View style={styles.droppedBadge}>
-                        <Text style={styles.droppedBadgeText}>{t("driverRide.droppedOff")}</Text>
+                      <View style={isUnpaidLeg ? styles.unpaidBadge : styles.droppedBadge}>
+                        <Text style={isUnpaidLeg ? styles.unpaidBadgeText : styles.droppedBadgeText}>
+                          {isUnpaidLeg ? t("driverRide.unpaidLeg") : t("driverRide.droppedOff")}
+                        </Text>
                       </View>
                     ) : isBoarded ? (
                       <TouchableOpacity
@@ -995,18 +1091,21 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
             </ScrollView>
           )}
 
-          {/* Reopen Maps */}
-          <TouchableOpacity
-            style={styles.secondaryBtn}
-            onPress={() => {
-              // Only route to passengers who haven't been dropped yet
-              openGoogleMaps(buildRouteCoords(false));
-            }}
-            activeOpacity={0.8}
-          >
-            <Text style={{fontSize: 14}}>🗺</Text>
-            <Text style={styles.secondaryBtnText}>{t("driverRide.reopenMaps")}</Text>
-          </TouchableOpacity>
+          {/* Reopen Maps — hidden once everyone has been dropped off: there is
+              no stop left, and re-opening must not navigate the driver home. */}
+          {passengers.some((pid) => !droppedPassengers.includes(pid)) && (
+            <TouchableOpacity
+              style={styles.secondaryBtn}
+              onPress={() => {
+                // Only route to passengers who haven't been dropped yet
+                openGoogleMaps(buildRouteCoords(false));
+              }}
+              activeOpacity={0.8}
+            >
+              <Text style={{fontSize: 14}}>🗺</Text>
+              <Text style={styles.secondaryBtnText}>{t("driverRide.reopenMaps")}</Text>
+            </TouchableOpacity>
+          )}
 
           {/* Show QR Code button */}
           {qrToken && (
@@ -1481,6 +1580,20 @@ const styles = StyleSheet.create({
   },
   droppedBadgeText: {
     color: "#34d399",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  // Dropped, but outside the destination radius — this leg earns nothing.
+  unpaidBadge: {
+    backgroundColor: "rgba(245,158,11,0.12)",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(245,158,11,0.3)",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  unpaidBadgeText: {
+    color: C.gold,
     fontSize: 11,
     fontWeight: "600",
   },

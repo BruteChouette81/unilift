@@ -3,7 +3,7 @@ import { useLanguage } from "@/context/LanguageContext";
 import { calculateDriverEarningCents, formatCentsAsDollars } from "@/constants/pricing";
 import { useDriverSession } from "@/hooks/use-driver-session";
 import { haversineKm } from "@/hooks/use-ride-recommendations";
-import { acceptRideRequest, updateDriverSessionLocation } from "@/services/driverSessionService";
+import { acceptRideRequest } from "@/services/driverSessionService";
 import { collection, doc, onSnapshot, query, where } from "firebase/firestore";
 import { db } from "@/firebaseConfig";
 import { devLog, devWarn } from "@/constants/runtime-config";
@@ -15,8 +15,6 @@ import type { DriverSession, LocationPoint, RideRequest } from "@/types/models";
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
-import * as Location from "expo-location";
-import { devAwareCurrentPosition } from "@/utils/dev-location";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { getAuth } from "firebase/auth";
 import React, { useEffect, useRef, useState } from "react";
@@ -235,20 +233,8 @@ export default function DriverRequestsScreen() {
     return () => unsubscribe();
   }, [isOnline]);
 
-  // Keep the driver's origin fresh so matching stays accurate.
-  useEffect(() => {
-    if (!isOnline) return;
-    const update = async () => {
-      try {
-        const { status } = await Location.getForegroundPermissionsAsync();
-        if (status !== "granted") return;
-        const pos = await devAwareCurrentPosition({ accuracy: Location.Accuracy.Balanced });
-        await updateDriverSessionLocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
-      } catch { /* non-fatal */ }
-    };
-    const interval = setInterval(() => void update(), 30000);
-    return () => clearInterval(interval);
-  }, [isOnline]);
+  // The driver-origin heartbeat used to live here, but it stopped the moment this
+  // screen unmounted. It now runs in useDriverSession, which is mounted app-wide.
 
   // Stream the accepted ride's passenger pickup/drop-off coords so the
   // ready-to-start map reflects the live ride doc (works for both the Ride Mode

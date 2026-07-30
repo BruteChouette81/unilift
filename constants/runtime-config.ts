@@ -22,9 +22,15 @@ type ExtraConfig = {
 
 const extra = (Constants.expoConfig?.extra ?? {}) as ExtraConfig;
 
+// A blank env var (`EXPO_PUBLIC_API_BASE_URL=` in .env, or an unset key in an
+// eas.json profile) must read as "absent", not as the empty string — every
+// consumer below defaults with `??`, which only falls through on null/undefined.
+// Returning "" would silently win over the default and, for apiBaseUrl, turn
+// every Cloud Function call into an unfetchable relative URL.
 const fromEnv = (key: keyof ExtraConfig): string | undefined => {
   const value = extra[key];
-  return typeof value === "string" ? value.trim() : undefined;
+  const trimmed = typeof value === "string" ? value.trim() : undefined;
+  return trimmed || undefined;
 };
 
 const required = (key: keyof ExtraConfig): string => {

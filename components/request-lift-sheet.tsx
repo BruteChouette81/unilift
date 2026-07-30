@@ -28,7 +28,11 @@ interface RequestLiftSheetProps {
   onClose: () => void;
   placeName: string;
   address?: string;
-  availableDrivers?: number;
+  /** Driver count, or `undefined`/`null` when it isn't known yet — `undefined`
+   *  while the first poll is in flight, `null` when the lookup failed. Both
+   *  render the pulsing placeholder; only a real number is ever shown, so a
+   *  failed request can't masquerade as "0 drivers available". */
+  availableDrivers?: number | null;
   onRequestLift: () => void;
 }
 
@@ -42,9 +46,11 @@ export function RequestLiftSheet({
 }: RequestLiftSheetProps) {
   const insets = useSafeAreaInsets();
 
+  const driverCountKnown = typeof availableDrivers === "number";
+
   const pulse = useRef(new Animated.Value(1)).current;
   useEffect(() => {
-    if (availableDrivers !== undefined) { pulse.setValue(1); return; }
+    if (driverCountKnown) { pulse.setValue(1); return; }
     const anim = Animated.loop(
       Animated.sequence([
         Animated.timing(pulse, { toValue: 0.3, duration: 700, useNativeDriver: true }),
@@ -53,7 +59,7 @@ export function RequestLiftSheet({
     );
     anim.start();
     return () => anim.stop();
-  }, [availableDrivers, pulse]);
+  }, [driverCountKnown, pulse]);
 
   const swipePan = useRef(
     PanResponder.create({
@@ -100,10 +106,10 @@ export function RequestLiftSheet({
                   <Ionicons name="car-sport" size={28} color={C.purpleLight} />
                 </View>
                 <View>
-                  {availableDrivers === undefined ? (
-                    <Animated.Text style={[styles.driversCount, { opacity: pulse }]}>—</Animated.Text>
-                  ) : (
+                  {driverCountKnown ? (
                     <Text style={styles.driversCount}>{availableDrivers}</Text>
+                  ) : (
+                    <Animated.Text style={[styles.driversCount, { opacity: pulse }]}>—</Animated.Text>
                   )}
                   <Text style={styles.driversLabel}>conducteurs disponibles</Text>
                 </View>

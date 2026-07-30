@@ -2,6 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Navigation:** read `docs/codebase-map.md` before exploring the tree. It maps
+> all three deployables (Expo app, LIVE server, SANDBOX server), the screen
+> graph, the service layer, both server route tables, and a "I want to change X
+> → start here" index. It will usually save a round of grepping.
+
 # Project Context
 
 ## Project Purpose & Vision

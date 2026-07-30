@@ -31,6 +31,13 @@ type ActiveRideContextValue = {
   pendingRequest: PendingRideRequest | null;
   setPendingRequest: (info: PendingRideRequest) => void;
   clearPendingRequest: () => void;
+  /**
+   * True once the boot-time read of the persisted pending request has settled.
+   * Lets consumers tell "restored from a previous launch" (resume it) apart from
+   * "set just now by a screen that is already on-stack" (do nothing) — see the
+   * resume effect in app/_layout.tsx.
+   */
+  pendingRequestHydrated: boolean;
 };
 
 const ActiveRideContext = createContext<ActiveRideContextValue>({
@@ -40,11 +47,13 @@ const ActiveRideContext = createContext<ActiveRideContextValue>({
   pendingRequest: null,
   setPendingRequest: () => {},
   clearPendingRequest: () => {},
+  pendingRequestHydrated: false,
 });
 
 export function ActiveRideProvider({ children }: { children: React.ReactNode }) {
   const [activeRide, setActiveRideState] = useState<ActiveRideInfo | null>(null);
   const [pendingRequest, setPendingRequestState] = useState<PendingRideRequest | null>(null);
+  const [pendingRequestHydrated, setPendingRequestHydrated] = useState(false);
 
   // Restore from storage on mount
   useEffect(() => {
@@ -63,13 +72,18 @@ export function ActiveRideProvider({ children }: { children: React.ReactNode }) 
       .then((raw) => {
         if (raw) {
           try {
-            setPendingRequestState(JSON.parse(raw));
+            const restored = JSON.parse(raw) as PendingRideRequest;
+            // Never clobber a request set at runtime: if this read resolves late,
+            // the live request wins.
+            setPendingRequestState((prev) => prev ?? restored);
           } catch {
             // corrupt data — ignore
           }
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      // Must flip even on failure — the resume effect waits on this flag.
+      .finally(() => setPendingRequestHydrated(true));
   }, []);
 
   const setActiveRide = useCallback((info: ActiveRideInfo) => {
@@ -101,6 +115,7 @@ export function ActiveRideProvider({ children }: { children: React.ReactNode }) 
         pendingRequest,
         setPendingRequest,
         clearPendingRequest,
+        pendingRequestHydrated,
       }}
     >
       {children}
