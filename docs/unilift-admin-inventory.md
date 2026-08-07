@@ -79,7 +79,6 @@ Schema inferred from [types/models.ts](../types/models.ts#L26-L81),
 | `favorite[]` | array of `{ destination, destinationGeolocation: geoPoint }` | 🔴 **Loi 25 — saved locations** |
 | `language` | "en"\|"fr" | non-PII |
 | `expoPushToken` | string | 🟠 PII (device identifier) |
-| `interestedEvents` | string[] (event ids) | low |
 | `facebookId/Name`, `instagramId/Handle`, `tiktokId/Handle`, `spotifyId/Name` | string | 🟠 PII (social identity) |
 | `driverAvailability[]` | window objects incl. `destinationCoords` geoPoint | 🔴 location |
 | `driverDays`, `driverMaxDetourKm`, `driverDestinationRadiusKm` | array/number | low |

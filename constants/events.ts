@@ -45,8 +45,8 @@ export function clampHypeScore(score: number): number {
 
 /** Map a hype score (1–10) to a flame icon size in px (smallest → biggest). */
 export function hypeScoreToIconSize(score: number): number {
-  const MIN = 22;
-  const MAX = 52;
+  const MIN = 15;
+  const MAX = 34;
   const s = clampHypeScore(score);
   return Math.round(MIN + ((s - 1) / 9) * (MAX - MIN));
 }

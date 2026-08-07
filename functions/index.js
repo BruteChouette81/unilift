@@ -1406,47 +1406,6 @@ app.post("/requests/accept", authenticate, async (req, res) => {
   }
 });
 
-// ── Hype events: toggle interest ──────────────────────────────────────────────
-// Race-safe interest counter. Membership lives on the user doc
-// (interestedEvents) so it can power the profile list; the event's
-// attendeeCount is the running counter. One transaction keeps both consistent,
-// and Firestore retries on contention so concurrent toggles can't miscount.
-app.post("/events/interest", authenticate, async (req, res) => {
-  const db = getDb(req);
-  try {
-    const { eventId } = req.body;
-    if (!eventId) return res.status(400).json({ error: "eventId is required" });
-    const uid = req.uid;
-
-    const eventRef = db.collection("events").doc(eventId);
-    const userRef = db.collection("users").doc(uid);
-
-    const result = await db.runTransaction(async (tx) => {
-      const [eventSnap, userSnap] = await Promise.all([tx.get(eventRef), tx.get(userRef)]);
-      if (!eventSnap.exists) return { error: 404 };
-
-      const list = Array.isArray(userSnap.data()?.interestedEvents)
-        ? userSnap.data().interestedEvents
-        : [];
-      const has = list.includes(eventId);
-      const current = Number(eventSnap.data().attendeeCount) || 0;
-      const attendeeCount = has ? Math.max(0, current - 1) : current + 1;
-      const nextList = has ? list.filter((id) => id !== eventId) : [...list, eventId];
-
-      tx.set(userRef, { interestedEvents: nextList }, { merge: true });
-      tx.update(eventRef, { attendeeCount });
-
-      return { interested: !has, attendeeCount };
-    });
-
-    if (result.error === 404) return res.status(404).json({ error: "event not found" });
-    return res.json(result);
-  } catch (err) {
-    console.error("events/interest error:", err);
-    return res.status(500).json({ error: "internal" });
-  }
-});
-
 // ── Ride lifecycle (server-authoritative) ────────────────────────────────────
 //
 // These endpoints own every ride state transition. Once the tightened Firestore

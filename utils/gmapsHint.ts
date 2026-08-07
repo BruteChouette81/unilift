@@ -1,5 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { Alert } from "react-native";
+import { Alert, Linking, Platform } from "react-native";
 
 const STORAGE_KEY = "railguards:gmapsHintDismissed";
 
@@ -32,4 +32,29 @@ export async function maybeShowGmapsHint(t: TranslateFn): Promise<void> {
       { onDismiss: () => resolve() },
     );
   });
+}
+
+/** Open native/web Google Maps directions to a single destination. Mirrors the
+ *  single-stop branch of riderScreen's openGoogleMaps. */
+export async function openDirectionsTo(
+  dest: { latitude: number; longitude: number },
+  t: TranslateFn,
+): Promise<void> {
+  const webUrl = `https://www.google.com/maps/dir/?api=1&destination=${dest.latitude},${dest.longitude}`;
+  const nativeUrl = Platform.OS === "ios"
+    ? `comgooglemaps://?daddr=${dest.latitude},${dest.longitude}&directionsmode=driving`
+    : `google.navigation:q=${dest.latitude},${dest.longitude}`;
+
+  try {
+    const canOpenNative = await Linking.canOpenURL(nativeUrl);
+    if (canOpenNative) {
+      await Linking.openURL(nativeUrl);
+      return;
+    }
+  } catch {
+    // fall through to web
+  }
+
+  await maybeShowGmapsHint(t);
+  await Linking.openURL(webUrl);
 }

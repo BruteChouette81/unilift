@@ -9,7 +9,6 @@ import SponsorCard from "@/components/sponsor-card";
 import { type HypeEvent } from "@/constants/events";
 import { type Sponsor } from "@/constants/sponsors";
 import { isRideExpired } from "@/utils/ride-lifecycle";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Location from "expo-location";
@@ -87,9 +86,6 @@ const C_HYPE = {
   purpleLight: "#f97316",
 };
 
-const HYPE_MODE_STORAGE_KEY = "unilift:hypeMode";
-
-
 // ─── Main Screen ───────────────────────────────────────────────────────────────
 export default function HomeScreen() {
   const [homeLoc, setHomeLoc] = useState<{ lat: number; lng: number } | undefined>();
@@ -121,6 +117,16 @@ export default function HomeScreen() {
     { icon: "list-outline",     title: t("wizard.home.step2Title"), body: t("wizard.home.step2Body") },
     { icon: "flame-outline",    title: t("wizard.home.step3Title"), body: t("wizard.home.step3Body") },
     { icon: "map-outline",      title: t("wizard.home.step4Title"), body: t("wizard.home.step4Body") },
+  ], [t]);
+
+  // First-run wizard: explains Hype mode, shown only the first time the flame
+  // FAB is tapped (not on screen load — gated behind `hypeWizardOpen`).
+  const hypeWizard = useFirstRun("hype-map");
+  const [hypeWizardOpen, setHypeWizardOpen] = useState(false);
+  const hypeWizardSteps = useMemo<WizardStep[]>(() => [
+    { icon: "flame",         title: t("wizard.hype.step1Title"), highlight: t("wizard.hype.step1Highlight"), body: t("wizard.hype.step1Body") },
+    { icon: "flame-outline", title: t("wizard.hype.step2Title"), body: t("wizard.hype.step2Body") },
+    { icon: "navigate",      title: t("wizard.hype.step3Title"), body: t("wizard.hype.step3Body") },
   ], [t]);
 
   // Hype-map events (cache-first: cached flames paint instantly, then a
@@ -195,24 +201,24 @@ export default function HomeScreen() {
     void fetchSponsors().then(setSponsors).catch(() => {});
   }, []);
 
-  // Hydrate Hype mode from the last session (defaults to off, no flash).
-  useEffect(() => {
-    void AsyncStorage.getItem(HYPE_MODE_STORAGE_KEY).then((v) => {
-      if (v === "1") setHypeMode(true);
-    }).catch(() => {});
-  }, []);
-
   const toggleHypeMode = () => {
     devLog(
       `[HYPE-DEBUG] flame tapped — hypeMode ${hypeMode} -> ${!hypeMode}; ` +
       `${hypeEvents.length} event(s) will be passed to the map`,
     );
-    setHypeMode((prev) => {
-      const next = !prev;
-      void AsyncStorage.setItem(HYPE_MODE_STORAGE_KEY, next ? "1" : "0").catch(() => {});
-      return next;
-    });
+    setHypeMode((prev) => !prev);
     devLog("[HYPE-DEBUG] setHypeMode dispatched (crash after this = render/native layer)");
+  };
+
+  // First tap ever: show the explainer wizard instead of toggling right away.
+  // The wizard's own onDone/onComplete (below, in the JSX) marks it seen and
+  // then turns Hype mode on. Every later tap toggles immediately.
+  const handleHypeFabPress = () => {
+    if (hypeWizard.ready && !hypeWizard.seen) {
+      setHypeWizardOpen(true);
+      return;
+    }
+    toggleHypeMode();
   };
 
   const openLiftSheet = () => {
@@ -621,13 +627,6 @@ export default function HomeScreen() {
               </TouchableOpacity>
             )}
             <TouchableOpacity
-              style={[styles.hypeToggleBtn, hypeMode && styles.hypeToggleBtnActive]}
-              onPress={toggleHypeMode}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="flame" size={18} color={hypeMode ? C.fire : C.muted} />
-            </TouchableOpacity>
-            <TouchableOpacity
               style={styles.searchFilterBtn}
               onPress={searchWizard.replay}
               activeOpacity={0.7}
@@ -637,6 +636,15 @@ export default function HomeScreen() {
           </View>
         </BlurView>
       </View>
+
+      {/* ── Hype Mode FAB ────────────────────────────────────────────────── */}
+      <TouchableOpacity
+        style={[styles.hypeFab, hypeMode && styles.hypeFabActive]}
+        onPress={handleHypeFabPress}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="flame" size={19} color={hypeMode ? "#fff" : C.fire} />
+      </TouchableOpacity>
 
       {/* ── Suggestions Dropdown ───────────────────────────────────────────── */}
       {showSuggestions && (
@@ -763,6 +771,17 @@ export default function HomeScreen() {
         finalLabel={t("wizard.home.finalCta")}
       />
 
+      <WizardModal
+        visible={hypeWizardOpen}
+        steps={hypeWizardSteps}
+        onDone={() => {
+          hypeWizard.markSeen();
+          setHypeWizardOpen(false);
+          toggleHypeMode();
+        }}
+        finalLabel={t("wizard.hype.finalCta")}
+      />
+
       {/* Soft profile-completion nudge holding a pending ride request. */}
       <ProfileCompletionSheet
         visible={pendingRide !== null}
@@ -857,24 +876,33 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  hypeToggleBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 10,
+  hypeFab: {
+    position: "absolute",
+    bottom: 150,
+    left: 16,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(249, 115, 22, 0.10)",
-    borderWidth: 1,
-    borderColor: "rgba(249, 115, 22, 0.20)",
-  },
-  hypeToggleBtnActive: {
-    backgroundColor: "rgba(249, 115, 22, 0.22)",
+    backgroundColor: "rgba(10, 10, 22, 0.85)",
+    borderWidth: 1.5,
     borderColor: "rgba(249, 115, 22, 0.55)",
+    zIndex: 5,
+    shadowColor: "#000",
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 6,
+  },
+  hypeFabActive: {
+    backgroundColor: "#f97316",
+    borderColor: "#f97316",
     shadowColor: "#f97316",
     shadowOpacity: 0.6,
-    shadowRadius: 6,
+    shadowRadius: 8,
     shadowOffset: { width: 0, height: 0 },
-    elevation: 4,
+    elevation: 8,
   },
 
   // ── Suggestions Dropdown ──────────────────────────────────────────────────

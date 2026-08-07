@@ -1,4 +1,4 @@
-import { hypeScoreToIconSize, type HypeEvent } from "@/constants/events";
+import { clampHypeScore, hypeScoreToIconSize, type HypeEvent } from "@/constants/events";
 import {
   categoryIcon,
   sponsorMarkerSize,
@@ -15,7 +15,7 @@ import { getRouteStats } from "@/services/routeService";
 import { Ionicons } from "@expo/vector-icons";
 import * as Location from "expo-location";
 import React, { useEffect, useRef, useState } from "react";
-import { Image, StyleSheet, TouchableOpacity, View } from "react-native";
+import { Animated, Image, StyleSheet, TouchableOpacity, View } from "react-native";
 import MapView, { Marker, Polyline, type Region } from "react-native-maps";
 
 // ─── Design Tokens ───────────────────────────────────────────────────────────
@@ -114,6 +114,37 @@ function PinMarker({
     <View style={[m.pin, { shadowColor: color }]}>
       <Ionicons name={icon} size={size} color={color} />
       <View style={[m.pinTip, { backgroundColor: color }]} />
+    </View>
+  );
+}
+
+// A bare flame marker, deliberately distinct from the round Hype FAB button
+// (no background disc). High-hype events (score >= 8) get a subtle looping
+// pulse on the icon itself to draw the eye.
+function HypePinMarker({ score, size }: { score: number; size: number }) {
+  const isHot = clampHypeScore(score) >= 8;
+  const pulse = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!isHot) return;
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 1, duration: 900, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 0, duration: 900, useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [isHot, pulse]);
+
+  const pulseScale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.15] });
+
+  return (
+    <View style={[m.pin, { shadowColor: C.fire }]}>
+      <Animated.View style={isHot ? { transform: [{ scale: pulseScale }] } : undefined}>
+        <Ionicons name="flame" size={size} color={C.fire} />
+      </Animated.View>
+      <View style={[m.pinTip, { backgroundColor: C.fire }]} />
     </View>
   );
 }
@@ -678,6 +709,7 @@ export default function RideMapView(props: RideMapViewProps) {
         ))}
 
         {/* 4 ── Hype Events (flame size scales with score 1–10, renders last = on top) ─ */}
+        {/* Future: cluster markers at low zoom when density is high (not implemented). */}
         {props.events?.map((ev) => {
           const badCoord = !Number.isFinite(ev.lat) || !Number.isFinite(ev.lng);
           const size = hypeScoreToIconSize(ev.score);
@@ -696,7 +728,7 @@ export default function RideMapView(props: RideMapViewProps) {
                 props.onEventSelect?.(ev);
               }}
             >
-              <PinMarker icon="flame" color={C.fire} size={size} />
+              <HypePinMarker score={ev.score} size={size} />
             </SnapshottingMarker>
           );
         })}

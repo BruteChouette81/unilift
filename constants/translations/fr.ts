@@ -584,11 +584,7 @@ export const fr = {
     peopleGoing: "intéressé·e·s",
     comingSoon: "Bientôt disponible",
     accessEvent: "Accéder à l'événement",
-    markInterested: "Ça m'intéresse",
-    interested: "Intéressé·e",
-    savedTitle: "Événements suivis",
-    savedEmpty: "Aucun événement enregistré",
-    savedEmptySub: "Touchez un événement sur la carte Hype et marquez votre intérêt.",
+    getDirections: "Itinéraire",
   },
   sponsor: {
     featuredPartner: "Partenaire vedette",
@@ -975,9 +971,21 @@ export const fr = {
       step2Title: "Des suggestions intelligentes",
       step2Body: "Les icônes t'aident à choisir vite : 🏠 domicile · ⭐ favori · 🔥 événement Hype · 🕐 récent · 📍 lieu. Touche une suggestion pour lancer ta demande.",
       step3Title: "Le mode Hype 🔥",
-      step3Body: "Active la flamme pour passer en mode nuit et révéler les événements, partys et bars sur la carte.",
+      step3Body: "Appuie sur le bouton flamme pour passer en mode nuit et révéler les événements, partys et bars sur la carte.",
       step4Title: "Utilise la carte",
       step4Body: "Tu peux aussi utiliser la carte pour choisir ta destination et demander un lift.",
+    },
+
+    // ── Carte Hype : premier appui sur le bouton flamme ─────────────────────
+    hype: {
+      finalCta: "Montre-moi",
+      step1Title: "Bienvenue dans le mode Hype 🔥",
+      step1Highlight: "Partys, bars et événements près de toi",
+      step1Body: "La carte passe en mode nuit et s'allume avec tous les événements qui se passent autour de toi en ce moment.",
+      step2Title: "Touche une flamme",
+      step2Body: "Chaque flamme est un événement — plus elle est grosse et pulse, plus c'est hype. Touche-la pour voir le lieu, l'heure, le prix et le nombre de personnes intéressées.",
+      step3Title: "Rends-toi sur place",
+      step3Body: "Depuis la fiche d'un événement, obtiens l'itinéraire ou demande un lift directement vers le lieu.",
     },
 
     // ── Profil : visite guidée ──────────────────────────────────────────────

@@ -226,8 +226,9 @@ service cloud.firestore {
     // Event catalog for the Hype map. Any signed-in user may read. Writes are
     // restricted to founder admins (custom claim) so the admin dashboard can
     // create/edit/delete events. Regular clients still cannot write.
-    // NOTE: attendeeCount is maintained by the /events/interest Cloud Function
-    // (admin SDK, bypasses these rules); the dashboard should not edit it.
+    // NOTE: attendeeCount (optional "people going" stat) has no dedicated writer
+    // after the interest-toggle feature was removed — it's set manually via the
+    // admin dashboard like any other event field, subject to the same isAdmin() rule.
     match /events/{eventId} {
       allow read: if isSignedIn();
       allow create, update, delete: if isAdmin();

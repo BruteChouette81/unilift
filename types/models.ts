@@ -54,8 +54,6 @@ export type UserProfile = {
   stripeCustomerId?: string;
   language?: Language;
   expoPushToken?: string;
-  /** Hype-event ids the user has marked as interested (powers the profile list). */
-  interestedEvents?: string[];
   facebookId?: string;
   facebookName?: string;
   instagramId?: string;

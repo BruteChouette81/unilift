@@ -587,11 +587,7 @@ export const en: typeof fr = {
     peopleGoing: "interested",
     comingSoon: "Coming soon",
     accessEvent: "Access this event",
-    markInterested: "I'm interested",
-    interested: "Interested",
-    savedTitle: "Interested events",
-    savedEmpty: "No saved events yet",
-    savedEmptySub: "Tap an event on the Hype map and mark yourself interested.",
+    getDirections: "Get directions",
   },
   sponsor: {
     featuredPartner: "Featured Partner",
@@ -978,9 +974,21 @@ export const en: typeof fr = {
       step2Title: "Smart suggestions",
       step2Body: "Icons help you pick fast: 🏠 home · ⭐ favorite · 🔥 Hype event · 🕐 recent · 📍 place. Tap a suggestion to start your request.",
       step3Title: "Hype mode 🔥",
-      step3Body: "Tap the flame to switch to night mode and reveal events, parties and bars on the map.",
+      step3Body: "Tap the flame button to switch to night mode and reveal events, parties and bars on the map.",
       step4Title: "Tap the map",
       step4Body: "You can also tap any place or marker on the map to pick your destination and request a lift.",
+    },
+
+    // ── Hype map: first tap of the flame button ─────────────────────────────
+    hype: {
+      finalCta: "Show me",
+      step1Title: "Welcome to Hype mode 🔥",
+      step1Highlight: "Parties, bars and events near you",
+      step1Body: "The map switches to night mode and lights up with every event happening around you right now.",
+      step2Title: "Tap a flame",
+      step2Body: "Each flame is an event — bigger and pulsing means more hype. Tap one to see the venue, time, price and how many people are going.",
+      step3Title: "Get there",
+      step3Body: "From an event card, get directions or request a lift straight to the venue.",
     },
 
     // ── Profile: guided tour ────────────────────────────────────────────────

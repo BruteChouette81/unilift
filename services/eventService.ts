@@ -1,9 +1,7 @@
-import { apiFetch, apiBaseUrl, firestoreBaseUrl, firestoreCollectionUrl, withFirebaseApiKey } from "@/constants/runtime-config";
+import { firestoreBaseUrl, withFirebaseApiKey } from "@/constants/runtime-config";
 import { clampHypeScore, type HypeEvent } from "@/constants/events";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getAuth } from "firebase/auth";
-
-const BASE_URL = firestoreCollectionUrl("events");
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null;
@@ -116,36 +114,6 @@ function parseEvent(doc: unknown): HypeEvent | null {
     ticketPriceCents: Number.isFinite(ticket) ? ticket : undefined,
     attendeeCount: Number.isFinite(attendees) ? attendees : undefined,
   };
-}
-
-/** Toggle the current user's interest in an event. Returns the new interest
- *  state and the event's updated attendee count (server is the source of
- *  truth — race-safe). */
-export async function toggleEventInterest(
-  eventId: string,
-): Promise<{ interested: boolean; attendeeCount: number }> {
-  const user = getAuth().currentUser;
-  if (!user) throw new Error("Not authenticated");
-  const token = await user.getIdToken();
-  const res = await apiFetch(`${apiBaseUrl}/events/interest`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ eventId }),
-  });
-  if (!res.ok) throw new Error(`Failed to toggle interest (status ${res.status})`);
-  const data = await res.json().catch(() => ({}));
-  return { interested: !!data.interested, attendeeCount: Number(data.attendeeCount) || 0 };
-}
-
-/** Fetch a single event by id (used to live-poll its attendee counter). */
-export async function fetchEventById(eventId: string): Promise<HypeEvent | null> {
-  try {
-    const res = await fetch(withFirebaseApiKey(`${BASE_URL}/${eventId}`), { headers: await authHeaders() });
-    if (!res.ok) return null;
-    return parseEvent(await res.json());
-  } catch {
-    return null;
-  }
 }
 
 /** Fetch the top 50 Hype-map events from Firestore, ordered by score, and

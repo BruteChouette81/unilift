@@ -170,7 +170,6 @@ export const normalizeUserData = (
   const driverModeEnabled = fieldBool(fields, "driverModeEnabled", true);
   const driverDays = fieldStringArray(fields, "driverDays");
   const driverAvailability = parseDriverAvailability(fields);
-  const interestedEvents = fieldStringArray(fields, "interestedEvents");
   const driverMaxDetourKm = fieldInt(fields, "driverMaxDetourKm", 0) || undefined;
   const driverDestinationRadiusKm = fieldInt(fields, "driverDestinationRadiusKm", 0) || undefined;
   const driverDefaultDestination = fieldString(fields, "driverDefaultDestination", "") || null;
@@ -231,7 +230,6 @@ export const normalizeUserData = (
     driverModeEnabled,
     ...(driverDays.length ? { driverDays } : {}),
     ...(driverAvailability.length ? { driverAvailability } : {}),
-    ...(interestedEvents.length ? { interestedEvents } : {}),
     ...(driverMaxDetourKm ? { driverMaxDetourKm } : {}),
     ...(driverDestinationRadiusKm ? { driverDestinationRadiusKm } : {}),
     ...(driverDefaultDestination ? { driverDefaultDestination } : {}),

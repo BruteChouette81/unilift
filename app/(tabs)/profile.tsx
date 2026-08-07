@@ -30,7 +30,6 @@ import WizardModal, { type WizardStep } from "@/components/wizard/wizard-modal";
 import { useFirstRun } from "@/hooks/use-first-run";
 import { PassengerRidesList } from "@/components/profile/passenger-rides-list";
 import { PlannedRidesList } from "@/components/profile/planned-rides-list";
-import { InterestedEventsList } from "@/components/profile/interested-events-list";
 
 import { useUserProfile } from "@/context/UserProfileContext";
 import { patchUserField } from "@/components/userHelper";
@@ -477,10 +476,6 @@ const ProfileScreen = () => {
               />
             </>
           )}
-
-          {/* ── Interested Events ────────────────────────────────────────────── */}
-          <SectionHeader icon="flame-outline" title={t("hypeEvent.savedTitle")} />
-          <InterestedEventsList />
 
           {/* ── Favorites ────────────────────────────────────────────────────── */}
           <SectionHeader
