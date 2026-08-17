@@ -3,7 +3,6 @@ import React, { useRef, useEffect, useState } from "react";
 import { Animated, StyleSheet, TouchableOpacity, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { BlurView } from "expo-blur";
-import { LinearGradient } from "expo-linear-gradient";
 import { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 
 import { useAuth } from "@/context/AuthContext";
@@ -89,12 +88,7 @@ function CustomTabBar({ state, navigation }: BottomTabBarProps) {
           pointerEvents="none"
           style={[styles.sliderTrack, { transform: [{ translateX: sliderTranslateX }] }]}
         >
-          <LinearGradient
-            colors={[C.purple, C.pink]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            style={styles.sliderPill}
-          />
+          <View style={[styles.sliderPill, { backgroundColor: "#e09af7" }]} />
         </Animated.View>
       )}
 

@@ -9,7 +9,6 @@ import { geoSuggestion, type LocationResult } from "@/services/rideServices";
 import { WEEKDAY_KEYS, type DriverAvailabilityWindow, type FavoriteRoute, type WeekdayKey } from "@/types/models";
 import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
-import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import React, { useEffect, useRef, useState } from "react";
 import {
@@ -45,9 +44,6 @@ const C = {
   danger:      "#f87171",
   inputBg:     "rgba(15, 15, 30, 0.55)",
 };
-
-const BTN_GRADIENT = ["#FD165A", "#8938D5"] as const;
-const ACTIVE_DAY_GRADIENT = ["#FD165A", "#8938D5"] as const;
 
 // Driver mode is a simple ON/OFF (default ON) for now — the recurring-availability
 // planning step is hidden. Flip to `true` to re-enable window configuration here.
@@ -311,9 +307,9 @@ export default function OnboardingScreen() {
                 return (
                   <TouchableOpacity key={key} activeOpacity={0.8} onPress={() => toggleDay(key)} style={styles.dayWrap}>
                     {active ? (
-                      <LinearGradient colors={ACTIVE_DAY_GRADIENT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.dayChipActive}>
+                      <View style={styles.dayChipActive}>
                         <Text style={styles.dayTextActive}>{t(`driverMode.days.${key}`)}</Text>
-                      </LinearGradient>
+                      </View>
                     ) : (
                       <View style={styles.dayChip}>
                         <Text style={styles.dayText}>{t(`driverMode.days.${key}`)}</Text>
@@ -429,17 +425,19 @@ export default function OnboardingScreen() {
         <Text style={styles.hint}>{t("onboarding.cardHint")}</Text>
 
         {/* ── Actions ───────────────────────────────────────────────────── */}
-        <Pressable onPress={handleFinish} disabled={saving} style={{ marginTop: 34 }}>
-          <LinearGradient colors={BTN_GRADIENT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={[styles.finishBtn, saving && { opacity: 0.7 }]}>
-            {saving ? (
-              <View style={styles.btnRow}>
-                <ActivityIndicator color="#fff" />
-                <Text style={[styles.finishBtnText, { marginLeft: 8 }]}>{t("onboarding.saving")}</Text>
-              </View>
-            ) : (
-              <Text style={styles.finishBtnText}>{t("onboarding.finish")}</Text>
-            )}
-          </LinearGradient>
+        <Pressable
+          onPress={handleFinish}
+          disabled={saving}
+          style={[{ marginTop: 34 }, styles.finishBtn, saving && { opacity: 0.7 }]}
+        >
+          {saving ? (
+            <View style={styles.btnRow}>
+              <ActivityIndicator color="#2d0015" />
+              <Text style={[styles.finishBtnText, { marginLeft: 8 }]}>{t("onboarding.saving")}</Text>
+            </View>
+          ) : (
+            <Text style={styles.finishBtnText}>{t("onboarding.finish")}</Text>
+          )}
         </Pressable>
 
         <TouchableOpacity onPress={goHome} disabled={saving} style={styles.skipBtn} hitSlop={8}>
@@ -571,10 +569,11 @@ const styles = StyleSheet.create({
   },
   dayChipActive: {
     width: 38, height: 46, borderRadius: 12, alignItems: "center", justifyContent: "center",
+    backgroundColor: C.purpleLight,
     shadowColor: C.purple, shadowOpacity: 0.5, shadowRadius: 8, shadowOffset: { width: 0, height: 3 }, elevation: 5,
   },
   dayText: { color: C.muted, fontSize: 12, fontWeight: "700" },
-  dayTextActive: { color: "#fff", fontSize: 12, fontWeight: "800" },
+  dayTextActive: { color: "#2d0015", fontSize: 12, fontWeight: "800" },
 
   timeRow: { flexDirection: "row", gap: 12 },
   timeBtn: {
@@ -614,8 +613,8 @@ const styles = StyleSheet.create({
   addCardText: { color: C.purpleLight, fontSize: 14, fontWeight: "700" },
 
   // Actions
-  finishBtn: { height: 54, borderRadius: 16, alignItems: "center", justifyContent: "center" },
-  finishBtnText: { color: "#fff", fontWeight: "700", fontSize: 16 },
+  finishBtn: { height: 54, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: C.purpleLight },
+  finishBtnText: { color: "#2d0015", fontWeight: "700", fontSize: 16 },
   btnRow: { flexDirection: "row", alignItems: "center" },
   skipBtn: { alignItems: "center", paddingVertical: 16, marginTop: 4 },
   skipText: { color: C.muted, fontSize: 14, fontWeight: "600" },

@@ -1,5 +1,4 @@
 import { useLanguage } from "@/context/LanguageContext";
-import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -39,14 +38,9 @@ export default function HelpSupportScreen() {
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} activeOpacity={0.7}>
-          <LinearGradient
-            colors={["#FD165A", "#8938D5"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.backBtnGrad}
-          >
-            <Ionicons name="arrow-back" size={18} color="#fff" />
-          </LinearGradient>
+          <View style={styles.backBtnGrad}>
+            <Ionicons name="arrow-back" size={18} color="#2d0015" />
+          </View>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>{t("profile.settings.helpSupport")}</Text>
         <View style={{ width: 38 }} />
@@ -66,18 +60,13 @@ export default function HelpSupportScreen() {
           onPress={() => void Linking.openURL("mailto:support@unilift.ca")}
           activeOpacity={0.75}
         >
-          <LinearGradient
-            colors={["#FD165A", "#8938D5"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            style={styles.btnGrad}
-          >
-            <Ionicons name="mail-outline" size={18} color="#fff" />
+          <View style={styles.btnGrad}>
+            <Ionicons name="mail-outline" size={18} color="#2d0015" />
             <View>
               <Text style={styles.btnText}>{t("profile.support.cta")}</Text>
               <Text style={styles.btnEmail}>{t("profile.support.email")}</Text>
             </View>
-          </LinearGradient>
+          </View>
         </TouchableOpacity>
       </View>
     </View>
@@ -97,7 +86,7 @@ const styles = StyleSheet.create({
     borderBottomColor: C.borderFaint,
   },
   backBtn:     { borderRadius: 10, overflow: "hidden" },
-  backBtnGrad: { width: 38, height: 38, alignItems: "center", justifyContent: "center" },
+  backBtnGrad: { width: 38, height: 38, alignItems: "center", justifyContent: "center", backgroundColor: "#e09af7" },
   headerTitle: { color: C.text, fontSize: 17, fontWeight: "700" },
 
   content: {
@@ -143,14 +132,15 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingVertical: 16,
     paddingHorizontal: 20,
+    backgroundColor: "#e09af7",
   },
   btnText: {
-    color: "#fff",
+    color: "#2d0015",
     fontWeight: "700",
     fontSize: 15,
   },
   btnEmail: {
-    color: "rgba(255,255,255,0.65)",
+    color: "rgba(45,0,21,0.65)",
     fontSize: 12,
     marginTop: 1,
   },

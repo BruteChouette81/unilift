@@ -229,9 +229,9 @@ export default function DriveOnlineScreen() {
     <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === "ios" ? "padding" : "height"}>
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={8}>
-          <LinearGradient colors={["#FD165A", "#8938D5"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.backBtnGrad}>
-            <Ionicons name="arrow-back" size={18} color="#fff" />
-          </LinearGradient>
+          <View style={styles.backBtnGrad}>
+            <Ionicons name="arrow-back" size={18} color="#2d0015" />
+          </View>
         </Pressable>
         <Text style={styles.headerTitle}>{t("driveOnline.title")}</Text>
         <View style={{ width: 38 }} />
@@ -348,14 +348,9 @@ export default function DriveOnlineScreen() {
 
               {/* Icon */}
               <View style={notif.iconWrap}>
-                <LinearGradient
-                  colors={["#8938D5", "#FD165A"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={notif.iconGrad}
-                >
-                  <Ionicons name="notifications" size={28} color="#fff" />
-                </LinearGradient>
+                <View style={notif.iconGrad}>
+                  <Ionicons name="notifications" size={28} color="#2d0015" />
+                </View>
               </View>
 
               {/* Stat */}
@@ -388,15 +383,10 @@ export default function DriveOnlineScreen() {
                   }
                 }}
               >
-                <LinearGradient
-                  colors={["#8938D5", "#FD165A"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={notif.ctaGrad}
-                >
-                  <Ionicons name="notifications" size={18} color="#fff" />
+                <View style={notif.ctaGrad}>
+                  <Ionicons name="notifications" size={18} color="#2d0015" />
                   <Text style={notif.ctaText}>Activer les notifications</Text>
-                </LinearGradient>
+                </View>
               </TouchableOpacity>
 
               {/* Skip */}
@@ -431,7 +421,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(8,8,16,0.97)", borderBottomWidth: 1, borderBottomColor: "rgba(137,56,213,0.20)",
   },
   backBtn: { borderRadius: 10, overflow: "hidden" },
-  backBtnGrad: { width: 38, height: 38, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  backBtnGrad: { width: 38, height: 38, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: C.purpleLight },
   headerTitle: { color: C.text, fontSize: 17, fontWeight: "700" },
   scroll: { padding: 20 },
 
@@ -537,6 +527,7 @@ const notif = StyleSheet.create({
     borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: C.purpleLight,
   },
   stat: {
     color: "#f3f4f6",
@@ -573,9 +564,10 @@ const notif = StyleSheet.create({
     justifyContent: "center",
     paddingVertical: 16,
     gap: 8,
+    backgroundColor: C.purpleLight,
   },
   ctaText: {
-    color: "#fff",
+    color: "#2d0015",
     fontSize: 16,
     fontWeight: "700",
     letterSpacing: 0.3,

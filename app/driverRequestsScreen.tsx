@@ -482,9 +482,9 @@ export default function DriverRequestsScreen() {
       <View style={styles.root}>
         <View style={styles.header}>
           <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={8}>
-            <LinearGradient colors={["#FD165A", "#8938D5"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.backBtnGrad}>
-              <Ionicons name="arrow-back" size={18} color="#fff" />
-            </LinearGradient>
+            <View style={styles.backBtnGrad}>
+              <Ionicons name="arrow-back" size={18} color="#2d0015" />
+            </View>
           </Pressable>
           <Text style={styles.headerTitle}>{t("driverInbox.title")}</Text>
           <View style={{ width: 38 }} />
@@ -581,9 +581,9 @@ export default function DriverRequestsScreen() {
     <View style={styles.root}>
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={8}>
-          <LinearGradient colors={["#FD165A", "#8938D5"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.backBtnGrad}>
-            <Ionicons name="arrow-back" size={18} color="#fff" />
-          </LinearGradient>
+          <View style={styles.backBtnGrad}>
+            <Ionicons name="arrow-back" size={18} color="#2d0015" />
+          </View>
         </Pressable>
         <Text style={styles.headerTitle}>{t("driverInbox.title")}</Text>
         <TouchableOpacity onPress={handleGoOffline} style={styles.offlineBtn}>
@@ -630,7 +630,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(8,8,16,0.97)", borderBottomWidth: 1, borderBottomColor: "rgba(137,56,213,0.20)",
   },
   backBtn: { borderRadius: 10, overflow: "hidden" },
-  backBtnGrad: { width: 38, height: 38, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  backBtnGrad: { width: 38, height: 38, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: C.purpleLight },
   headerTitle: { color: C.text, fontSize: 17, fontWeight: "700" },
   offlineBtn: {
     paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10,

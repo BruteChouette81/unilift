@@ -6,7 +6,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { doc, onSnapshot } from "firebase/firestore";
 import { db } from "@/firebaseConfig";
 import { BlurView } from "expo-blur";
-import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useEffect, useRef } from "react";
 import {
@@ -183,14 +182,9 @@ export default function FindingDriverScreen() {
           <View style={styles.radarWrap}>
             <Animated.View style={[styles.ring, ringStyle(pulse1)]} />
             <Animated.View style={[styles.ring, ringStyle(pulse2)]} />
-            <LinearGradient
-              colors={["#FD165A", "#8938D5"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.core}
-            >
-              <Ionicons name="car-sport" size={34} color="#fff" />
-            </LinearGradient>
+            <View style={styles.core}>
+              <Ionicons name="car-sport" size={34} color="#2d0015" />
+            </View>
           </View>
 
           {/* Status */}
@@ -278,6 +272,7 @@ const styles = StyleSheet.create({
     borderRadius: 44,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "#e09af7",
     shadowColor: C.purple,
     shadowOpacity: 0.6,
     shadowRadius: 20,

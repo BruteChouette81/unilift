@@ -282,21 +282,16 @@ function ActiveRideBanner() {
       onPress={() => router.push(`${screen}?${qs}` as any)}
       style={styles.rideBanner}
     >
-      <LinearGradient
-        colors={["#FD165A", "#8938D5"]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 0 }}
-        style={styles.rideBannerGrad}
-      >
+      <View style={styles.rideBannerGrad}>
         <View style={styles.rideBannerLeft}>
           <View style={styles.rideBannerDot} />
           <Text style={styles.rideBannerText}>{label}</Text>
         </View>
         <View style={styles.rideBannerBtn}>
           <Text style={styles.rideBannerBtnText}>{t("activeRide.returnBtn")}</Text>
-          <Text style={{fontSize: 12}}>→</Text>
+          <Text style={{fontSize: 12, color: "#2d0015"}}>→</Text>
         </View>
-      </LinearGradient>
+      </View>
     </Pressable>
   );
 }
@@ -735,6 +730,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingHorizontal: 16,
     paddingVertical: 10,
+    backgroundColor: "#e09af7",
   },
   rideBannerLeft: { flexDirection: "row", alignItems: "center", gap: 8 },
   rideBannerDot: {
@@ -743,15 +739,15 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     backgroundColor: "#34d399",
   },
-  rideBannerText: { color: "#fff", fontSize: 13, fontWeight: "600" },
+  rideBannerText: { color: "#2d0015", fontSize: 13, fontWeight: "600" },
   rideBannerBtn: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    backgroundColor: "rgba(255,255,255,0.2)",
+    backgroundColor: "rgba(45,0,21,0.12)",
     borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 5,
   },
-  rideBannerBtnText: { color: "#fff", fontSize: 12, fontWeight: "700" },
+  rideBannerBtnText: { color: "#2d0015", fontSize: 12, fontWeight: "700" },
 });

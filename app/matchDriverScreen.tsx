@@ -276,9 +276,9 @@ export default function MatchDriverScreen() {
             <Animated.View
               style={[styles.celebrateGlow, { opacity: glowOpacity, transform: [{ scale: glowScale }] }]}
             />
-            <LinearGradient colors={[C.pink, C.purple]} style={styles.resultIconFilled}>
-              <Ionicons name="heart" size={40} color="#fff" />
-            </LinearGradient>
+            <View style={styles.resultIconFilled}>
+              <Ionicons name="heart" size={40} color="#2d0015" />
+            </View>
           </View>
           <Text style={styles.resultTitle}>{t("matchDriver.matchedTitle")}</Text>
           <Text style={styles.resultSub}>{t("matchDriver.matchedSub")}</Text>
@@ -385,10 +385,10 @@ export default function MatchDriverScreen() {
               onPress={doConfirm}
               activeOpacity={0.9}
             >
-              <LinearGradient colors={[C.pink, C.purple]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.confirmGrad}>
-                <Ionicons name="heart" size={22} color="#fff" />
+              <View style={styles.confirmGrad}>
+                <Ionicons name="heart" size={22} color="#2d0015" />
                 <Text style={styles.confirmText}>{t("matchDriver.confirm")}</Text>
-              </LinearGradient>
+              </View>
             </TouchableOpacity>
           </View>
         </>
@@ -461,8 +461,8 @@ const styles = StyleSheet.create({
   },
   passBtn: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.4)" },
   confirmBtn: { borderRadius: 32, overflow: "hidden", flex: 1, maxWidth: 240, shadowColor: C.pink, shadowOpacity: 0.4, shadowRadius: 16, shadowOffset: { width: 0, height: 6 }, elevation: 10 },
-  confirmGrad: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, height: 64 },
-  confirmText: { color: "#fff", fontSize: 17, fontWeight: "800" },
+  confirmGrad: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, height: 64, backgroundColor: "#e09af7" },
+  confirmText: { color: "#2d0015", fontSize: 17, fontWeight: "800" },
 
   celebrateWrap: { alignItems: "center", justifyContent: "center", marginBottom: 4 },
   celebrateGlow: {
@@ -473,7 +473,7 @@ const styles = StyleSheet.create({
     width: 92, height: 92, borderRadius: 46, alignItems: "center", justifyContent: "center",
     borderWidth: 2, backgroundColor: "rgba(255,255,255,0.04)",
   },
-  resultIconFilled: { width: 92, height: 92, borderRadius: 46, alignItems: "center", justifyContent: "center" },
+  resultIconFilled: { width: 92, height: 92, borderRadius: 46, alignItems: "center", justifyContent: "center", backgroundColor: "#e09af7" },
   resultTitle: { color: C.text, fontSize: 24, fontWeight: "800", textAlign: "center", marginTop: 8 },
   resultSub: { color: C.muted, fontSize: 15, textAlign: "center", lineHeight: 21, paddingHorizontal: 30 },
 });

@@ -118,15 +118,10 @@ export function RequestLiftSheet({
 
             {/* CTA */}
             <TouchableOpacity style={styles.ctaWrap} onPress={onRequestLift} activeOpacity={0.85}>
-              <LinearGradient
-                colors={["#8938D5", "#FD165A"]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={styles.ctaGradient}
-              >
-                <Ionicons name="car" size={18} color="#fff" />
+              <View style={styles.ctaGradient}>
+                <Ionicons name="car" size={18} color="#2d0015" />
                 <Text style={styles.ctaText}>Demander un lift</Text>
-              </LinearGradient>
+              </View>
             </TouchableOpacity>
 
             {/* Helper */}
@@ -253,9 +248,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingVertical: 16,
     gap: 8,
+    backgroundColor: "#e09af7",
   },
   ctaText: {
-    color: "#fff",
+    color: "#2d0015",
     fontSize: 16,
     fontWeight: "700",
     letterSpacing: 0.3,

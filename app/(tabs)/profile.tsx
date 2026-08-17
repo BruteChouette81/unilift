@@ -63,7 +63,6 @@ const C = {
 };
 
 const CARD_GRADIENT    = ["#1c0b2a", "#0d0518"] as const;
-const XP_BAR_GRADIENT  = ["#FD165A", "#8938D5"] as const;
 
 // ─── Section Header Component ──────────────────────────────────────────────────
 function SectionHeader({
@@ -356,12 +355,7 @@ const ProfileScreen = () => {
                       </View>
                     </View>
                     <View style={styles.xpTrack}>
-                      <LinearGradient
-                        colors={XP_BAR_GRADIENT}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 0 }}
-                        style={[styles.xpFill, { width: `${progress}%` }]}
-                      />
+                      <View style={[styles.xpFill, { width: `${progress}%`, backgroundColor: "#e09af7" }]} />
                     </View>
                     <View style={styles.xpFooter}>
                       <Text style={styles.xpFooterText}>{t("profile.levelShort", { level })}</Text>
@@ -396,12 +390,7 @@ const ProfileScreen = () => {
               )}
 
               {/* Bottom accent line */}
-              <LinearGradient
-                colors={["#FD165A", "#8938D5"]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={styles.cardAccentLine}
-              />
+              <View style={[styles.cardAccentLine, { backgroundColor: "#e09af7" }]} />
             </LinearGradient>
           </Pressable>
 

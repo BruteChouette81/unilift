@@ -4,7 +4,6 @@ import { autoFormatDateInput, calculateAgeFromBirthDate, formatBirthDateForDispl
 import { useAuth } from "@/context/AuthContext";
 import { useLanguage } from "@/context/LanguageContext";
 import { useUserProfile } from "@/context/UserProfileContext";
-import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useState, useMemo } from "react";
@@ -200,9 +199,9 @@ export default function ProfileSettingsScreen() {
       {/* Header */}
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={8}>
-          <LinearGradient colors={["#FD165A", "#8938D5"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.backBtnGrad}>
-            <Ionicons name="arrow-back" size={18} color="#fff" />
-          </LinearGradient>
+          <View style={styles.backBtnGrad}>
+            <Ionicons name="arrow-back" size={18} color="#2d0015" />
+          </View>
         </Pressable>
         <Text style={styles.headerTitle}>{t("profile.settings.myProfile")}</Text>
         <View style={{ width: 38 }} />
@@ -293,22 +292,19 @@ export default function ProfileSettingsScreen() {
         </View>
 
         {/* Save */}
-        <Pressable onPress={handleSave} disabled={saving} style={{ marginTop: 32 }}>
-          <LinearGradient
-            colors={["#FD165A", "#8938D5"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            style={[styles.saveBtn, saving && { opacity: 0.7 }]}
-          >
-            {saving ? (
-              <View style={styles.saveBtnContent}>
-                <ActivityIndicator color="#fff" size="small" />
-                <Text style={[styles.saveBtnText, { marginLeft: 8 }]}>{t("profileSettings.saving")}</Text>
-              </View>
-            ) : (
-              <Text style={styles.saveBtnText}>{t("profileSettings.saveChanges")}</Text>
-            )}
-          </LinearGradient>
+        <Pressable
+          onPress={handleSave}
+          disabled={saving}
+          style={[styles.saveBtn, { marginTop: 32 }, saving && { opacity: 0.7 }]}
+        >
+          {saving ? (
+            <View style={styles.saveBtnContent}>
+              <ActivityIndicator color="#2d0015" size="small" />
+              <Text style={[styles.saveBtnText, { marginLeft: 8 }]}>{t("profileSettings.saving")}</Text>
+            </View>
+          ) : (
+            <Text style={styles.saveBtnText}>{t("profileSettings.saveChanges")}</Text>
+          )}
         </Pressable>
 
         {/* Danger Zone */}
@@ -365,6 +361,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "#e09af7",
   },
   headerTitle: {
     color: C.text,
@@ -462,13 +459,14 @@ const styles = StyleSheet.create({
     borderRadius: 13,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "#e09af7",
   },
   saveBtnContent: {
     flexDirection: "row",
     alignItems: "center",
   },
   saveBtnText: {
-    color: "#fff",
+    color: "#2d0015",
     fontWeight: "700",
     fontSize: 16,
   },

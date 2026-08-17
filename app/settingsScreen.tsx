@@ -253,17 +253,10 @@ export default function SettingsScreen() {
             <Text style={styles.errorText}>{errors.startAddress}</Text>
           )}
           {homeAddress ? (
-            <Pressable style={styles.primaryBtn} onPress={handleNewHomeAddress}>
-              <LinearGradient
-                colors={["#FD165A", "#8938D5"]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={styles.primaryBtnGrad}
-              >
-                <Text style={styles.primaryBtnText}>
-                  {safeUserData.homeAddress ? t("profile.homeAddress.updateBtn") : t("profile.homeAddress.saveBtn")}
-                </Text>
-              </LinearGradient>
+            <Pressable style={[styles.primaryBtn, styles.primaryBtnGrad]} onPress={handleNewHomeAddress}>
+              <Text style={styles.primaryBtnText}>
+                {safeUserData.homeAddress ? t("profile.homeAddress.updateBtn") : t("profile.homeAddress.saveBtn")}
+              </Text>
             </Pressable>
           ) : null}
         </View>
@@ -366,8 +359,8 @@ const styles = StyleSheet.create({
   input: { flex: 1, paddingVertical: 12, fontSize: 14, color: C.text },
   errorText: { color: C.danger, fontSize: 12, marginTop: 6, marginLeft: 2 },
   primaryBtn:     { marginTop: 10, borderRadius: 10, overflow: "hidden" },
-  primaryBtnGrad: { paddingVertical: 12, alignItems: "center" as const },
-  primaryBtnText: { color: "#fff", fontWeight: "700" as const, fontSize: 14 },
+  primaryBtnGrad: { paddingVertical: 12, alignItems: "center" as const, backgroundColor: "#e09af7" },
+  primaryBtnText: { color: "#2d0015", fontWeight: "700" as const, fontSize: 14 },
   suggestionsContainer: {
     marginTop: 6,
     backgroundColor: "#13132a",

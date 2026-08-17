@@ -282,9 +282,9 @@ export default function CertificationScreen() {
 
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} activeOpacity={0.7}>
-          <LinearGradient colors={["#FD165A", "#8938D5"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.backBtnGrad}>
-            <Ionicons name="arrow-back" size={18} color="#fff" />
-          </LinearGradient>
+          <View style={styles.backBtnGrad}>
+            <Ionicons name="arrow-back" size={18} color="#2d0015" />
+          </View>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>{t("cert.screen.title")}</Text>
         <View style={{ width: 38 }} />
@@ -433,7 +433,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   backBtn: { width: 38, height: 38 },
-  backBtnGrad: { width: 38, height: 38, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+  backBtnGrad: { width: 38, height: 38, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: "#e09af7" },
   headerTitle: { color: C.text, fontSize: 18, fontWeight: "800" },
 
   // Hero

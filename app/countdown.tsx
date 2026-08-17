@@ -78,16 +78,9 @@ export default function CountdownScreen() {
 
           <Pressable
             onPress={() => router.push("/(auth)/signup")}
-            style={styles.ctaWrap}
+            style={[styles.ctaWrap, styles.cta]}
           >
-            <LinearGradient
-              colors={["#FD165A", "#8938D5"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={styles.cta}
-            >
-              <Text style={styles.ctaText}>{t("countdown.createAccount")}</Text>
-            </LinearGradient>
+            <Text style={styles.ctaText}>{t("countdown.createAccount")}</Text>
           </Pressable>
 
           <Pressable
@@ -203,9 +196,10 @@ const styles = StyleSheet.create({
     borderRadius: 13,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "#e09af7",
   },
   ctaText: {
-    color: "#fff",
+    color: "#2d0015",
     fontWeight: "700",
     fontSize: 16,
   },

@@ -2,6 +2,7 @@ import { useRouter } from "expo-router";
 import React, { useEffect, useRef, useState } from "react";
 import * as AppleAuthentication from "expo-apple-authentication";
 import { LinearGradient } from "expo-linear-gradient";
+import { Ionicons } from "@expo/vector-icons";
 import {
   ActivityIndicator,
   Alert,
@@ -237,7 +238,7 @@ export default function LoginScreen() {
           {/* Lockout banner */}
           {isLocked && (
             <View style={styles.lockBanner}>
-              <Text style={styles.lockIcon}>🔒</Text>
+              <Ionicons name="lock-closed" size={20} color="#f87171" />
               <View style={{ flex: 1 }}>
                 <Text style={styles.lockTitle}>{t("auth.login.tooManyAttempts")}</Text>
                 <Text style={styles.lockSub}>{t("auth.login.tryAgainIn", { seconds: lockSecondsLeft })}</Text>
@@ -256,7 +257,7 @@ export default function LoginScreen() {
 
           {/* Email */}
           <View style={[styles.inputRow, emailFocused && styles.inputRowFocused, isLocked && styles.inputRowDisabled]}>
-            <Text style={[{ fontSize: 18 }, styles.inputIcon]}>📧</Text>
+            <Ionicons name="mail-outline" size={18} color={authColors.muted} style={styles.inputIcon} />
             <TextInput
               placeholder={t("auth.login.emailPlaceholder")}
               placeholderTextColor={authColors.placeholder}
@@ -273,7 +274,7 @@ export default function LoginScreen() {
 
           {/* Password */}
           <View style={[styles.inputRow, passwordFocused && styles.inputRowFocused, isLocked && styles.inputRowDisabled]}>
-            <Text style={[{ fontSize: 18 }, styles.inputIcon]}>🔒</Text>
+            <Ionicons name="lock-closed-outline" size={18} color={authColors.muted} style={styles.inputIcon} />
             <TextInput
               placeholder={t("auth.login.passwordPlaceholder")}
               placeholderTextColor={authColors.placeholder}
@@ -286,7 +287,7 @@ export default function LoginScreen() {
               onBlur={() => setPasswordFocused(false)}
             />
             <Pressable onPress={() => setShowPassword((v) => !v)} hitSlop={8}>
-              <Text style={{ fontSize: 18 }}>{showPassword ? "🙈" : "👁"}</Text>
+              <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={20} color={authColors.muted} />
             </Pressable>
           </View>
 
@@ -296,24 +297,26 @@ export default function LoginScreen() {
           </Pressable>
 
           {/* Login button */}
-          <Pressable onPress={handleLogin} disabled={isSubmitting} style={{ marginTop: 8 }}>
-            <LinearGradient
-              colors={isLocked ? ["#374151", "#374151"] : ["#FD165A", "#8938D5"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={[styles.button, isSubmitting && styles.buttonDisabled]}
-            >
-              {submitting && !isLocked ? (
-                <View style={styles.buttonContent}>
-                  <ActivityIndicator color="#fff" />
-                  <Text style={[styles.buttonText, { marginLeft: 8 }]}>{t("auth.login.loggingIn")}</Text>
-                </View>
-              ) : isLocked ? (
-                <Text style={styles.buttonText}>{t("auth.login.lockedButton", { seconds: lockSecondsLeft })}</Text>
-              ) : (
-                <Text style={styles.buttonText}>{t("auth.login.loginBtn")}</Text>
-              )}
-            </LinearGradient>
+          <Pressable
+            onPress={handleLogin}
+            disabled={isSubmitting}
+            style={[
+              styles.button,
+              isLocked ? styles.buttonLocked : styles.buttonPrimary,
+              isSubmitting && styles.buttonDisabled,
+              { marginTop: 8 },
+            ]}
+          >
+            {submitting && !isLocked ? (
+              <View style={styles.buttonContent}>
+                <ActivityIndicator color="#2d0015" />
+                <Text style={[styles.buttonText, styles.buttonTextOnLight, { marginLeft: 8 }]}>{t("auth.login.loggingIn")}</Text>
+              </View>
+            ) : isLocked ? (
+              <Text style={styles.buttonText}>{t("auth.login.lockedButton", { seconds: lockSecondsLeft })}</Text>
+            ) : (
+              <Text style={[styles.buttonText, styles.buttonTextOnLight]}>{t("auth.login.loginBtn")}</Text>
+            )}
           </Pressable>
 
           {/* Divider */}
@@ -363,6 +366,8 @@ const styles = StyleSheet.create({
     width: 80,
     height: 80,
     marginBottom: 10,
+    borderRadius: 18,
+    overflow: "hidden",
   },
   wordmark: {
     color: "#fff",
@@ -400,7 +405,6 @@ const styles = StyleSheet.create({
     padding: 12,
     marginBottom: 16,
   },
-  lockIcon: { fontSize: 20 },
   lockTitle: { color: "#f87171", fontWeight: "700", fontSize: 14 },
   lockSub:   { color: "#f87171", fontSize: 12, opacity: 0.8 },
   warnBanner: {
@@ -455,9 +459,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  buttonPrimary: { backgroundColor: authColors.purpleLight },
+  buttonLocked: { backgroundColor: "#374151" },
   buttonDisabled: { opacity: 0.7 },
   buttonContent: { flexDirection: "row", alignItems: "center" },
   buttonText: { color: "#fff", fontWeight: "700", fontSize: 16 },
+  buttonTextOnLight: { color: "#2d0015" },
 
   divider: {
     flexDirection: "row",

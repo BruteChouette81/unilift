@@ -50,7 +50,6 @@ const C = {
 const BALANCE_GRADIENT  = ["#1c0038", "#08001a"] as const;
 const CARD_GRADIENT     = ["#1e1b4b", "#0d1224"] as const;
 const EARNINGS_GRADIENT = ["#052e16", "#0d1224"] as const;
-const BTN_GRADIENT      = ["#FD165A", "#8938D5"] as const;
 
 // Safety net for `presentPaymentSheet` — generous enough that a user filling in
 // card details is never cut off, short enough that a sheet which failed to
@@ -313,14 +312,9 @@ export default function WalletScreen() {
               {actionLoading ? (
                 <ActivityIndicator size="small" color={C.purpleLight} />
               ) : (
-                <LinearGradient
-                  colors={BTN_GRADIENT}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.addCardIconGrad}
-                >
-                  <Ionicons name="add" size={16} color="#fff" />
-                </LinearGradient>
+                <View style={styles.addCardIconGrad}>
+                  <Ionicons name="add" size={16} color="#2d0015" />
+                </View>
               )}
               <Text style={styles.addCardBtnText}>{t("wallet.addCard")}</Text>
             </TouchableOpacity>
@@ -470,7 +464,7 @@ const styles = StyleSheet.create({
   removeBtn:  { width: 34, height: 34, borderRadius: 10, backgroundColor: "rgba(248,113,113,0.1)", alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "rgba(248,113,113,0.2)" },
 
   addCardBtn:         { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: "rgba(137,56,213,0.06)", borderRadius: 16, padding: 16, borderWidth: 1, borderColor: C.border },
-  addCardIconGrad:    { width: 26, height: 26, borderRadius: 8, alignItems: "center", justifyContent: "center" },
+  addCardIconGrad:    { width: 26, height: 26, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: C.purpleLight },
   addCardBtnText:     { color: C.purpleLight, fontSize: 14, fontWeight: "600" },
   howItWorksBtn:      { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, paddingVertical: 10, marginTop: 2 },
   howItWorksText:     { color: C.muted, fontSize: 12.5, fontWeight: "600" },

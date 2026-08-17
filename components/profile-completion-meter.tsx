@@ -1,7 +1,6 @@
 import { useLanguage } from "@/context/LanguageContext";
 import type { ProfileCompletion, ProfileTaskKey } from "@/utils/profile-completion";
 import { Ionicons } from "@expo/vector-icons";
-import { LinearGradient } from "expo-linear-gradient";
 import React from "react";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
@@ -13,8 +12,6 @@ const C = {
   dim:         "#4b5563",
   success:     "#34d399",
 };
-
-const BAR_GRADIENT = ["#FD165A", "#8938D5"] as const;
 
 const TASK_ICON: Record<ProfileTaskKey, React.ComponentProps<typeof Ionicons>["name"]> = {
   avatar:       "camera-outline",
@@ -44,12 +41,7 @@ export default function ProfileCompletionMeter({ completion, onTaskPress }: Prop
       {/* Progress bar + count */}
       <View style={styles.barRow}>
         <View style={styles.barTrack}>
-          <LinearGradient
-            colors={BAR_GRADIENT}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            style={[styles.barFill, { width: `${percent}%` }]}
-          />
+          <View style={[styles.barFill, { width: `${percent}%`, backgroundColor: C.purpleLight }]} />
         </View>
         <Text style={styles.barLabel}>
           {t("profileCompletion.progressLabel", { completed, total })}

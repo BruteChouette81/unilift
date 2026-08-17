@@ -3,7 +3,6 @@ import { useLanguage } from "@/context/LanguageContext";
 import type { ProfileCompletion } from "@/utils/profile-completion";
 import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
-import { LinearGradient } from "expo-linear-gradient";
 import React from "react";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -13,9 +12,8 @@ const C = {
   gold:        "#fbbf24",
   text:        "#f3f4f6",
   muted:       "#9ca3af",
+  purpleLight: "#e09af7",
 };
-
-const BTN_GRADIENT = ["#FD165A", "#8938D5"] as const;
 
 type Props = {
   visible: boolean;
@@ -39,9 +37,9 @@ export default function ProfileCompletionSheet({ visible, completion, onComplete
       <View style={styles.overlay}>
         <View style={styles.card}>
           <BlurView intensity={90} tint="dark" experimentalBlurMethod="dimezisBlurView" style={styles.blur}>
-            <LinearGradient colors={BTN_GRADIENT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.iconCircle}>
-              <Ionicons name="person-circle-outline" size={30} color="#fff" />
-            </LinearGradient>
+            <View style={styles.iconCircle}>
+              <Ionicons name="person-circle-outline" size={30} color="#2d0015" />
+            </View>
 
             <Text style={styles.title}>{t("profileCompletion.sheetTitle")}</Text>
 
@@ -57,10 +55,8 @@ export default function ProfileCompletionSheet({ visible, completion, onComplete
               <ProfileCompletionMeter completion={completion} />
             </View>
 
-            <Pressable onPress={onCompleteNow} style={{ width: "100%" }}>
-              <LinearGradient colors={BTN_GRADIENT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.primaryBtn}>
-                <Text style={styles.primaryText}>{t("profileCompletion.completeNow")}</Text>
-              </LinearGradient>
+            <Pressable onPress={onCompleteNow} style={[{ width: "100%" }, styles.primaryBtn]}>
+              <Text style={styles.primaryText}>{t("profileCompletion.completeNow")}</Text>
             </Pressable>
 
             <Pressable onPress={onLater} hitSlop={8} style={styles.laterBtn}>
@@ -82,6 +78,7 @@ const styles = StyleSheet.create({
   blur: { padding: 24, alignItems: "center" },
   iconCircle: {
     width: 64, height: 64, borderRadius: 20, alignItems: "center", justifyContent: "center", marginBottom: 16,
+    backgroundColor: C.purpleLight,
     shadowColor: "#8938D5", shadowOpacity: 0.6, shadowRadius: 14, shadowOffset: { width: 0, height: 4 }, elevation: 8,
   },
   title: { color: C.text, fontSize: 21, fontWeight: "800", textAlign: "center", marginBottom: 12 },
@@ -93,8 +90,8 @@ const styles = StyleSheet.create({
   headline: { color: C.gold, fontSize: 13.5, fontWeight: "800", flexShrink: 1, textAlign: "center" },
   body: { color: C.muted, fontSize: 14, lineHeight: 20, textAlign: "center", marginBottom: 18 },
   meterWrap: { alignSelf: "stretch", marginBottom: 22 },
-  primaryBtn: { height: 52, borderRadius: 15, alignItems: "center", justifyContent: "center" },
-  primaryText: { color: "#fff", fontWeight: "800", fontSize: 16 },
+  primaryBtn: { height: 52, borderRadius: 15, alignItems: "center", justifyContent: "center", backgroundColor: C.purpleLight },
+  primaryText: { color: "#2d0015", fontWeight: "800", fontSize: 16 },
   laterBtn: { paddingVertical: 14, marginTop: 4 },
   laterText: { color: C.muted, fontSize: 14, fontWeight: "600" },
 });

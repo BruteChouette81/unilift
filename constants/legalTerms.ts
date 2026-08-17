@@ -1,4 +1,4 @@
-export const LEGAL_TERMS_TEXT = `
+export const LEGAL_TERMS_TEXT_FR = `
 1. ACCEPTATION DES CONDITIONS
 En téléchargeant, installant, accédant ou utilisant l'application mobile UniLift (ci-après « l'Application »), vous acceptez d'être lié par les présentes conditions d'utilisation (ci-après « les Conditions »). Si vous n'acceptez pas l'ensemble des Conditions, vous devez immédiatement cesser toute utilisation de l'Application.
 Les présentes Conditions constituent un contrat juridiquement contraignant entre vous (ci-après « l'Utilisateur ») et Transport UniLift S.E.N.C., société en nom collectif enregistrée au Québec, ayant son siège social au Québec, Canada (ci-après « UniLift », « nous », « notre » ou « nos »).
@@ -89,3 +89,99 @@ Si une disposition des présentes Conditions est jugée invalide ou inapplicable
 18. INTÉGRALITÉ DE L'ENTENTE
 Les présentes Conditions, conjointement avec la Politique de confidentialité et toute autre politique publiée dans l'Application, constituent l'intégralité de l'entente entre l'Utilisateur et Transport UniLift S.E.N.C. relativement à l'utilisation de l'Application et remplacent toute entente, communication ou déclaration antérieure, qu'elle soit écrite ou verbale.
 `;
+
+export const LEGAL_TERMS_TEXT_EN = `
+1. ACCEPTANCE OF TERMS
+By downloading, installing, accessing, or using the UniLift mobile application (hereinafter the "Application"), you agree to be bound by these terms of use (hereinafter the "Terms"). If you do not agree to all of the Terms, you must immediately stop using the Application.
+These Terms constitute a legally binding agreement between you (hereinafter the "User") and Transport UniLift S.E.N.C., a general partnership registered in Québec, with its head office in Québec, Canada (hereinafter "UniLift," "we," "us," or "our").
+UniLift reserves the right to modify these Terms at any time. Any modification will take effect as soon as it is published in the Application. Continued use of the Application after modifications are published constitutes your acceptance of those modifications.
+2. ELIGIBILITY AND AGE RESTRICTIONS
+The Application is strictly reserved for persons eighteen (18) years of age or older. By using the Application, you represent and warrant that you are at least eighteen (18) years old and that you have the legal capacity to enter into a contract under the laws applicable in Québec, including the Civil Code of Québec.
+If we discover that a User is under eighteen (18) years of age, their account will be immediately suspended and deleted, and any associated data will be erased in accordance with the Act respecting the protection of personal information in the private sector (Act 25).
+Any User acting as a driver must hold a valid driver's licence issued by the Société de l'assurance automobile du Québec (SAAQ) or another recognized competent authority, as well as automobile insurance that complies with the requirements of Québec legislation.
+3. DESCRIPTION OF THE SERVICE
+UniLift is a smart social carpooling platform for young adults. The Application allows Users to organize and optimize transportation for school, university, and event-related trips, while integrating social networking features.
+UniLift acts exclusively as a technology intermediary facilitating connections between drivers and passengers. UniLift is not a transportation company, a taxi service, a remunerated passenger transportation service within the meaning of the Act respecting remunerated passenger transportation by automobile, or a public carrier. UniLift does not provide any vehicles and does not employ any drivers.
+Drivers using the Application are independent users and are in no way employees, agents, representatives, or mandataries of Transport UniLift S.E.N.C.
+4. USER ACCOUNT
+To use the Application, you must create an account by providing accurate, complete, and up-to-date information. You are solely responsible for the confidentiality of your login credentials and for any activity carried out under your account.
+You agree to notify us immediately of any unauthorized use of your account or any breach of its security. UniLift cannot be held liable for any loss or damage resulting from your failure to protect your credentials.
+UniLift reserves the right to suspend or terminate any account, at its sole discretion and without notice, in the event of a violation of these Terms or conduct deemed harmful, abusive, fraudulent, or contrary to the spirit of the UniLift community.
+5. USER OBLIGATIONS AND RESPONSIBILITIES
+By using the Application, the User agrees to:
+    • Comply with all laws and regulations applicable in Québec and Canada, including the Highway Safety Code of Québec;
+    • Provide truthful and accurate information when registering for and using the Application;
+    • Not use the Application for illegal, fraudulent, defamatory, harassing, or otherwise harmful purposes;
+    • Maintain respectful conduct toward other Users;
+    • As a driver, ensure they hold a valid driver's licence, current vehicle registration, and adequate automobile insurance covering carpooling;
+    • As a driver, ensure their vehicle is in good mechanical condition and complies with safety standards;
+    • Not drive under the influence of alcohol, drugs, or any substance impairing driving ability;
+    • Not post inappropriate, offensive, hateful, or unlawful content on the Application's social networking features.
+6. PAYMENT AND BILLING
+The User agrees to register a valid payment method (credit card, debit card, or other accepted method) in the Application. Usage fees are calculated on a monthly basis and billed at the end of each calendar month for all trips completed during that month.
+Drivers receive their earnings at the same time, at the end of each calendar month, in accordance with the terms established by UniLift. Amounts paid to drivers are net of the service fees charged by UniLift.
+In the event of a payment default, UniLift reserves the right to suspend access to the User's account, charge late fees, and pursue any appropriate collection procedure, including the use of collection agencies.
+All prices are displayed in Canadian dollars (CAD) and are subject to applicable taxes, including the Goods and Services Tax (GST) and the Québec Sales Tax (QST), where applicable.
+The User is solely responsible for their tax obligations arising from use of the Application, including, for drivers, declaring income earned from carpooling to the competent tax authorities.
+7. PROTECTION OF PERSONAL INFORMATION
+UniLift is committed to protecting its Users' personal information in accordance with the Act respecting the protection of personal information in the private sector (CQLR, c. P-39.1), as amended by the Act to modernize legislative provisions as regards the protection of personal information (Act 25, SQ 2021, c. 25), as well as any other applicable privacy legislation.
+Personal information collected is stored in our database and encrypted using industry-standard security protocols, both at rest and in transit.
+We collect and use your personal information solely for purposes necessary to the operation of the Application, namely connecting drivers and passengers, processing payments, communication between Users, and improving our services.
+In accordance with Act 25, you have the following rights:
+    • The right to access your personal information;
+    • The right to have your personal information corrected;
+    • The right to the portability of your personal information in a structured, commonly used format;
+    • The right to withdraw your consent to the collection and use of your personal information;
+    • The right to erasure ("right to be forgotten") of your personal information, subject to legal retention obligations.
+To exercise your rights or for any question regarding the protection of your personal information, please contact our privacy officer at the email address provided in the Application.
+In the event of a confidentiality incident presenting a risk of serious harm, UniLift undertakes to notify the affected individuals as well as the Commission d'accès à l'information du Québec as soon as possible, in accordance with Act 25.
+8. LIMITATION OF LIABILITY
+TO THE FULLEST EXTENT PERMITTED BY APPLICABLE LAW, THE USER ACKNOWLEDGES AND AGREES THAT:
+    • UniLift acts solely as a technology intermediary and disclaims all liability regarding trips, User conduct, vehicle condition, or any event occurring before, during, or after a trip;
+    • UniLift is not liable for traffic accidents, bodily, material, or moral damages, injuries, deaths, or any other harm arising from the use of the Application or a trip organized through it;
+    • UniLift is not liable for the quality, safety, legality, or suitability of trips offered by drivers;
+    • UniLift is not liable for any loss, theft, damage, or destruction of personal property occurring during a trip;
+    • UniLift is not liable for interruptions, errors, viruses, failures, or unavailability of the Application;
+    • UniLift is not liable for interactions between Users, whether in connection with the Application's carpooling or social networking features;
+    • UniLift makes no warranty, express or implied, as to the reliability, punctuality, or availability of trips.
+The Application is provided "as is" and "as available," without warranty of any kind. UniLift expressly disclaims any implied warranty of merchantability, fitness for a particular purpose, and non-infringement, to the fullest extent permitted by the Civil Code of Québec.
+In no event shall the total liability of Transport UniLift S.E.N.C., its partners, officers, employees, or mandataries exceed the total amount of fees paid by the User during the twelve (12) months preceding the event giving rise to the claim.
+9. INDEMNIFICATION
+The User agrees to indemnify, defend, and hold harmless Transport UniLift S.E.N.C., its partners, officers, employees, mandataries, and representatives from any claim, lawsuit, damage, loss, cost, and expense (including reasonable attorneys' fees) arising from or related to:
+    • The User's use of the Application;
+    • The User's violation of these Terms;
+    • The User's violation of any third party's rights;
+    • Any accident, incident, or damage occurring during a trip;
+    • Any content posted by the User on the Application's social networking features.
+10. INTELLECTUAL PROPERTY
+The Application, including its source code, design, logos, trademarks, text, images, and any other content, is the exclusive property of Transport UniLift S.E.N.C. and is protected by Canadian and international intellectual property laws.
+The User is granted a limited, non-exclusive, non-transferable, and revocable licence to use the Application for the purposes provided for in these Terms. Any unauthorized reproduction, modification, distribution, or exploitation of the Application or its content is strictly prohibited.
+11. SOCIAL NETWORK — USER-GENERATED CONTENT
+The Application includes social networking features that allow Users to post content, communicate, and interact with one another. The User is solely responsible for the content they post.
+UniLift reserves the right to remove, without notice, any content deemed inappropriate, offensive, defamatory, hateful, unlawful, or contrary to these Terms.
+UniLift does not monitor all content posted by Users in real time and cannot be held liable for content generated by them.
+12. INSURANCE
+UniLift does not provide any automobile insurance, liability insurance, or any other form of insurance covering trips made through the Application.
+Each driver is personally and fully responsible for ensuring that their vehicle is covered by adequate automobile insurance, including coverage for carpooling, in accordance with the requirements of the Société de l'assurance automobile du Québec (SAAQ) and their private insurer.
+Passengers are encouraged to verify that the driver has appropriate insurance before accepting a trip. UniLift does not guarantee in any way that drivers have adequate insurance coverage.
+13. TERMINATION
+The User may terminate their account at any time by following the procedure provided in the Application. Termination takes effect at the end of the current billing cycle. Any amount owing remains payable after termination.
+UniLift reserves the right to suspend or terminate a User's account at any time, with or without cause and with or without notice, including in the event of a violation of these Terms.
+The provisions relating to limitation of liability, indemnification, and governing law survive termination of these Terms.
+14. FORCE MAJEURE
+UniLift cannot be held liable for any delay or failure in performing its obligations under these Terms resulting from a force majeure event, including but not limited to natural disasters, pandemics, acts of war, acts of terrorism, strikes, power outages, telecommunications network failures, or any other circumstance beyond UniLift's reasonable control.
+15. GOVERNING LAW AND JURISDICTION
+These Terms are governed by and interpreted in accordance with the laws of the province of Québec and the federal laws of Canada applicable therein. The Civil Code of Québec, the Consumer Protection Act (CQLR, c. P-40.1), the Act respecting the protection of personal information in the private sector (CQLR, c. P-39.1), and any other applicable Québec legislation govern these Terms.
+Any dispute arising from these Terms or the use of the Application shall be submitted to the exclusive jurisdiction of the courts of the province of Québec, judicial district of Montréal, unless a mandatory public-order provision requires another forum.
+If any provision of these Terms is held invalid, illegal, or unenforceable by a court of competent jurisdiction, that provision shall be amended to the minimum extent necessary to make it enforceable, or severed if it cannot be so amended, without affecting the validity of the remaining provisions.
+16. WAIVER OF CLASS ACTION
+To the fullest extent permitted by applicable law, the User waives their right to bring or participate in a class action or class proceeding against Transport UniLift S.E.N.C. Any dispute shall be resolved individually. This clause is subject to the public-order provisions of the Code of Civil Procedure of Québec.
+17. SEVERABILITY
+If any provision of these Terms is held invalid or unenforceable by a court of competent jurisdiction, the remaining provisions shall remain in full force and effect. The invalid provision shall be replaced by a valid provision that most closely reflects the original intent of the parties.
+18. ENTIRE AGREEMENT
+These Terms, together with the Privacy Policy and any other policy published in the Application, constitute the entire agreement between the User and Transport UniLift S.E.N.C. regarding use of the Application and supersede any prior agreement, communication, or representation, whether written or oral.
+`;
+
+export function getLegalTermsText(language: "en" | "fr"): string {
+  return language === "fr" ? LEGAL_TERMS_TEXT_FR : LEGAL_TERMS_TEXT_EN;
+}

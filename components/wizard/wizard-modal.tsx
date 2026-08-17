@@ -19,12 +19,12 @@ const C = {
   border:      "rgba(137, 56, 213, 0.30)",
   purple:      "#8938D5",
   purpleLight: "#e09af7",
+  textOnLight: "#2d0015",
   gold:        "#fbbf24",
   text:        "#f3f4f6",
   muted:       "#9ca3af",
 };
 
-const BTN_GRADIENT  = ["#FD165A", "#8938D5"] as const;
 const ICON_GRADIENT = ["#FD165A", "#8938D5"] as const;
 
 export type WizardStep = {
@@ -144,12 +144,10 @@ export default function WizardModal({ visible, steps, onDone, onComplete, onDism
             )}
 
             {/* Primary button */}
-            <Pressable onPress={next} style={{ width: "100%" }}>
-              <LinearGradient colors={BTN_GRADIENT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.primaryBtn}>
-                <Text style={styles.primaryText}>
-                  {isLast ? (finalLabel ?? t("common.done")) : t("wizard.next")}
-                </Text>
-              </LinearGradient>
+            <Pressable onPress={next} style={[styles.primaryBtn, { width: "100%" }]}>
+              <Text style={styles.primaryText}>
+                {isLast ? (finalLabel ?? t("common.done")) : t("wizard.next")}
+              </Text>
             </Pressable>
 
             {/* Back (only after the first step) */}
@@ -189,8 +187,8 @@ const styles = StyleSheet.create({
   dotsRow: { flexDirection: "row", gap: 7, marginBottom: 22 },
   dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: "rgba(255,255,255,0.22)" },
   dotActive: { backgroundColor: C.purpleLight, width: 20 },
-  primaryBtn: { height: 52, borderRadius: 15, alignItems: "center", justifyContent: "center" },
-  primaryText: { color: "#fff", fontWeight: "800", fontSize: 16 },
+  primaryBtn: { height: 52, borderRadius: 15, alignItems: "center", justifyContent: "center", backgroundColor: C.purpleLight },
+  primaryText: { color: C.textOnLight, fontWeight: "800", fontSize: 16 },
   backBtn: { paddingVertical: 12, marginTop: 2 },
   backText: { color: C.muted, fontSize: 14, fontWeight: "600" },
 });

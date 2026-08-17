@@ -1,7 +1,6 @@
 import { useLanguage } from "@/context/LanguageContext";
 import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
-import { LinearGradient } from "expo-linear-gradient";
 import React, { useState } from "react";
 import {
   Modal,
@@ -41,14 +40,9 @@ export default function InfoButton({ title, body, style }: InfoButtonProps) {
               <Text style={styles.title}>{title}</Text>
               <Text style={styles.body}>{body}</Text>
               <TouchableOpacity onPress={() => setVisible(false)} activeOpacity={0.85} style={styles.closeBtn}>
-                <LinearGradient
-                  colors={["#FD165A", "#8938D5"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={styles.closeBtnGrad}
-                >
+                <View style={styles.closeBtnGrad}>
                   <Text style={styles.closeBtnText}>{t("common.done")}</Text>
-                </LinearGradient>
+                </View>
               </TouchableOpacity>
             </BlurView>
           </Pressable>
@@ -106,9 +100,10 @@ const styles = StyleSheet.create({
     height: 44,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "#e09af7",
   },
   closeBtnText: {
-    color: "#fff",
+    color: "#2d0015",
     fontSize: 15,
     fontWeight: "700",
   },

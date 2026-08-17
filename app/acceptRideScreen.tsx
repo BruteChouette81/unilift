@@ -392,23 +392,18 @@ export default function AcceptRideScreen() {
             activeOpacity={0.85}
             disabled={accepting || unavailable}
           >
-            <LinearGradient
-              colors={["#8938D5", "#FD165A"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={styles.ctaGradient}
-            >
+            <View style={styles.ctaGradient}>
               {accepting ? (
-                <ActivityIndicator color="#fff" size="small" />
+                <ActivityIndicator color="#2d0015" size="small" />
               ) : (
                 <>
-                  <Ionicons name="checkmark-circle" size={18} color="#fff" />
+                  <Ionicons name="checkmark-circle" size={18} color="#2d0015" />
                   <Text style={styles.ctaText}>
                     {unavailable ? t("acceptRide.expiredTitle") : t("acceptRide.accept")}
                   </Text>
                 </>
               )}
-            </LinearGradient>
+            </View>
           </TouchableOpacity>
 
           {/* Ignore */}
@@ -676,9 +671,10 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     gap: 8,
     minHeight: 54,
+    backgroundColor: "#e09af7",
   },
   ctaText: {
-    color: "#fff",
+    color: "#2d0015",
     fontSize: 16,
     fontWeight: "700",
     letterSpacing: 0.3,

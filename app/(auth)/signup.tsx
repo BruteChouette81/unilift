@@ -1,5 +1,5 @@
 import { authColors } from "@/constants/auth-theme";
-import { LEGAL_TERMS_TEXT } from "@/constants/legalTerms";
+import LegalTermsModal from "@/components/legal-terms-modal";
 import { firestoreDocumentUrl } from "@/constants/runtime-config";
 import { useAuth } from "@/context/AuthContext";
 import { useLanguage } from "@/context/LanguageContext";
@@ -9,6 +9,7 @@ import {
   signInToFirebaseWithApple,
 } from "@/services/authService";
 import { autoFormatDateInput, parseBirthDateInput } from "@/components/userHelper";
+import { getPasswordRequirements, isPasswordValid, type PasswordRequirementKey } from "@/utils/passwordPolicy";
 import { CERT_META, CERT_ORDER } from "@/constants/certifications";
 import { Ionicons } from "@expo/vector-icons";
 import WizardModal, { type WizardStep } from "@/components/wizard/wizard-modal";
@@ -34,6 +35,13 @@ import {
   View,
 } from "react-native";
 
+const PASSWORD_REQ_LABEL_KEYS: Record<PasswordRequirementKey, string> = {
+  minLength: "auth.signup.passwordReqMinLength",
+  upper: "auth.signup.passwordReqUpper",
+  lower: "auth.signup.passwordReqLower",
+  number: "auth.signup.passwordReqNumber",
+  special: "auth.signup.passwordReqSpecial",
+};
 
 export default function SignupScreen() {
   const router = useRouter();
@@ -68,11 +76,14 @@ export default function SignupScreen() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const passwordRequirements = getPasswordRequirements(password);
+  const passwordValid = isPasswordValid(password);
 
   // Step 2 fields
   const [birthDate, setBirthDate] = useState("");
   const [school, setSchool] = useState("");
   const [termsAccepted, setTermsAccepted] = useState(false);
+  const [showTermsModal, setShowTermsModal] = useState(false);
 
   // TODO v2: const [preferences, setPreferences] = useState<string[]>([]);
 
@@ -122,6 +133,11 @@ export default function SignupScreen() {
   const handleContinue = () => {
     if (!name.trim() || !email.trim() || !password) {
       Alert.alert(t("auth.signup.missingInfo"), t("auth.signup.missingInfoMsg"));
+      return;
+    }
+    if (!passwordValid) {
+      setPasswordFocused(true);
+      Alert.alert(t("auth.signup.weakPasswordTitle"), t("auth.signup.weakPasswordMsg"));
       return;
     }
     setStep(2);
@@ -299,7 +315,7 @@ export default function SignupScreen() {
 
               {/* Name */}
               <View style={[styles.inputRow, nameFocused && styles.inputRowFocused]}>
-                <Text style={[{fontSize: 18}, styles.inputIcon]}>👤</Text>
+                <Ionicons name="person-outline" size={18} color={authColors.muted} style={styles.inputIcon} />
                 <TextInput
                   placeholder={t("auth.signup.namePlaceholder")}
                   placeholderTextColor={authColors.placeholder}
@@ -314,7 +330,7 @@ export default function SignupScreen() {
 
               {/* Email */}
               <View style={[styles.inputRow, emailFocused && styles.inputRowFocused]}>
-                <Text style={[{fontSize: 18}, styles.inputIcon]}>📧</Text>
+                <Ionicons name="mail-outline" size={18} color={authColors.muted} style={styles.inputIcon} />
                 <TextInput
                   placeholder={t("auth.signup.emailPlaceholder")}
                   placeholderTextColor={authColors.placeholder}
@@ -331,7 +347,7 @@ export default function SignupScreen() {
 
               {/* Password */}
               <View style={[styles.inputRow, passwordFocused && styles.inputRowFocused]}>
-                <Text style={[{fontSize: 18}, styles.inputIcon]}>🔒</Text>
+                <Ionicons name="lock-closed-outline" size={18} color={authColors.muted} style={styles.inputIcon} />
                 <TextInput
                   placeholder={t("auth.signup.passwordPlaceholder")}
                   placeholderTextColor={authColors.placeholder}
@@ -344,20 +360,37 @@ export default function SignupScreen() {
                   onBlur={() => setPasswordFocused(false)}
                 />
                 <Pressable onPress={() => setShowPassword((v) => !v)} hitSlop={8}>
-                  <Text style={{fontSize: 18}}>{showPassword ? "🙈" : "👁"}</Text>
+                  <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={20} color={authColors.muted} />
                 </Pressable>
               </View>
 
+              {/* Password requirements — visible while typing, and stays up if
+                  the password is still invalid after the field loses focus. */}
+              {(passwordFocused || (password.length > 0 && !passwordValid)) && (
+                <View style={styles.passwordReqBox}>
+                  <Text style={styles.passwordReqTitle}>{t("auth.signup.passwordReqTitle")}</Text>
+                  {passwordRequirements.map((req) => (
+                    <View key={req.key} style={styles.passwordReqRow}>
+                      <Ionicons
+                        name={req.met ? "checkmark-circle" : "ellipse-outline"}
+                        size={14}
+                        color={req.met ? "#34d399" : authColors.dim}
+                      />
+                      <Text style={[styles.passwordReqText, req.met && styles.passwordReqTextMet]}>
+                        {t(PASSWORD_REQ_LABEL_KEYS[req.key])}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+
               {/* Continue */}
-              <Pressable onPress={handleContinue} disabled={isSubmitting} style={{ marginTop: 8 }}>
-                <LinearGradient
-                  colors={["#FD165A", "#8938D5"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={styles.button}
-                >
-                  <Text style={styles.buttonText}>{t("auth.signup.continueBtn")}</Text>
-                </LinearGradient>
+              <Pressable
+                onPress={handleContinue}
+                disabled={isSubmitting}
+                style={[styles.button, styles.buttonPrimary, { marginTop: 8 }]}
+              >
+                <Text style={[styles.buttonText, styles.buttonTextOnLight]}>{t("auth.signup.continueBtn")}</Text>
               </Pressable>
 
               {/* Divider */}
@@ -390,7 +423,7 @@ export default function SignupScreen() {
               {/* Step 2 header */}
               <View style={styles.step2Header}>
                 <Pressable onPress={() => setStep(1)} hitSlop={8} style={styles.backButton}>
-                  <Text style={{fontSize: 20}}>←</Text>
+                  <Ionicons name="arrow-back" size={20} color={authColors.title} />
                 </Pressable>
                 <Text style={styles.stepIndicator}>{t("auth.signup.stepIndicator")}</Text>
               </View>
@@ -398,8 +431,9 @@ export default function SignupScreen() {
               <Text style={styles.title}>{t("auth.signup.step2Title")}</Text>
 
               {/* Birth Date */}
+              <Text style={styles.fieldLabel}>{t("auth.signup.birthDateLabel")}</Text>
               <View style={[styles.inputRow, birthDateFocused && styles.inputRowFocused]}>
-                <Text style={[{fontSize: 18}, styles.inputIcon]}>🎂</Text>
+                <Ionicons name="calendar-outline" size={18} color={authColors.muted} style={styles.inputIcon} />
                 <TextInput
                   placeholder={t("auth.signup.birthDatePlaceholder")}
                   placeholderTextColor={authColors.placeholder}
@@ -413,10 +447,12 @@ export default function SignupScreen() {
                   onBlur={() => setBirthDateFocused(false)}
                 />
               </View>
+              <Text style={styles.fieldHint}>{t("auth.signup.birthDateHint")}</Text>
 
               {/* School */}
+              <Text style={styles.fieldLabel}>{t("auth.signup.schoolLabel")}</Text>
               <View style={[styles.inputRow, schoolFocused && styles.inputRowFocused]}>
-                <Text style={[{fontSize: 18}, styles.inputIcon]}>🎓</Text>
+                <Ionicons name="school-outline" size={18} color={authColors.muted} style={styles.inputIcon} />
                 <TextInput
                   placeholder={t("auth.signup.schoolPlaceholder")}
                   placeholderTextColor={authColors.placeholder}
@@ -470,38 +506,31 @@ export default function SignupScreen() {
                 })}
               </View> */}
 
-              {/* Terms & Conditions */}
+              {/* Terms & Conditions — acceptance itself happens inside the
+                  modal, gated on scrolling to the end (see LegalTermsModal). */}
               <Text style={styles.termsLabel}>{t("auth.signup.termsTitle")}</Text>
-              <ScrollView
-                style={styles.termsScroll}
-                nestedScrollEnabled
-                showsVerticalScrollIndicator
-              >
-                <Text style={styles.termsText}>{LEGAL_TERMS_TEXT}</Text>
-              </ScrollView>
-
               <Pressable
-                style={styles.checkboxRow}
-                onPress={() => setTermsAccepted((v) => !v)}
+                style={[styles.termsLinkRow, termsAccepted && styles.termsLinkRowAccepted]}
+                onPress={() => setShowTermsModal(true)}
               >
-                <View style={[styles.checkbox, termsAccepted && styles.checkboxChecked]}>
-                  {termsAccepted && (
-                    <Text style={{fontSize: 11}}>✓</Text>
-                  )}
-                </View>
-                <Text style={styles.checkboxLabel}>{t("auth.signup.termsCheckbox")}</Text>
+                <Ionicons
+                  name={termsAccepted ? "checkmark-circle" : "document-text-outline"}
+                  size={17}
+                  color={termsAccepted ? "#34d399" : authColors.purpleLight}
+                />
+                <Text style={[styles.termsLinkText, termsAccepted && styles.termsLinkTextAccepted]}>
+                  {termsAccepted ? t("auth.signup.termsAccepted") : t("auth.signup.viewTerms")}
+                </Text>
+                <Ionicons name="chevron-forward" size={16} color={termsAccepted ? "#34d399" : authColors.purpleLight} />
               </Pressable>
 
               {/* Continue to certification */}
-              <Pressable onPress={handleContinueToCertification} disabled={isSubmitting} style={{ marginTop: 24 }}>
-                <LinearGradient
-                  colors={["#FD165A", "#8938D5"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={styles.button}
-                >
-                  <Text style={styles.buttonText}>{t("auth.signup.continueBtn")}</Text>
-                </LinearGradient>
+              <Pressable
+                onPress={handleContinueToCertification}
+                disabled={isSubmitting}
+                style={[styles.button, styles.buttonPrimary, { marginTop: 24 }]}
+              >
+                <Text style={[styles.buttonText, styles.buttonTextOnLight]}>{t("auth.signup.continueBtn")}</Text>
               </Pressable>
             </>
           ) : (
@@ -509,7 +538,7 @@ export default function SignupScreen() {
               {/* Step 3 header */}
               <View style={styles.step2Header}>
                 <Pressable onPress={() => setStep(2)} hitSlop={8} style={styles.backButton}>
-                  <Text style={{ fontSize: 20 }}>←</Text>
+                  <Ionicons name="arrow-back" size={20} color={authColors.title} />
                 </Pressable>
                 <Text style={styles.stepIndicator}>{t("auth.signup.certStepIndicator")}</Text>
               </View>
@@ -561,22 +590,19 @@ export default function SignupScreen() {
               </Text>
 
               {/* Get Started */}
-              <Pressable onPress={handleGetStarted} disabled={isSubmitting}>
-                <LinearGradient
-                  colors={["#FD165A", "#8938D5"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={[styles.button, isSubmitting && styles.buttonDisabled]}
-                >
-                  {isSubmitting ? (
-                    <View style={styles.buttonContent}>
-                      <ActivityIndicator color="#fff" />
-                      <Text style={[styles.buttonText, { marginLeft: 8 }]}>{t("auth.signup.creatingAccount")}</Text>
-                    </View>
-                  ) : (
-                    <Text style={styles.buttonText}>{t("auth.signup.getStartedBtn")}</Text>
-                  )}
-                </LinearGradient>
+              <Pressable
+                onPress={handleGetStarted}
+                disabled={isSubmitting}
+                style={[styles.button, styles.buttonPrimary, isSubmitting && styles.buttonDisabled]}
+              >
+                {isSubmitting ? (
+                  <View style={styles.buttonContent}>
+                    <ActivityIndicator color="#2d0015" />
+                    <Text style={[styles.buttonText, styles.buttonTextOnLight, { marginLeft: 8 }]}>{t("auth.signup.creatingAccount")}</Text>
+                  </View>
+                ) : (
+                  <Text style={[styles.buttonText, styles.buttonTextOnLight]}>{t("auth.signup.getStartedBtn")}</Text>
+                )}
               </Pressable>
             </>
           )}
@@ -588,6 +614,13 @@ export default function SignupScreen() {
         steps={wizardSteps}
         onDone={wizard.markSeen}
         finalLabel={t("wizard.signup.finalCta")}
+      />
+
+      <LegalTermsModal
+        visible={showTermsModal}
+        accepted={termsAccepted}
+        onAcceptedChange={setTermsAccepted}
+        onClose={() => setShowTermsModal(false)}
       />
     </KeyboardAvoidingView>
   );
@@ -610,6 +643,8 @@ const styles = StyleSheet.create({
     width: 80,
     height: 80,
     marginBottom: 10,
+    borderRadius: 18,
+    overflow: "hidden",
   },
   wordmark: {
     color: "#fff",
@@ -697,6 +732,45 @@ const styles = StyleSheet.create({
   inputIcon: {
     marginRight: 10,
   },
+  fieldLabel: {
+    color: authColors.muted,
+    fontSize: 12.5,
+    fontWeight: "600",
+    marginBottom: 6,
+  },
+  fieldHint: {
+    color: authColors.dim,
+    fontSize: 11.5,
+    marginTop: -8,
+    marginBottom: 14,
+    marginLeft: 2,
+  },
+  passwordReqBox: {
+    marginTop: -6,
+    marginBottom: 14,
+    paddingHorizontal: 2,
+    gap: 5,
+  },
+  passwordReqTitle: {
+    color: authColors.muted,
+    fontSize: 11.5,
+    fontWeight: "700",
+    marginBottom: 2,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+  },
+  passwordReqRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+  },
+  passwordReqText: {
+    color: authColors.dim,
+    fontSize: 12.5,
+  },
+  passwordReqTextMet: {
+    color: authColors.muted,
+  },
   textInput: {
     flex: 1,
     color: authColors.inputText,
@@ -707,6 +781,9 @@ const styles = StyleSheet.create({
     borderRadius: 13,
     alignItems: "center",
     justifyContent: "center",
+  },
+  buttonPrimary: {
+    backgroundColor: authColors.purpleLight,
   },
   buttonDisabled: {
     opacity: 0.7,
@@ -719,6 +796,9 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontWeight: "700",
     fontSize: 16,
+  },
+  buttonTextOnLight: {
+    color: "#2d0015",
   },
   divider: {
     flexDirection: "row",
@@ -755,43 +835,29 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
-  termsScroll: {
-    maxHeight: 160,
+  termsLinkRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
     backgroundColor: "rgba(255,255,255,0.04)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.1)",
     borderRadius: 12,
-    padding: 12,
+    paddingVertical: 13,
+    paddingHorizontal: 14,
   },
-  termsText: {
-    color: authColors.muted,
-    fontSize: 13,
-    lineHeight: 20,
-  },
-  checkboxRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    marginTop: 14,
-  },
-  checkbox: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
-    borderWidth: 2,
-    borderColor: "rgba(137, 56, 213, 0.5)",
-    backgroundColor: "rgba(137, 56, 213, 0.05)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  checkboxChecked: {
-    backgroundColor: "#8938D5",
-    borderColor: "#8938D5",
-  },
-  checkboxLabel: {
+  termsLinkText: {
     flex: 1,
-    color: authColors.muted,
-    fontSize: 14,
+    color: authColors.purpleLight,
+    fontSize: 13.5,
+    fontWeight: "600",
+  },
+  termsLinkRowAccepted: {
+    borderColor: "rgba(52,211,153,0.35)",
+    backgroundColor: "rgba(52,211,153,0.06)",
+  },
+  termsLinkTextAccepted: {
+    color: "#34d399",
   },
   prefsLabel: {
     color: authColors.muted,

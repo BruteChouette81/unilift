@@ -51,9 +51,6 @@ const C = {
   inputBg:     "rgba(15, 15, 30, 0.55)",
 };
 
-const BTN_GRADIENT = ["#FD165A", "#8938D5"] as const;
-const ACTIVE_DAY_GRADIENT = ["#FD165A", "#8938D5"] as const;
-
 type SuggestionKind = "geo" | "home" | "favorite" | "history";
 type Suggestion = { displayName: string; lat: string; lon: string; kind: SuggestionKind };
 
@@ -160,9 +157,9 @@ export default function DriverModeScreen() {
       {/* Header */}
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={8}>
-          <LinearGradient colors={BTN_GRADIENT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.backBtnGrad}>
-            <Ionicons name="arrow-back" size={18} color="#fff" />
-          </LinearGradient>
+          <View style={styles.backBtnGrad}>
+            <Ionicons name="arrow-back" size={18} color="#2d0015" />
+          </View>
         </Pressable>
         <Text style={styles.headerTitle}>{t("driverMode.title")}</Text>
         <View style={{ width: 38, alignItems: "center", justifyContent: "center" }}>
@@ -402,9 +399,9 @@ function WindowEditor({
                   return (
                     <TouchableOpacity key={key} activeOpacity={0.8} onPress={() => toggleDay(key)} style={styles.dayWrap}>
                       {active ? (
-                        <LinearGradient colors={ACTIVE_DAY_GRADIENT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.dayChipActive}>
+                        <View style={styles.dayChipActive}>
                           <Text style={styles.dayTextActive}>{t(`driverMode.days.${key}`)}</Text>
-                        </LinearGradient>
+                        </View>
                       ) : (
                         <View style={styles.dayChip}>
                           <Text style={styles.dayText}>{t(`driverMode.days.${key}`)}</Text>
@@ -481,10 +478,8 @@ function WindowEditor({
               </BlurView>
             )}
 
-            <Pressable onPress={handleSave} style={{ marginTop: 18 }}>
-              <LinearGradient colors={BTN_GRADIENT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.saveBtn}>
-                <Text style={styles.saveBtnText}>{initial ? t("driverMode.windowSaveBtn") : t("driverMode.windowDoneBtn")}</Text>
-              </LinearGradient>
+            <Pressable onPress={handleSave} style={[{ marginTop: 18 }, styles.saveBtn]}>
+              <Text style={styles.saveBtnText}>{initial ? t("driverMode.windowSaveBtn") : t("driverMode.windowDoneBtn")}</Text>
             </Pressable>
           </BlurView>
         </View>
@@ -501,7 +496,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(8,8,16,0.97)", borderBottomWidth: 1, borderBottomColor: "rgba(137,56,213,0.20)",
   },
   backBtn: { borderRadius: 10, overflow: "hidden" },
-  backBtnGrad: { width: 38, height: 38, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  backBtnGrad: { width: 38, height: 38, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: C.purpleLight },
   headerTitle: { color: C.text, fontSize: 17, fontWeight: "700" },
 
   scroll: { padding: 20, paddingTop: 20 },
@@ -528,10 +523,11 @@ const styles = StyleSheet.create({
   },
   dayChipActive: {
     width: 40, height: 48, borderRadius: 13, alignItems: "center", justifyContent: "center",
+    backgroundColor: C.purpleLight,
     shadowColor: C.purple, shadowOpacity: 0.5, shadowRadius: 8, shadowOffset: { width: 0, height: 3 }, elevation: 5,
   },
   dayText: { color: C.muted, fontSize: 12, fontWeight: "700" },
-  dayTextActive: { color: "#fff", fontSize: 12, fontWeight: "800" },
+  dayTextActive: { color: "#2d0015", fontSize: 12, fontWeight: "800" },
 
   helperText: { color: C.dim, fontSize: 12, marginTop: 8, lineHeight: 16 },
 
@@ -584,8 +580,8 @@ const styles = StyleSheet.create({
   detourValueRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   detourValue: { color: C.text, fontSize: 20, fontWeight: "800" },
 
-  saveBtn: { height: 54, borderRadius: 16, alignItems: "center", justifyContent: "center" },
-  saveBtnText: { color: "#fff", fontWeight: "700", fontSize: 16 },
+  saveBtn: { height: 54, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: C.purpleLight },
+  saveBtnText: { color: "#2d0015", fontWeight: "700", fontSize: 16 },
 });
 
 const ed = StyleSheet.create({

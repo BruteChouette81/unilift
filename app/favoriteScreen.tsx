@@ -183,9 +183,9 @@ export default function FavoriteScreen() {
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={8}>
-          <LinearGradient colors={["#FD165A", "#8938D5"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.backBtnGrad}>
-            <Ionicons name="arrow-back" size={18} color="#fff" />
-          </LinearGradient>
+          <View style={styles.backBtnGrad}>
+            <Ionicons name="arrow-back" size={18} color="#2d0015" />
+          </View>
         </Pressable>
         <Text style={styles.headerTitle}>
           {isEditing ? t("favorites.editTitle") : t("favorites.newTitle")}
@@ -301,6 +301,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "#e09af7",
   },
   headerTitle: {
     color: C.text,
