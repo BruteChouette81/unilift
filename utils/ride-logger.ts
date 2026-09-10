@@ -12,10 +12,10 @@
  */
 import { isDev } from "@/constants/runtime-config";
 
-export type RideLogLevel = "info" | "warn" | "error";
+type RideLogLevel = "info" | "warn" | "error";
 
 /** Short category so the viewer can filter by concern. */
-export type RideLogTag =
+type RideLogTag =
   | "passenger"
   | "driver"
   | "dispatch"
@@ -80,11 +80,6 @@ export const rideLog = {
     data?: unknown,
   ): void => push("info", "dev", `${entity}: ${from ?? "?"} → ${to}`, data),
 };
-
-/** Current buffered entries (oldest first). */
-export function getRideLogBuffer(): RideLogEntry[] {
-  return buffer.slice();
-}
 
 /** Subscribe to buffer changes; returns an unsubscribe function. Fires immediately. */
 export function subscribeRideLog(cb: Listener): () => void {

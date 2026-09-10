@@ -1,19 +1,9 @@
 import { firestoreBaseUrl, firestoreCollectionUrl, withFirebaseApiKey } from "@/constants/runtime-config";
 import { normalizeTier, TIER_RANK, type Sponsor, type SponsorOffer } from "@/constants/sponsors";
 import { getAuth } from "firebase/auth";
+import { isRecord, readNumber, readString } from "@/services/firestore-rest";
 
 const BASE_URL = firestoreCollectionUrl("sponsors");
-
-const isRecord = (v: unknown): v is Record<string, unknown> =>
-  typeof v === "object" && v !== null;
-
-const readString = (v: unknown, fallback = ""): string =>
-  typeof v === "string" ? v : fallback;
-
-const readNumber = (v: unknown, fallback = 0): number => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-};
 
 async function authHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = {};
@@ -104,13 +94,3 @@ export async function fetchSponsors(): Promise<Sponsor[]> {
   }
 }
 
-/** Fetch a single sponsor by id. */
-export async function fetchSponsorById(sponsorId: string): Promise<Sponsor | null> {
-  try {
-    const res = await fetch(withFirebaseApiKey(`${BASE_URL}/${sponsorId}`), { headers: await authHeaders() });
-    if (!res.ok) return null;
-    return parseSponsor(await res.json());
-  } catch {
-    return null;
-  }
-}

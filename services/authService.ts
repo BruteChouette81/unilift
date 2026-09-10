@@ -13,18 +13,38 @@ import * as AppleAuthentication from "expo-apple-authentication";
 import * as Crypto from "expo-crypto";
 import Constants from "expo-constants";
 import { auth } from "@/firebaseConfig";
+import { emailSignInCandidates, normalizeEmail } from "@/utils/emailIdentity";
 const firebaseAuth: Auth = auth;
 
 const REQUEST_TIMEOUT_MS = 15000;
 
+// Sign-in failures that mean "this exact address / credential pair is not a
+// match" — the only ones where retrying under the canonical address can help.
+const RETRY_WITH_CANONICAL_EMAIL_CODES = new Set<string>([
+  "auth/user-not-found",
+  "auth/invalid-credential",
+  "auth/wrong-password",
+]);
+
 type AuthAction = "login" | "signup" | "logout";
 type AuthErrorLike = { code?: string; message?: string };
 
-export type NormalizedAuthError = {
+type NormalizedAuthError = {
   title: string;
   message: string;
   retryable: boolean;
+  /**
+   * i18n keys for the copy above. `title`/`message` hold the English defaults so
+   * non-UI callers keep working; screens should go through `resolveAuthError`
+   * to render the user's language. `titleKey` is absent when the title is the
+   * caller-provided (already translated) fallback, and `messageKey` is absent
+   * when the message is a raw Firebase string with no translation.
+   */
+  titleKey?: string;
+  messageKey?: string;
 };
+
+type Translator = (key: string, params?: Record<string, string | number | undefined>) => string;
 
 const withTimeout = async <T>(
   promise: Promise<T>,
@@ -61,6 +81,7 @@ export const normalizeAuthError = (
     return {
       title: fallbackTitle,
       message: "Request timed out. Check your internet and try again.",
+      messageKey: "auth.errors.timeout",
       retryable: true,
     };
   }
@@ -69,25 +90,31 @@ export const normalizeAuthError = (
     case "auth/expo-go-unsupported":
       return {
         title: "Native build required",
+        titleKey: "auth.errors.expoGoTitle",
         message: "Apple Sign-In doesn't work in Expo Go because the app bundle ID doesn't match. Run the app with expo run:ios instead.",
+        messageKey: "auth.errors.expoGo",
         retryable: false,
       };
     case "ERR_REQUEST_CANCELED":
       return {
         title: fallbackTitle,
         message: "Apple Sign-In was cancelled.",
+        messageKey: "auth.errors.appleCancelled",
         retryable: false,
       };
     case "auth/request-in-progress":
       return {
         title: "Please wait",
+        titleKey: "auth.errors.inProgressTitle",
         message: "An authentication request is already in progress.",
+        messageKey: "auth.errors.inProgress",
         retryable: false,
       };
     case "auth/missing-input":
       return {
         title: fallbackTitle,
         message: "Please fill all required fields.",
+        messageKey: "auth.errors.missingInput",
         retryable: false,
       };
     case "auth/invalid-credential":
@@ -96,61 +123,96 @@ export const normalizeAuthError = (
       return {
         title: fallbackTitle,
         message: "Invalid email or password.",
+        messageKey: "auth.errors.invalidCredentials",
         retryable: false,
       };
     case "auth/invalid-email":
       return {
         title: fallbackTitle,
         message: "Please enter a valid email address.",
+        messageKey: "auth.errors.invalidEmail",
         retryable: false,
       };
     case "auth/email-already-in-use":
       return {
         title: fallbackTitle,
         message: "This email is already in use.",
+        messageKey: "auth.errors.emailInUse",
+        retryable: false,
+      };
+    // Firebase's "one account per email address" setting firing: this mailbox
+    // already has an account, just through the other sign-in method (typically
+    // Apple vs. email+password). Same rule as emailInUse, different entry point.
+    case "auth/account-exists-with-different-credential":
+      return {
+        title: fallbackTitle,
+        message: "An account already exists for this email. Sign in with the method you used originally.",
+        messageKey: "auth.errors.accountExistsOtherMethod",
         retryable: false,
       };
     case "auth/weak-password":
       return {
         title: fallbackTitle,
         message: "Password is too weak.",
+        messageKey: "auth.errors.weakPassword",
         retryable: false,
       };
     case "auth/network-request-failed":
       return {
         title: "Network error",
+        titleKey: "auth.errors.networkTitle",
         message: "Check your internet connection and try again.",
+        messageKey: "auth.errors.network",
         retryable: true,
       };
     case "auth/too-many-requests":
       return {
         title: fallbackTitle,
         message: "Too many attempts. Please wait a moment and try again.",
+        messageKey: "auth.errors.tooManyRequests",
         retryable: true,
       };
     case "auth/user-disabled":
       return {
         title: fallbackTitle,
         message: "This account has been disabled.",
+        messageKey: "auth.errors.userDisabled",
         retryable: false,
       };
     case "auth/operation-not-allowed":
       return {
         title: fallbackTitle,
         message: "This sign-in method is not enabled.",
+        messageKey: "auth.errors.operationNotAllowed",
         retryable: false,
       };
     default:
       return {
         title: fallbackTitle,
         message: message || "Something went wrong. Please try again.",
+        // A raw Firebase message can't be translated; only the generic fallback can.
+        messageKey: message ? undefined : "auth.errors.generic",
         retryable: true,
       };
   }
 };
 
-export const mapAuthError = (error: unknown): string =>
-  normalizeAuthError(error).message;
+/**
+ * Same as `normalizeAuthError`, but resolves the copy through the app's
+ * translator so alerts render in the user's language.
+ */
+export const resolveAuthError = (
+  error: unknown,
+  t: Translator,
+  fallbackTitle: string,
+): NormalizedAuthError => {
+  const normalized = normalizeAuthError(error, fallbackTitle);
+  return {
+    ...normalized,
+    title: normalized.titleKey ? t(normalized.titleKey) : normalized.title,
+    message: normalized.messageKey ? t(normalized.messageKey) : normalized.message,
+  };
+};
 
 export const signInWithEmail = async (
   email: string,
@@ -161,13 +223,33 @@ export const signInWithEmail = async (
     throw createAuthError("auth/missing-input", "Please enter email and password.");
   }
 
-  return await withTimeout(
-    signInWithEmailAndPassword(firebaseAuth, trimmedEmail, password),
-    "login",
-  );
+  // Sign-ups are stored canonically (see utils/emailIdentity), so a user who
+  // types an alias of their own address must still get in. The typed form is
+  // tried first — accounts created before canonicalisation shipped are stored
+  // exactly as typed, and they must not be locked out.
+  const candidates = emailSignInCandidates(trimmedEmail);
+  let lastError: unknown;
+
+  for (const candidate of candidates) {
+    try {
+      return await withTimeout(
+        signInWithEmailAndPassword(firebaseAuth, candidate, password),
+        "login",
+      );
+    } catch (error) {
+      lastError = error;
+      const code = String((error as AuthErrorLike)?.code ?? "");
+      // Only "no such account / bad credential" is worth retrying against the
+      // canonical form. A locked-out, disabled or offline account fails the
+      // same way for every alias — retrying just burns another attempt.
+      if (!RETRY_WITH_CANONICAL_EMAIL_CODES.has(code)) throw error;
+    }
+  }
+
+  throw lastError;
 };
 
-export type AppleSignInResult = {
+type AppleSignInResult = {
   identityToken: string;
   rawNonce: string;
   fullName: AppleAuthentication.AppleAuthenticationCredential["fullName"];
@@ -275,8 +357,14 @@ export const signUpWithEmail = async (
     );
   }
 
+  // One account per mailbox: the account is created under the canonical form of
+  // the address, so every alias of a mailbox that already signed up collides
+  // here and Firebase throws `auth/email-already-in-use`. See
+  // utils/emailIdentity for what "canonical" means and why it stays deliverable.
+  const canonicalEmail = normalizeEmail(trimmedEmail);
+
   const credential = await withTimeout(
-    createUserWithEmailAndPassword(firebaseAuth, trimmedEmail, password),
+    createUserWithEmailAndPassword(firebaseAuth, canonicalEmail, password),
     "signup",
   );
 
@@ -293,7 +381,22 @@ export const signUpWithEmail = async (
 export const resetPassword = async (email: string): Promise<void> => {
   const trimmed = email.trim();
   if (!trimmed) throw createAuthError("auth/missing-input", "Please enter your email address.");
-  await withTimeout(sendPasswordResetEmail(firebaseAuth, trimmed), "login");
+
+  // The account may be stored under the typed address (pre-canonicalisation) or
+  // under its canonical form (post-). Both alias the same mailbox, so firing at
+  // both delivers exactly one real mail — the miss is a silent no-op under
+  // Firebase's email-enumeration protection, or a user-not-found we swallow.
+  const candidates = emailSignInCandidates(trimmed);
+  const results = await Promise.allSettled(
+    candidates.map((candidate) =>
+      withTimeout(sendPasswordResetEmail(firebaseAuth, candidate), "login"),
+    ),
+  );
+
+  // Only surface an error if *every* attempt failed — otherwise a mail is out.
+  if (results.every((r) => r.status === "rejected")) {
+    throw (results[0] as PromiseRejectedResult).reason;
+  }
 };
 
 export const signOutUser = async (): Promise<void> => {
@@ -308,7 +411,7 @@ export const signOutUser = async (): Promise<void> => {
  *  - "unknown": the check could not complete (e.g. transient network failure).
  *               The persisted session is still good; do NOT sign the user out.
  */
-export type SessionValidity = "valid" | "invalid" | "unknown";
+type SessionValidity = "valid" | "invalid" | "unknown";
 
 // Firebase auth error codes that mean the credential is genuinely gone. Any
 // other error (notably auth/network-request-failed) is treated as transient.

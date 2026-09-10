@@ -1,4 +1,5 @@
 import {
+  CERTIFICATION_ENABLED,
   CERT_META,
   UNCERTIFIED,
   earnedTiers,
@@ -36,6 +37,15 @@ export default function CertBadges({
   hideWhenEmpty = false,
 }: CertBadgesProps) {
   const { t } = useLanguage();
+
+  // Feature off ⇒ render nothing, anywhere. Guarding here rather than at each
+  // call site covers all 13 of them, and specifically stops the `size="full"` /
+  // `size="medium"` sites (which don't pass `hideWhenEmpty`) from stamping a
+  // gray "Uncertified" chip on every user in the app — nobody can be certified
+  // while the feature is disabled, so that chip would read as a missing
+  // credential rather than a disabled feature.
+  if (!CERTIFICATION_ENABLED) return null;
+
   const tiers = earnedTiers(certifications);
 
   if (tiers.length === 0) {

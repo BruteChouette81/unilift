@@ -2,7 +2,7 @@ import * as Notifications from "expo-notifications";
 import * as Device from "expo-device";
 import Constants from "expo-constants";
 import { Platform } from "react-native";
-import { firestoreDocumentUrl, withFirebaseApiKey } from "@/constants/runtime-config";
+import { appEnv, firestoreDocumentUrl, withFirebaseApiKey, devWarn, devError } from "@/constants/runtime-config";
 
 /**
  * Set up the default Android notification channel.
@@ -25,7 +25,7 @@ export function setupNotificationChannel(): void {
  */
 export async function registerForPushNotifications(): Promise<string | null> {
   if (!Device.isDevice) {
-    console.warn("Push notifications require a physical device.");
+    devWarn("Push notifications require a physical device.");
     return null;
   }
 
@@ -38,7 +38,7 @@ export async function registerForPushNotifications(): Promise<string | null> {
   }
 
   if (finalStatus !== "granted") {
-    console.warn("Push notification permission not granted.");
+    devWarn("Push notification permission not granted.");
     return null;
   }
 
@@ -47,7 +47,7 @@ export async function registerForPushNotifications(): Promise<string | null> {
     Constants.easConfig?.projectId;
 
   if (!projectId) {
-    console.error("Missing EAS projectId — cannot get push token.");
+    devError("Missing EAS projectId — cannot get push token.");
     return null;
   }
 
@@ -55,13 +55,26 @@ export async function registerForPushNotifications(): Promise<string | null> {
     const { data: token } = await Notifications.getExpoPushTokenAsync({ projectId });
     return token;
   } catch (err) {
-    console.warn("Could not fetch Expo push token (non-fatal):", err);
+    devWarn("Could not fetch Expo push token (non-fatal):", err);
     return null;
   }
 }
 
 /**
  * Persist the Expo push token to the user's Firestore document.
+ *
+ * An Expo push token identifies a *device installation*, not an environment — one
+ * EAS project serves dev and production alike, and both builds share a bundle id —
+ * so the servers cannot otherwise tell that sending to a token would ring a phone
+ * running the *other* build. Two extra fields make that decidable:
+ *
+ *   • `expoPushTokenEnv`       — which environment registered it.
+ *   • `expoPushTokenUpdatedAt` — when. In dev the servers additionally require
+ *     this to be recent, so a device that ran a dev build once and has since gone
+ *     back to the store build ages out instead of being paged by a dev test.
+ *
+ * This runs on every authenticated launch (use-push-notifications), so both
+ * fields stay current with no migration and no allowlist to maintain.
  */
 export async function savePushTokenToFirestore(
   uid: string,
@@ -69,7 +82,9 @@ export async function savePushTokenToFirestore(
   idToken: string,
 ): Promise<void> {
   const url = withFirebaseApiKey(
-    `${firestoreDocumentUrl("users", uid)}?updateMask.fieldPaths=expoPushToken`,
+    `${firestoreDocumentUrl("users", uid)}?updateMask.fieldPaths=expoPushToken` +
+      `&updateMask.fieldPaths=expoPushTokenEnv` +
+      `&updateMask.fieldPaths=expoPushTokenUpdatedAt`,
   );
 
   const res = await fetch(url, {
@@ -81,11 +96,15 @@ export async function savePushTokenToFirestore(
     body: JSON.stringify({
       fields: {
         expoPushToken: { stringValue: token },
+        expoPushTokenEnv: { stringValue: appEnv },
+        // Client clock, so it carries whatever skew the device has. Irrelevant
+        // against the multi-day freshness window the servers compare it to.
+        expoPushTokenUpdatedAt: { timestampValue: new Date().toISOString() },
       },
     }),
   });
 
   if (!res.ok) {
-    console.error("Failed to save push token to Firestore:", res.status);
+    devError("Failed to save push token to Firestore:", res.status);
   }
 }

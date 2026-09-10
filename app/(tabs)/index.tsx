@@ -6,14 +6,14 @@ import { useProfileCompletion } from "@/hooks/use-profile-completion";
 import { useFirstRun } from "@/hooks/use-first-run";
 import HypeEventCard from "@/components/hype-event-card";
 import SponsorCard from "@/components/sponsor-card";
-import { type HypeEvent } from "@/constants/events";
-import { type Sponsor } from "@/constants/sponsors";
+import { HYPE_MAP_ENABLED, type HypeEvent } from "@/constants/events";
+import { SPONSORS_ENABLED, type Sponsor } from "@/constants/sponsors";
 import { isRideExpired } from "@/utils/ride-lifecycle";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Location from "expo-location";
 import { devAwareCurrentPosition } from "@/utils/dev-location";
-import { devLog, devWarn, isDev } from "@/constants/runtime-config";
+import { devLog, devWarn } from "@/constants/runtime-config";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -54,26 +54,31 @@ import { rideErrorMessage } from "@/utils/rideErrors";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { haversineKm } from "@/utils/matching/geometry";
+import { P } from "@/constants/palette";
 
 type SuggestionKind = "geo" | "home" | "favorite" | "event" | "history";
 type Suggestion = LocationResult & { kind: SuggestionKind };
 
 // ─── Design Tokens ─────────────────────────────────────────────────────────────
 const C = {
-  bg:          "#080810",
-  surface:     "#0f0f1e",
-  surfaceAlt:  "#13132a",
+  bg:          P.bg,
+  surface:     P.surface,
+  surfaceAlt:  P.surfaceRaised,
   border:      "rgba(137, 56, 213, 0.22)",
   borderFaint: "rgba(255, 255, 255, 0.06)",
-  purple:      "#8938D5",
-  purpleLight: "#e09af7",
-  blue:        "#FD165A",
-  text:        "#f3f4f6",
-  muted:       "#9ca3af",
-  dim:         "#4b5563",
-  gold:        "#fbbf24",
-  fire:        "#f97316",
+  purple:      P.accent,
+  purpleLight: P.accentLight,
+  blue:        P.hype,
+  text:        P.text,
+  muted:       P.textMuted,
+  dim:         P.textDim,
+  gold:        P.warning,
+  fire:        P.flame,
 };
+
+// Stable empty array. Inline `[]` would be a fresh reference on every render and
+// re-run the memos and effects that depend on it.
+const EMPTY_SPONSORS: Sponsor[] = [];
 
 // Hype (night) mode overrides — only the tokens that shift when Hype is toggled on.
 const C_HYPE = {
@@ -112,30 +117,33 @@ export default function HomeScreen() {
 
   // First-run wizard: explains how a passenger searches for a lift.
   const searchWizard = useFirstRun("home-search");
+  // The Hype-mode slide (and the 🔥 entry in the suggestion legend) only make
+  // sense while the Hype map is on — with the flag off there is no flame button
+  // and no Hype suggestions, so both are dropped rather than promising a
+  // feature the user cannot see.
   const searchWizardSteps = useMemo<WizardStep[]>(() => [
     { icon: "search-outline",   title: t("wizard.home.step1Title"), highlight: t("wizard.home.step1Highlight"), body: t("wizard.home.step1Body") },
-    { icon: "list-outline",     title: t("wizard.home.step2Title"), body: t("wizard.home.step2Body") },
-    { icon: "flame-outline",    title: t("wizard.home.step3Title"), body: t("wizard.home.step3Body") },
+    { icon: "list-outline",     title: t("wizard.home.step2Title"), body: t(HYPE_MAP_ENABLED ? "wizard.home.step2Body" : "wizard.home.step2BodyNoHype") },
+    ...(HYPE_MAP_ENABLED
+      ? [{ icon: "flame-outline" as const, title: t("wizard.home.step3Title"), body: t("wizard.home.step3Body") }]
+      : []),
     { icon: "map-outline",      title: t("wizard.home.step4Title"), body: t("wizard.home.step4Body") },
   ], [t]);
 
-  // First-run wizard: explains Hype mode, shown only the first time the flame
-  // FAB is tapped (not on screen load — gated behind `hypeWizardOpen`).
-  const hypeWizard = useFirstRun("hype-map");
-  const [hypeWizardOpen, setHypeWizardOpen] = useState(false);
-  const hypeWizardSteps = useMemo<WizardStep[]>(() => [
-    { icon: "flame",         title: t("wizard.hype.step1Title"), highlight: t("wizard.hype.step1Highlight"), body: t("wizard.hype.step1Body") },
-    { icon: "flame-outline", title: t("wizard.hype.step2Title"), body: t("wizard.hype.step2Body") },
-    { icon: "navigate",      title: t("wizard.hype.step3Title"), body: t("wizard.hype.step3Body") },
-  ], [t]);
+  // Dev-only replay of the release takeover. Local state rather than clearing
+  // the persisted flag, so replaying here never changes whether a real user
+  // would still be shown it.
 
   // Hype-map events (cache-first: cached flames paint instantly, then a
   // background fetch revalidates) + the tapped event's floating card.
+  // Empty and inert while the Hype map is off — the hook itself skips the cache
+  // read and the fetch, so the search suggestions and map markers below fall away
+  // without either costing a Firestore read.
   const hypeEvents = useHypeEvents();
   const [selectedEvent, setSelectedEvent] = useState<HypeEvent | null>(null);
 
-  // Sponsors (Firestore-backed) + the tapped sponsor's card. Always shown on the map.
-  const [sponsors, setSponsors] = useState<Sponsor[]>([]);
+  // Sponsors (Firestore-backed) + the tapped sponsor's card.
+  const [sponsors, setSponsors] = useState<Sponsor[]>(EMPTY_SPONSORS);
   const [selectedSponsor, setSelectedSponsor] = useState<Sponsor | null>(null);
 
   // Search + suggestions
@@ -192,12 +200,13 @@ export default function HomeScreen() {
     void getLoc();
   }, []);
 
-  // Load sponsors once on mount. Skipped in dev: partner pins are hidden from
-  // the dev map for now, so the fetch would be a wasted Firestore read. With
-  // `sponsors` left empty the map renders no partner markers and the sponsor
-  // card can never open (it is only reachable by tapping a marker).
+  // Load sponsors once on mount, when partner pins are switched on. This used to
+  // be gated on `isDev` inverted — sponsors loaded ONLY in production — which
+  // meant the one environment where you could see them was the one you could not
+  // safely experiment in. With `sponsors` left empty the map renders no partner
+  // markers and the card can never open: it is only reachable from a marker.
   useEffect(() => {
-    if (isDev) return;
+    if (!SPONSORS_ENABLED) return;
     void fetchSponsors().then(setSponsors).catch(() => {});
   }, []);
 
@@ -208,17 +217,6 @@ export default function HomeScreen() {
     );
     setHypeMode((prev) => !prev);
     devLog("[HYPE-DEBUG] setHypeMode dispatched (crash after this = render/native layer)");
-  };
-
-  // First tap ever: show the explainer wizard instead of toggling right away.
-  // The wizard's own onDone/onComplete (below, in the JSX) marks it seen and
-  // then turns Hype mode on. Every later tap toggles immediately.
-  const handleHypeFabPress = () => {
-    if (hypeWizard.ready && !hypeWizard.seen) {
-      setHypeWizardOpen(true);
-      return;
-    }
-    toggleHypeMode();
   };
 
   const openLiftSheet = () => {
@@ -234,8 +232,14 @@ export default function HomeScreen() {
   // and it can't know who actually has a usable push token.
   //
   // The pickup is read from a ref so a GPS tick doesn't tear down and restart the
-  // interval — with location updating faster than 12 s the poll could otherwise
-  // be reset before it ever fired.
+  // interval — with location updating faster than the poll period the poll could
+  // otherwise be reset before it ever fired.
+  //
+  // Poll period is 30 s, not 12 s: under broadcast dispatch the server answers
+  // this from a 60 s-TTL cache (getEligibleRecipientIds), so polling faster than
+  // the cache simply re-sends the same number. It also pauses while the app is
+  // backgrounded — the sheet can stay open across a backgrounding, and there is
+  // no one looking at the count then.
   useEffect(() => {
     if (!showLiftSheet || !selectedDropoff) return;
     let cancelled = false;
@@ -247,11 +251,29 @@ export default function HomeScreen() {
       });
       if (!cancelled) setAvailableDrivers(count);
     };
+
+    const intervalRef = { id: 0 as ReturnType<typeof setInterval> };
+    const startPolling = () => {
+      intervalRef.id = setInterval(() => void refresh(), 30_000);
+    };
+    const stopPolling = () => clearInterval(intervalRef.id);
+
     void refresh();
-    const interval = setInterval(refresh, 12000);
+    startPolling();
+
+    const sub = AppState.addEventListener("change", (state: AppStateStatus) => {
+      if (state === "active") {
+        void refresh(); // immediate refresh on foreground
+        startPolling();
+      } else {
+        stopPolling();
+      }
+    });
+
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      stopPolling();
+      sub.remove();
     };
   }, [showLiftSheet, selectedDropoff]);
 
@@ -350,7 +372,20 @@ export default function HomeScreen() {
 
     const controller = new AbortController();
     setIsLoadingSuggestions(true);
-    geoSuggestion(debouncedSearch.trim(), controller.signal).then((results) => {
+    // Anchor the MAX_SUGGESTION_DISTANCE_KM cap on the live GPS fix, falling
+    // back to the last position stored on the profile so the cap still applies
+    // before the first fix lands. Only the geocoded results are capped — the
+    // user's own home, favourites and history above are places they chose
+    // themselves, and hiding them because they are far away would be wrong.
+    //
+    // Read through the ref, not `userLocation` state: adding the fix to this
+    // effect's deps would re-run the whole search on every GPS update and burn
+    // the server's 60-requests-per-minute /maps/* budget.
+    const fix = userLocationRef.current;
+    const searchOrigin = fix
+      ? { latitude: fix.latitude, longitude: fix.longitude }
+      : userData?.localisation ?? null;
+    geoSuggestion(debouncedSearch.trim(), controller.signal, searchOrigin).then((results) => {
       const geo: Suggestion[] = results.map((r) => ({ ...r, kind: "geo" as const }));
       setSuggestions([...local, ...geo]);
       setShowSuggestions(local.length + geo.length > 0);
@@ -411,8 +446,15 @@ export default function HomeScreen() {
       }
       if (!origin) { Alert.alert(t("common.error"), t("home.locationUnavailable")); return; }
 
+      // Resolve a "Home"/"Maison" label to the real address here, where the
+      // passenger's own document is readable. The accept screen used to do this
+      // by reading the passenger's homeAddress, which is now owner-only — and
+      // was more of their PII than a driver ever needed.
+      const isHomeLabel = /^(home|maison)$/i.test(place.trim());
+      const destinationLabel = isHomeLabel && userData?.homeAddress ? userData.homeAddress : place;
+
       const resjson = await createRideRequest({
-        destination: place,
+        destination: destinationLabel,
         destinationCoords: { lat: dropoff.latitude, lng: dropoff.longitude },
         origin,
         date: new Date().toISOString(),
@@ -638,13 +680,16 @@ export default function HomeScreen() {
       </View>
 
       {/* ── Hype Mode FAB ────────────────────────────────────────────────── */}
-      <TouchableOpacity
-        style={[styles.hypeFab, hypeMode && styles.hypeFabActive]}
-        onPress={handleHypeFabPress}
-        activeOpacity={0.8}
-      >
-        <Ionicons name="flame" size={19} color={hypeMode ? "#fff" : C.fire} />
-      </TouchableOpacity>
+      {HYPE_MAP_ENABLED && (
+        <TouchableOpacity
+          style={[styles.hypeFab, hypeMode && styles.hypeFabActive]}
+          onPress={toggleHypeMode}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="flame" size={19} color={hypeMode ? "#fff" : C.fire} />
+        </TouchableOpacity>
+      )}
+
 
       {/* ── Suggestions Dropdown ───────────────────────────────────────────── */}
       {showSuggestions && (
@@ -743,6 +788,7 @@ export default function HomeScreen() {
       />
 
       {/* ── Hype Event Card ──────────────────────────────────────────────── */}
+      {HYPE_MAP_ENABLED && (
       <HypeEventCard
         event={selectedEvent}
         onClose={() => setSelectedEvent(null)}
@@ -753,7 +799,9 @@ export default function HomeScreen() {
           rideSelect(ev.venue || ev.name, ev.lat, ev.lng);
         }}
       />
+      )}
 
+      {SPONSORS_ENABLED && (
       <SponsorCard
         sponsor={selectedSponsor}
         onClose={() => setSelectedSponsor(null)}
@@ -763,23 +811,13 @@ export default function HomeScreen() {
           rideSelect(sp.name, sp.lat, sp.lng);
         }}
       />
+      )}
 
       <WizardModal
         visible={searchWizard.shouldShow}
         steps={searchWizardSteps}
         onDone={searchWizard.markSeen}
         finalLabel={t("wizard.home.finalCta")}
-      />
-
-      <WizardModal
-        visible={hypeWizardOpen}
-        steps={hypeWizardSteps}
-        onDone={() => {
-          hypeWizard.markSeen();
-          setHypeWizardOpen(false);
-          toggleHypeMode();
-        }}
-        finalLabel={t("wizard.hype.finalCta")}
       />
 
       {/* Soft profile-completion nudge holding a pending ride request. */}

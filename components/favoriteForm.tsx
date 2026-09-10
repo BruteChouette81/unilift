@@ -1,4 +1,5 @@
 import { geoSuggestion } from "@/services/rideServices";
+import { useUserProfile } from "@/context/UserProfileContext";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useLanguage } from "@/context/LanguageContext";
 import { LinearGradient } from "expo-linear-gradient";
@@ -12,21 +13,22 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { P } from "@/constants/palette";
 
 // ─── Design Tokens ───────────────────────────────────────────────────────────
 const C = {
-  bg:          "#080810",
-  surface:     "#0f0f1e",
-  surfaceAlt:  "#13132a",
+  bg:          P.bg,
+  surface:     P.surface,
+  surfaceAlt:  P.surfaceRaised,
   border:      "rgba(124, 58, 237, 0.22)",
   borderFaint: "rgba(255, 255, 255, 0.06)",
-  purple:      "#7C3AED",
-  purpleLight: "#a78bfa",
-  text:        "#f3f4f6",
-  muted:       "#9ca3af",
-  dim:         "#4b5563",
-  danger:      "#f87171",
-  gold:        "#fbbf24",
+  purple:      P.accentDeep,
+  purpleLight: P.accentSoft,
+  text:        P.text,
+  muted:       P.textMuted,
+  dim:         P.textDim,
+  danger:      P.danger,
+  gold:        P.warning,
 };
 
 const HEADER_GRADIENT = ["#3b0764", "#1e3a8a"] as const;
@@ -55,6 +57,10 @@ export default function FavoriteRouteForm({
   onDelete,
 }: Props) {
   const { t } = useLanguage();
+  const { userData } = useUserProfile();
+  // Primitives, so the effect re-fires only when the position actually moves.
+  const originLat = userData?.localisation?.latitude ?? null;
+  const originLon = userData?.localisation?.longitude ?? null;
   const [endAddress, setEndAddress]         = useState(initialData?.endAddress ?? "");
   const [endGeolocation, setEndGeolocation] = useState<{ lat: number; lon: number } | undefined>(initialData?.endGeolocation);
   const [endSuggestions, setEndSuggestions] = useState<any[]>([]);
@@ -85,14 +91,21 @@ export default function FavoriteRouteForm({
     let cancelled = false;
     const run = async () => {
       if (debouncedEndAddress.length < 2) { setShowEndSuggestions(false); return; }
-      const results = await geoSuggestion(debouncedEndAddress.trim());
+      // Capped to MAX_SUGGESTION_DISTANCE_KM around the user's stored position.
+      const results = await geoSuggestion(
+        debouncedEndAddress.trim(),
+        undefined,
+        originLat != null && originLon != null
+          ? { latitude: originLat, longitude: originLon }
+          : null,
+      );
       if (cancelled) return;
       setEndSuggestions(results ?? []);
       setShowEndSuggestions((results?.length ?? 0) > 0);
     };
     void run();
     return () => { cancelled = true; };
-  }, [debouncedEndAddress]);
+  }, [debouncedEndAddress, originLat, originLon]);
 
   const handleSubmit = () => {
     if (!validate()) return;

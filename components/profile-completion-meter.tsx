@@ -3,20 +3,22 @@ import type { ProfileCompletion, ProfileTaskKey } from "@/utils/profile-completi
 import { Ionicons } from "@expo/vector-icons";
 import React from "react";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { P } from "@/constants/palette";
 
 const C = {
   border:      "rgba(137, 56, 213, 0.22)",
-  purpleLight: "#e09af7",
-  text:        "#f3f4f6",
-  muted:       "#9ca3af",
-  dim:         "#4b5563",
-  success:     "#34d399",
+  purpleLight: P.accentLight,
+  text:        P.text,
+  muted:       P.textMuted,
+  dim:         P.textDim,
+  success:     P.success,
 };
 
 const TASK_ICON: Record<ProfileTaskKey, React.ComponentProps<typeof Ionicons>["name"]> = {
   avatar:       "camera-outline",
   name:         "person-outline",
   school:       "school-outline",
+  phone:        "call-outline",
   verification: "shield-checkmark-outline",
   homeAddress:  "home-outline",
   payment:      "card-outline",

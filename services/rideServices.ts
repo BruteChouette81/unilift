@@ -8,14 +8,20 @@ import {
   firestoreBaseUrl,
   firestoreCollectionUrl,
   runtimeConfig,
-  withFirebaseApiKey
+  withFirebaseApiKey,
+  devWarn,
+  devError,
 } from "@/constants/runtime-config";
-import { haversineKm } from "@/hooks/use-ride-recommendations";
+import { MAX_SUGGESTION_DISTANCE_KM } from "@/constants/ride-geo";
 import type { JoinRequest, LocationPoint, Ride } from "@/types/models";
+import { haversineKm } from "@/utils/matching/geometry";
 import { rideLog } from "@/utils/ride-logger";
 import { getAuth } from "firebase/auth";
+import { isRecord, readGeoPoint, readNumber, readString } from "@/services/firestore-rest";
+import { mapsGeocode, mapsPlaceAutocomplete, mapsPlaceDetails } from "@/services/mapsService";
+import { USERS_BASE_URL } from "@/services/firestore-urls";
 
-export function createRideError(code: string, message: string): Error {
+function createRideError(code: string, message: string): Error {
   const err = new Error(message);
   (err as Error & { code: string }).code = code;
   return err;
@@ -72,7 +78,6 @@ async function assertCurrentUserHasPaymentMethod(): Promise<void> {
 }
 
 const BASE_URL = firestoreCollectionUrl("rides");
-const USERS_BASE_URL = firestoreCollectionUrl("users");
 const RIDES_CACHE_TTL_MS = 30000;
 let ridesInFlight: Promise<Ride[]> | null = null;
 let cachedRides: Ride[] = [];
@@ -82,25 +87,6 @@ let ridesFetchedAt = 0;
 // watcher fires more frequently but Firestore charges per write.
 let lastDriverLocationWriteAt = 0;
 const DRIVER_LOCATION_THROTTLE_MS = 5000;
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null;
-
-const readString = (value: unknown, fallback = ""): string =>
-  typeof value === "string" ? value : fallback;
-
-const readNumber = (value: unknown, fallback = 0): number => {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-};
-
-const readGeoPoint = (value: unknown): LocationPoint | null => {
-  if (!isRecord(value)) return null;
-  const latitude = readNumber(value.latitude, NaN);
-  const longitude = readNumber(value.longitude, NaN);
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
-  return { latitude, longitude };
-};
 
 const parseRideFromFirestoreDocument = (doc: unknown): Ride | null => {
   if (!isRecord(doc) || !isRecord(doc.fields)) return null;
@@ -383,7 +369,6 @@ export async function createRide(rideData: {
       started: {booleanValue: rideData.started},
       status: {stringValue: "planned"},
 
-
       seatsAvailable: { integerValue: rideData.seatsAvailable },
       date: { timestampValue: rideData.date },
 
@@ -461,7 +446,7 @@ export async function fetchRides(options?: { force?: boolean }): Promise<Ride[]>
   }
 }
 
-export function invalidateRidesCache() {
+function invalidateRidesCache() {
   ridesFetchedAt = 0;
   cachedRides = [];
   ridesInFlight = null;
@@ -516,30 +501,11 @@ export async function acceptRide(rideId: string, seatsRequested: number = 1) {
   return await updateRes.json();
 }
 
-/** Delete ride (if you’re the driver) */
-export async function deleteRide(rideId: string) {
-  const res = await fetch(withFirebaseApiKey(`${BASE_URL}/${rideId}`), {
-    method: "DELETE",
-    headers: await getAuthHeaders(),
-  });
-  if (!res.ok) await throwFetchError(res, "Failed to delete ride");
-  invalidateRidesCache();
-}
-
 export async function geoCode(place: string): Promise<{ latitude: number; longitude: number } | null> {
   try {
-    const encoded = encodeURIComponent(place);
-    const url =
-      `https://maps.googleapis.com/maps/api/geocode/json` +
-      `?address=${encoded}&components=administrative_area:QC|country:CA&key=${runtimeConfig.googleMapsApiKey}`;
-
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error("Network response was not ok");
-    }
-
-    const data = await response.json();
-    if (data.status !== "OK" || !Array.isArray(data.results) || data.results.length === 0) {
+    // Proxied through the server — the Maps key is no longer in the bundle.
+    const data = await mapsGeocode(place);
+    if (!data || data.status !== "OK" || !Array.isArray(data.results) || data.results.length === 0) {
       return null;
     }
 
@@ -550,7 +516,7 @@ export async function geoCode(place: string): Promise<{ latitude: number; longit
 
     return { latitude: loc.lat, longitude: loc.lng };
   } catch (error) {
-    console.error("Error fetching coordinates:", error);
+    devError("Error fetching coordinates:", error);
     return null;
   }
 }
@@ -567,12 +533,7 @@ async function getPlaceCoordinates(
   signal?: AbortSignal,
 ): Promise<{ lat: string; lon: string } | null> {
   try {
-    const url =
-      `https://maps.googleapis.com/maps/api/place/details/json` +
-      `?place_id=${encodeURIComponent(placeId)}&fields=geometry&key=${runtimeConfig.googleMapsApiKey}`;
-    const res = await fetch(url, { signal });
-    if (!res.ok) return null;
-    const data = await res.json();
+    const data = await mapsPlaceDetails(placeId, signal);
     const loc = data?.result?.geometry?.location;
     if (!loc || typeof loc.lat !== "number" || typeof loc.lng !== "number") return null;
     return { lat: String(loc.lat), lon: String(loc.lng) };
@@ -581,33 +542,51 @@ async function getPlaceCoordinates(
   }
 }
 
+/**
+ * Autocomplete suggestions for a place query.
+ *
+ * `origin` — when supplied, predictions further than MAX_SUGGESTION_DISTANCE_KM
+ * from it are dropped. Pass the user's position (live GPS, or the stored
+ * `localisation` as a fallback). Omit it to leave results uncapped; callers with
+ * no meaningful anchor (driver destination entry, onboarding before a fix is
+ * available) do exactly that, and behave as they always have.
+ *
+ * A partial origin — one coordinate null, which `UserProfile.localisation`
+ * allows — is treated as no origin rather than as (0, 0), which sits in the Gulf
+ * of Guinea and would have filtered out every suggestion on earth.
+ */
 export async function geoSuggestion(
   place: string,
   signal?: AbortSignal,
+  origin?: { latitude: number | null; longitude: number | null } | null,
 ): Promise<LocationResult[]> {
   try { //`&locationrestriction=rectangle:44.99,-79.76|62.59,-57.10` +
-    const encoded = encodeURIComponent(place);
-    const url =
-      `https://maps.googleapis.com/maps/api/place/autocomplete/json` +
-      `?input=${encoded}&components=country:ca` +
-      
-      `&language=fr&key=${runtimeConfig.googleMapsApiKey}`;
-
-    const response = await fetch(url, { signal });
-    if (!response.ok) throw new Error("Network response was not ok");
-    const data = await response.json();
-    if (data.status !== "OK" || !Array.isArray(data.predictions)) return [];
+    const data = await mapsPlaceAutocomplete(place, signal);
+    if (!data || data.status !== "OK" || !Array.isArray(data.predictions)) return [];
 
     const predictions = data.predictions.slice(0, 5) as Array<{
       description?: string;
       place_id?: string;
     }>;
 
+    const anchor =
+      origin && typeof origin.latitude === "number" && typeof origin.longitude === "number"
+        ? { lat: origin.latitude, lng: origin.longitude }
+        : null;
+
     const results = await Promise.all(
       predictions.map(async (p): Promise<LocationResult | null> => {
         if (!p.description || !p.place_id) return null;
         const coords = await getPlaceCoordinates(p.place_id, signal);
         if (!coords) return null;
+        if (anchor) {
+          const lat = parseFloat(coords.lat);
+          const lon = parseFloat(coords.lon);
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+          if (haversineKm(anchor, { lat, lng: lon }) > MAX_SUGGESTION_DISTANCE_KM) {
+            return null;
+          }
+        }
         return {
           displayName: p.description,
           lat: coords.lat,
@@ -620,7 +599,7 @@ export async function geoSuggestion(
     return results.filter((r): r is LocationResult => r !== null);
   } catch (error: unknown) {
     if (error instanceof Error && error.name === "AbortError") return [];
-    console.error("geoSuggestion error:", error);
+    devError("geoSuggestion error:", error);
     return [];
   }
 }
@@ -673,115 +652,10 @@ async function applyCancellationChargeToUser(
   });
 
   if (!res.ok) {
-    console.warn(`Failed to apply cancellation charge to user ${uid}`);
+    devWarn(`Failed to apply cancellation charge to user ${uid}`);
     return;
   }
 
-}
-
-/** Request to join a ride (passenger sends request, driver must approve) */
-export async function requestToJoinRide(
-  rideId: string,
-  passengerLocation: LocationPoint,
-  seatsRequested: number = 1,
-  dropoff?: LocationPoint,
-  dropoffLabel?: string,
-): Promise<void> {
-  const auth = getAuth();
-  const user = auth.currentUser;
-  if (!user) throw new Error("Not authenticated");
-  await assertCurrentUserHasPaymentMethod();
-
-  // Fetch current ride to validate
-  const getUrl = withFirebaseApiKey(`${BASE_URL}/${rideId}`);
-  const rideRes = await fetch(getUrl, { headers: await getAuthHeaders() });
-  if (!rideRes.ok) await throwFetchError(rideRes, "Failed to fetch ride");
-  const rideData = await rideRes.json();
-  const fields = rideData.fields;
-
-  const status = fields.status?.stringValue ?? "planned";
-  if (status !== "planned") throw new Error("This ride is no longer accepting requests.");
-
-  const seats = Number(fields.seatsAvailable?.integerValue ?? 0);
-  if (seats < seatsRequested) throw new Error(`Not enough seats available (need ${seatsRequested}, have ${seats}).`);
-
-  const passengers: string[] =
-    fields.passengers?.arrayValue?.values?.map((v: any) => v.stringValue) ?? [];
-  if (passengers.includes(user.uid)) throw new Error("You are already in this ride.");
-
-  // Check passenger is within the driver's max pickup radius
-  const maxPickupRadiusKm = Number(fields.maxPickupRadiusKm?.integerValue ?? 0);
-  if (maxPickupRadiusKm > 0) {
-    const driverLoc = isRecord(fields.localisation?.geoPointValue)
-      ? fields.localisation.geoPointValue as { latitude: number; longitude: number }
-      : null;
-    if (driverLoc) {
-      const distKm = haversineKm(
-        passengerLocation.latitude, passengerLocation.longitude,
-        driverLoc.latitude, driverLoc.longitude,
-      );
-      if (distKm > maxPickupRadiusKm) {
-        throw new Error(`You are too far from the driver's location (${Math.round(distKm * 10) / 10} km away, max ${maxPickupRadiusKm} km).`);
-      }
-    }
-  }
-
-  // Check not already requested
-  const existingRequest = fields.joinRequests?.mapValue?.fields?.[user.uid];
-  if (existingRequest) {
-    const reqStatus = existingRequest.mapValue?.fields?.status?.stringValue;
-    if (reqStatus === "pending") throw new Error("You already have a pending request.");
-    if (reqStatus === "accepted") throw new Error("You are already accepted.");
-  }
-
-  // Build the full joinRequests map with the new entry merged in
-  const existingJR = fields.joinRequests?.mapValue?.fields ?? {};
-  const mergedJR: Record<string, unknown> = { ...existingJR };
-  mergedJR[user.uid] = {
-    mapValue: {
-      fields: {
-        status: { stringValue: "pending" },
-        location: {
-          geoPointValue: {
-            latitude: passengerLocation.latitude,
-            longitude: passengerLocation.longitude,
-          },
-        },
-        requestedAt: { stringValue: new Date().toISOString() },
-        seatsRequested: { integerValue: String(seatsRequested) },
-        ...(dropoff
-          ? {
-              dropoff: {
-                geoPointValue: {
-                  latitude: dropoff.latitude,
-                  longitude: dropoff.longitude,
-                },
-              },
-            }
-          : {}),
-        ...(dropoffLabel ? { dropoffLabel: { stringValue: dropoffLabel } } : {}),
-      },
-    },
-  };
-
-  const patchUrl = withFirebaseApiKey(
-    `${BASE_URL}/${rideId}?updateMask.fieldPaths=joinRequests`,
-  );
-  const updateDoc = {
-    fields: {
-      joinRequests: {
-        mapValue: { fields: mergedJR },
-      },
-    },
-  };
-
-  const res = await fetch(patchUrl, {
-    method: "PATCH",
-    headers: await getAuthHeaders(true),
-    body: JSON.stringify(updateDoc),
-  });
-  if (!res.ok) await throwFetchError(res, "Failed to send join request");
-  invalidateRidesCache();
 }
 
 /** Driver responds to a join request (accept or reject) */
@@ -939,17 +813,17 @@ export async function updateDriverLocation(
       body: JSON.stringify(updateDoc),
     });
     if (!res.ok) {
-      console.warn("Failed to update driver location");
+      devWarn("Failed to update driver location");
     }
   } catch (e) {
-    console.warn("Failed to update driver location (network)", e);
+    devWarn("Failed to update driver location (network)", e);
   }
 }
 
 /** Outcome of a dropoff, as decided by the server. `confirmed` is what gates
  *  billing: an unconfirmed leg is resolved and rated but never charged, and the
  *  driver earns nothing for it. */
-export interface DropoffResult {
+interface DropoffResult {
   success: boolean;
   confirmed: boolean;
   noShow: boolean;
@@ -1021,89 +895,6 @@ export async function fetchRideById(rideId: string): Promise<Ride | null> {
   return parseRideFromFirestoreDocument(data);
 }
 
-/** Directly enroll in a future/scheduled ride (no driver approval needed) */
-export async function enrollInFutureRide(
-  rideId: string,
-  seatsRequested: number = 1,
-  passengerLocation?: LocationPoint,
-  dropoff?: LocationPoint,
-): Promise<void> {
-  const auth = getAuth();
-  const user = auth.currentUser;
-  if (!user) throw new Error("Not authenticated");
-  await assertCurrentUserHasPaymentMethod();
-
-  const getUrl = withFirebaseApiKey(`${BASE_URL}/${rideId}`);
-  const rideRes = await fetch(getUrl, { headers: await getAuthHeaders() });
-  if (!rideRes.ok) await throwFetchError(rideRes, "Failed to fetch ride");
-  const rideData = await rideRes.json();
-  const fields = rideData.fields;
-
-  const status = fields.status?.stringValue ?? "planned";
-  if (status !== "planned") throw new Error("This ride is no longer available.");
-
-  const seats = Number(fields.seatsAvailable?.integerValue ?? 0);
-  if (seats < seatsRequested) throw new Error(`Not enough seats available (need ${seatsRequested}, have ${seats}).`);
-
-  const currentPassengers: string[] =
-    fields.passengers?.arrayValue?.values?.map((v: any) => v.stringValue) ?? [];
-  if (currentPassengers.includes(user.uid)) throw new Error("You are already enrolled in this ride.");
-
-  currentPassengers.push(user.uid);
-
-  // Build passengerSeats map
-  const existingPS = fields.passengerSeats?.mapValue?.fields ?? {};
-  const mergedPS: Record<string, unknown> = { ...existingPS };
-  mergedPS[user.uid] = { integerValue: String(seatsRequested) };
-
-  // Build passengerPickups map
-  const existingPP = fields.passengerPickups?.mapValue?.fields ?? {};
-  const mergedPP: Record<string, unknown> = { ...existingPP };
-  if (passengerLocation) {
-    mergedPP[user.uid] = {
-      geoPointValue: {
-        latitude: passengerLocation.latitude,
-        longitude: passengerLocation.longitude,
-      },
-    };
-  }
-
-  // Build passengerDropoffs map
-  const existingPD = fields.passengerDropoffs?.mapValue?.fields ?? {};
-  const mergedPD: Record<string, unknown> = { ...existingPD };
-  if (dropoff) {
-    mergedPD[user.uid] = {
-      geoPointValue: {
-        latitude: dropoff.latitude,
-        longitude: dropoff.longitude,
-      },
-    };
-  }
-
-  const patchUrl = withFirebaseApiKey(
-    `${BASE_URL}/${rideId}?updateMask.fieldPaths=passengers&updateMask.fieldPaths=seatsAvailable&updateMask.fieldPaths=passengerSeats&updateMask.fieldPaths=passengerPickups&updateMask.fieldPaths=passengerDropoffs`,
-  );
-  const updateDoc = {
-    fields: {
-      passengers: {
-        arrayValue: { values: currentPassengers.map((id: string) => ({ stringValue: id })) },
-      },
-      seatsAvailable: { integerValue: Math.max(0, seats - seatsRequested) },
-      passengerSeats: { mapValue: { fields: mergedPS } },
-      passengerPickups: { mapValue: { fields: mergedPP } },
-      passengerDropoffs: { mapValue: { fields: mergedPD } },
-    },
-  };
-
-  const res = await fetch(patchUrl, {
-    method: "PATCH",
-    headers: await getAuthHeaders(true),
-    body: JSON.stringify(updateDoc),
-  });
-  if (!res.ok) await throwFetchError(res, "Failed to enroll in ride");
-  invalidateRidesCache();
-}
-
 /** Mark an expired planned ride — clears passengers and sets status to "expired".
  *  For abandoned started rides, call cleanupAbandonedStartedRide instead. */
 export async function cleanupExpiredRide(rideId: string): Promise<void> {
@@ -1123,7 +914,7 @@ export async function cleanupExpiredRide(rideId: string): Promise<void> {
     body: JSON.stringify(updateDoc),
   });
   if (!res.ok) {
-    console.warn(`Failed to cleanup expired ride ${rideId}`);
+    devWarn(`Failed to cleanup expired ride ${rideId}`);
   }
   invalidateRidesCache();
 }
@@ -1145,7 +936,7 @@ export async function cleanupAbandonedStartedRide(rideId: string): Promise<void>
     body: JSON.stringify(updateDoc),
   });
   if (!res.ok) {
-    console.warn(`Failed to cleanup abandoned started ride ${rideId}`);
+    devWarn(`Failed to cleanup abandoned started ride ${rideId}`);
   }
   invalidateRidesCache();
 }

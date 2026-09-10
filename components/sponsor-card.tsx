@@ -1,5 +1,4 @@
-import { getSponsorRewards, type Reward } from "@/constants/rewards";
-import { isDev } from "@/constants/runtime-config";
+import { getSponsorRewards, REWARDS_ENABLED, type Reward } from "@/constants/rewards";
 import { categoryIcon, tierRingColor, type Sponsor, type SponsorTier } from "@/constants/sponsors";
 import { useLanguage } from "@/context/LanguageContext";
 import { useUserProfile } from "@/context/UserProfileContext";
@@ -10,14 +9,15 @@ import React, { useState } from "react";
 import { Alert, Dimensions, Image, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import RewardCard from "./reward-card";
+import { P } from "@/constants/palette";
 
 const C = {
-  purple: "#8938D5",
-  purpleLight: "#e09af7",
-  gold: "#fbbf24",
-  text: "#f3f4f6",
+  purple: P.accent,
+  purpleLight: P.accentLight,
+  gold: P.warning,
+  text: P.text,
   muted: "#cbd5e1",
-  dim: "#9ca3af",
+  dim: P.textMuted,
   border: "rgba(255,255,255,0.12)",
   scrim: "rgba(10,8,18,0.82)",
 };
@@ -139,8 +139,10 @@ export default function SponsorCard({
                 </View>
               )}
 
-              {/* Your rewards (dev demo) — falls back to "coming soon" in prod */}
-              {isDev ? (
+              {/* Redeemable offers, gated on REWARDS_ENABLED rather than the build
+                  type — this used to show a dev-only demo that the flag could not
+                  turn off. Falls back to a "coming soon" line. */}
+              {REWARDS_ENABLED ? (
                 <>
                   <Text style={styles.sectionTitle}>{t("sponsor.yourRewards")}</Text>
                   {sponsorRewards.length > 0 ? (
@@ -192,7 +194,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 0,
     borderColor: C.border,
   },
-  scrim: { ...StyleSheet.absoluteFillObject, backgroundColor: C.scrim },
+  scrim: { ...StyleSheet.absoluteFill, backgroundColor: C.scrim },
   content: { paddingHorizontal: 22 },
 
   dragZone: { width: "100%", alignItems: "center", paddingVertical: 12 },

@@ -2,8 +2,9 @@ rules_version = '2';
 
 // Firebase Storage rules. Governs both the dev and prod buckets (a single default
 // bucket is shared).
-//   • profiles/*   — avatars. Any signed-in user may read (ride cards show
-//                    avatars); signed-in users may write their own file.
+//   • profiles/{uid}/*  — avatars. Any signed-in user may read (ride cards show
+//                         avatars); only the owner may write their own, and only
+//                         a reasonably sized image.
 // Identity documents are NOT stored here — adult verification runs through Stripe
 // Identity, which holds the images. Nothing else is writable.
 service firebase.storage {
@@ -13,10 +14,45 @@ service firebase.storage {
       return request.auth != null;
     }
 
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
     // Avatars — readable by any signed-in user, writable only by their owner.
+    //
+    // The path is keyed on the uid so ownership is expressible at all. It used to
+    // be a flat `profiles/{fileName}` with `allow write: if isSignedIn()`, which
+    // — despite a comment claiming otherwise — let ANY signed-in user overwrite
+    // ANY other user's avatar, and upload a file of any size and any type. That
+    // was both an impersonation vector and free file hosting on your bucket.
+    match /profiles/{uid}/{fileName} {
+      allow read: if isSignedIn();
+      allow write: if isOwner(uid)
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+      allow delete: if isOwner(uid);
+    }
+
+    // Legacy flat avatars — `profiles/{uid}.jpg`. This is the path every App
+    // Store build up to 1.3.x writes, and a server-side rules deploy cannot
+    // update those installs. `allow write: if false` here therefore does not
+    // "close a hole", it breaks profile-photo upload for the entire installed
+    // base until each user happens to update.
+    //
+    // The actual hole was `allow write: if isSignedIn()` with NO uid check, so
+    // any account could overwrite any other account's avatar with a file of any
+    // size and any type. Pinning fileName to the caller's own uid closes exactly
+    // that, with the same size and content-type limits as the block above, while
+    // old clients keep working.
+    //
+    // Remove this block once config/forceUpdate floors everyone at >= 1.4.0.
     match /profiles/{fileName} {
       allow read: if isSignedIn();
-      allow write: if isSignedIn();
+      allow write: if isSignedIn()
+        && fileName == request.auth.uid + '.jpg'
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+      allow delete: if isSignedIn() && fileName == request.auth.uid + '.jpg';
     }
 
     // Everything else — deny by default.

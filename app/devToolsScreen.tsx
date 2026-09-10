@@ -35,6 +35,11 @@ import {
   LOCATION_PRESETS,
   setDevLocationOverride,
 } from "@/utils/dev-location";
+import WhatsNewScreen from "@/components/whats-new/whats-new-screen";
+import { resetDeviceIdentityForTesting } from "@/services/deviceIdentity";
+import { WHATS_NEW_KEY, WHATS_NEW_VERSION } from "@/constants/whats-new";
+import { FIRST_RUN_PREFIX } from "@/hooks/use-first-run";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
@@ -50,19 +55,20 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { P } from "@/constants/palette";
 
 const C = {
-  bg: "#080810",
-  surface: "#0f0f1e",
+  bg: P.bg,
+  surface: P.surface,
   card: "#161628",
   border: "#26263c",
-  text: "#f3f4f6",
-  muted: "#9ca3af",
-  accent: "#7C3AED",
-  accentLight: "#a78bfa",
-  green: "#34d399",
+  text: P.text,
+  muted: P.textMuted,
+  accent: P.accentDeep,
+  accentLight: P.accentSoft,
+  green: P.success,
   amber: "#f59e0b",
-  red: "#ef4444",
+  red: P.dangerStrong,
   blue: "#3b82f6",
 };
 
@@ -82,6 +88,7 @@ export default function DevToolsScreen() {
   const [logs, setLogs] = useState<RideLogEntry[]>([]);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [report, setReport] = useState<DevDispatchReport | null>(null);
+  const [previewWhatsNew, setPreviewWhatsNew] = useState(false);
 
   useEffect(() => subscribeRideLog(setLogs), []);
 
@@ -182,6 +189,56 @@ export default function DevToolsScreen() {
           <IdChip label="ride" value={currentRideId} />
         </View>
 
+        {/* Jump straight into the post-signup tail without making a new account.
+            Both screens act on the signed-in user, so everything (saving the
+            profile, adding a card, granting a certification) works for real —
+            it just skips the three signup steps in front of them. */}
+        <Section title="Signup flow screens">
+          <Btn label="Open onboarding screen" icon="sparkles" color={C.blue}
+            onPress={() => router.push("/onboardingScreen")} />
+          <Btn label="Open certification — signup step 4" icon="ribbon" color={C.blue}
+            onPress={() => router.push("/certificationScreen?mode=signup")} />
+        </Section>
+
+        {/* The per-device account cap is deliberately hard to reset — the whole
+            point is that it survives deleting the app. That makes it untestable
+            without this: forget the install identity and the next signup counts
+            as a fresh device. The server-side tally for the OLD identity is left
+            alone, which is correct — it is a record of what actually happened. */}
+        <Section title="Account firewall">
+          <Btn label="Forget this device's install identity" icon="finger-print" color={C.accent}
+            onPress={() =>
+              void resetDeviceIdentityForTesting().then(() =>
+                Alert.alert(
+                  "Device identity cleared",
+                  "The next signup on this build counts as a new device.",
+                ),
+              )
+            } />
+        </Section>
+
+        {/* Two different things: the first renders the takeover right here for
+            design work; the second clears the persisted flag so the real gate in
+            _layout.tsx fires again on the next cold start. */}
+        <Section title="Release notes">
+          <Btn label="Preview What's New" icon="sparkles" color={C.blue}
+            onPress={() => setPreviewWhatsNew(true)} />
+          {/* The flag is account-scoped (`…whats-new-1.4-<uid>`), so clear every
+              key carrying this release's prefix rather than one exact key —
+              that resets it for whichever account is signed in on this device. */}
+          <Btn label={`Reset seen flag (${WHATS_NEW_VERSION})`} icon="refresh" color={C.blue}
+            onPress={() =>
+              void AsyncStorage.getAllKeys()
+                .then((keys) =>
+                  AsyncStorage.multiRemove(
+                    keys.filter((k) => k.startsWith(FIRST_RUN_PREFIX + WHATS_NEW_KEY)),
+                  ),
+                )
+                .then(() => Alert.alert("What's New reset", "Relaunch the app to see it."))
+                .catch((e) => Alert.alert("Reset failed", String(e)))
+            } />
+        </Section>
+
         <Section title="1 · Create & match">
           <Btn label="Seed request + accept as bot" icon="rocket" color={C.accent} loading={busy === "seedAccept"} onPress={seedAndAccept} />
           <Btn label="Open passenger ride screen" icon="eye" color={C.blue} onPress={openPassengerRide} />
@@ -238,9 +295,40 @@ export default function DevToolsScreen() {
               <>
                 <Kv label="matching" value={report.matching} ok={report.matching === "broadcast"} />
                 <Kv label="my push token" value={report.me?.hasPushToken ? "registered" : "MISSING"} ok={Boolean(report.me?.hasPushToken)} />
+                {/* The env tag is what keeps a dev test from paging real users. If
+                    this is not "dev", reopen the app on a dev build to refresh it. */}
+                <Kv
+                  label="my token env"
+                  value={report.me?.tokenEnv ?? "untagged"}
+                  ok={report.me?.tokenEnv === "dev"}
+                />
+                <Kv
+                  label="my token age"
+                  value={
+                    report.me?.tokenAgeDays == null
+                      ? "unknown"
+                      : `${report.me.tokenAgeDays}d (max ${report.devTokenMaxAgeDays}d)`
+                  }
+                  ok={report.me?.tokenAgeDays != null && report.me.tokenAgeDays <= report.devTokenMaxAgeDays}
+                />
                 <Kv label="my driver mode" value={report.me?.driverModeEnabled ? "on" : "off"} ok={Boolean(report.me?.driverModeEnabled)} />
+                {/* The headline answer to "why doesn't my test phone buzz". */}
+                <Kv
+                  label="I'd be notified"
+                  value={report.meWouldReceive ? "yes" : "NO"}
+                  ok={report.meWouldReceive}
+                />
                 <Kv label="would notify" value={`${report.wouldNotify} of ${report.totalUsers} users`} ok={report.wouldNotify > 0} />
               </>
+            )}
+            {report && !report.meWouldReceive && report.meBlockedBy && (
+              <Text style={styles.guardNote}>{report.meBlockedBy}</Text>
+            )}
+            {report?.meWouldReceive && (
+              <Text style={styles.guardNote}>
+                You never receive your own request — test with a second account on a
+                second device.
+              </Text>
             )}
           </View>
           <Btn label="Run dispatch report" icon="pulse" color={C.blue} loading={busy === "report"}
@@ -302,6 +390,8 @@ export default function DevToolsScreen() {
           )}
         </View>
       </ScrollView>
+
+      {previewWhatsNew && <WhatsNewScreen onDone={() => setPreviewWhatsNew(false)} />}
     </View>
   );
 }
@@ -389,6 +479,7 @@ const styles = StyleSheet.create({
   kvLabel: { color: C.muted, fontSize: 11, width: 104 },
   kvValue: { fontSize: 11, fontWeight: "700", flex: 1 },
 
+  guardNote: { color: C.amber, fontSize: 11, lineHeight: 15, marginBottom: 8, paddingHorizontal: 2 },
   driverRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 5, paddingHorizontal: 4 },
   driverName: { color: C.text, fontSize: 12, fontWeight: "600", maxWidth: 130 },
   driverReason: { color: C.muted, fontSize: 11, flex: 1 },

@@ -1,10 +1,14 @@
-import { type HypeEvent } from "@/constants/events";
+import { HYPE_MAP_ENABLED, type HypeEvent } from "@/constants/events";
 import {
   fetchHypeEvents,
   getCachedHypeEventsSync,
   loadCachedHypeEvents,
 } from "@/services/eventService";
 import { useEffect, useState } from "react";
+
+/** Stable reference — a fresh `[]` each render would retrigger every consumer's
+ *  memos and effects. */
+const EMPTY: HypeEvent[] = [];
 
 /**
  * Hype-map events, cache-first so flames render instantly.
@@ -16,11 +20,20 @@ import { useEffect, useState } from "react";
  *
  * A failed fetch (`null`) leaves the cached events on screen rather than
  * blanking the map.
+ *
+ * Returns an empty list and reads nothing while HYPE_MAP_ENABLED is false. The
+ * guard lives here rather than at the call site so the flag governs the DATA as
+ * well as the UI — hiding the markers while still doing a disk read and a
+ * Firestore fetch on every home-screen mount would be a silent cost for a
+ * feature nobody can see.
  */
 export function useHypeEvents(): HypeEvent[] {
-  const [events, setEvents] = useState<HypeEvent[]>(() => getCachedHypeEventsSync() ?? []);
+  const [events, setEvents] = useState<HypeEvent[]>(
+    () => (HYPE_MAP_ENABLED ? getCachedHypeEventsSync() ?? [] : EMPTY),
+  );
 
   useEffect(() => {
+    if (!HYPE_MAP_ENABLED) return;
     let cancelled = false;
     // Guards the cache→network race: the disk read must never land on top of a
     // fresh result that happened to arrive first.

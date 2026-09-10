@@ -138,15 +138,21 @@ import { useCountdownConfigFetcher } from "@/hooks/use-countdown-config";
 import { usePushNotifications } from "@/hooks/use-push-notifications";
 import { useNotificationGate } from "@/hooks/use-notification-gate";
 import NotificationGateScreen from "@/components/NotificationGateScreen";
+import WhatsNewScreen from "@/components/whats-new/whats-new-screen";
+import { whatsNewKeyFor } from "@/constants/whats-new";
+import { useFirstRun } from "@/hooks/use-first-run";
 import { useWallet, WalletProvider } from "@/context/WalletContext";
+import { formatSignedCents, signedAmountColor } from "@/utils/formatBalance";
 import { useDriverSession } from "@/hooks/use-driver-session";
 import SplashAnimation from "@/components/SplashAnimation";
 import * as SplashScreen from "expo-splash-screen";
-import { DarkTheme, DefaultTheme, ThemeProvider } from "@react-navigation/native";
 import { StripeProvider } from "@stripe/stripe-react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { Stack, useRouter, useSegments } from "expo-router";
+// expo-router vendors react-navigation as of SDK 56 and refuses to run when the
+// standalone @react-navigation/* packages are installed, so the theming
+// primitives come from expo-router itself now.
+import { DarkTheme, DefaultTheme, Stack, ThemeProvider, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, TouchableOpacity, View } from "react-native";
@@ -206,15 +212,23 @@ export default function RootLayout() {
 }
 
 function AppHeader() {
-  const { pendingChargeCents, pendingEarningsCents, loading } = useWallet();
+  const { netBalanceCents, loading } = useWallet();
   const { top: safeTop } = useSafeAreaInsets();
   const router = useRouter();
 
-  const earnings = Number(pendingEarningsCents) || 0;
-  const pending  = Number(pendingChargeCents)  || 0;
-  const hasEarnings = earnings > 0;
-  const amountCents = hasEarnings ? earnings : pending;
-  const amountColor = hasEarnings ? "#34d399" : "#f3f4f6";
+  // Mirrors the wallet card exactly: one signed balance, green when the user is
+  // ahead, red with a leading "-" when they owe.
+  const net = Number(netBalanceCents) || 0;
+  const amountColor = signedAmountColor(net, {
+    positive: "#34d399",
+    negative: "#f87171",
+    neutral: "#f3f4f6",
+  });
+  const iconColor = signedAmountColor(net, {
+    positive: "#34d399",
+    negative: "#f87171",
+    neutral: PURPLE_LIGHT,
+  });
 
   return (
     <LinearGradient
@@ -243,9 +257,9 @@ function AppHeader() {
           activeOpacity={0.75}
           onPress={() => router.push("/(tabs)/wallet")}
         >
-          <Ionicons name={hasEarnings ? "cash" : "card-outline"} size={14} color={hasEarnings ? "#34d399" : PURPLE_LIGHT} />
+          <Ionicons name={net > 0 ? "cash" : "card-outline"} size={14} color={iconColor} />
           <Text style={[styles.walletAmount, { color: amountColor }]}>
-            {loading ? "$0.00" : `$${(amountCents / 100).toFixed(2)}`}
+            {loading ? "$0.00" : formatSignedCents(net)}
           </Text>
         </TouchableOpacity>
       </View>
@@ -555,6 +569,27 @@ function LayoutContent() {
     }
   }, [status, countdownActive, segments, router, remoteConfig.loading]);
 
+  // Release takeover. The key is version- *and* account-scoped, so bumping
+  // WHATS_NEW_VERSION shows the sequence again exactly once per user, and every
+  // freshly created account gets it even on a phone that already dismissed it.
+  const whatsNew = useFirstRun(whatsNewKeyFor(user?.uid));
+  const showWhatsNew =
+    status === "authenticated" &&
+    // Guard the anon key: between sign-in and `user` landing there is a render
+    // where the uid is still undefined, and marking *that* key seen would leave
+    // the real account's flag unset (and re-show later).
+    !!user?.uid &&
+    whatsNew.shouldShow &&
+    // Never land on top of a ride. The effects above cold-resume a passenger
+    // into findingDriverScreen / matchDriverScreen from a persisted request or
+    // a push, and a release announcement must not interrupt that.
+    !activeRide &&
+    !pendingRequest &&
+    // Nor on top of a flow the user is already being walked through.
+    !["(auth)", "onboardingScreen", "countdown", "countdown-confirmation"].includes(
+      (segments as string[])[0] ?? "",
+    );
+
   const theme = useMemo(() => {
     const baseTheme = colorScheme === "dark" ? DarkTheme : DefaultTheme;
     return {
@@ -599,7 +634,7 @@ function LayoutContent() {
           onEnable={notifGate.requestPermission}
           onOpenSettings={notifGate.openSettings}
         />
-        <StatusBar style={STATUS_BAR_STYLE} backgroundColor={BG} translucent={false} />
+        <StatusBar style={STATUS_BAR_STYLE} />
       </>
     );
   }
@@ -614,14 +649,17 @@ function LayoutContent() {
         // starts there on cold open. `(auth)` is still registered so the user
         // can reach signup/login by tapping the CTA on the countdown screen.
         <Stack screenOptions={commonStackOptions}>
-          {countdownActive ? (
-            <>
-              <Stack.Screen name="countdown" />
-              <Stack.Screen name="(auth)" />
-            </>
-          ) : (
-            <Stack.Screen name="(auth)" />
-          )}
+          {/* An ARRAY, not a <>…</> fragment. expo-router's
+              useFilterScreenChildren walks these with React.Children.forEach,
+              which flattens arrays but treats a Fragment as a single opaque
+              child — so a fragment fell through to "Layout children must be of
+              type Screen" and logged on every render. */}
+          {countdownActive
+            ? [
+                <Stack.Screen key="countdown" name="countdown" />,
+                <Stack.Screen key="auth" name="(auth)" />,
+              ]
+            : [<Stack.Screen key="auth" name="(auth)" />]}
         </Stack>
       ) : (
         <>
@@ -672,7 +710,16 @@ function LayoutContent() {
             <Stack.Screen name="rewardsScreen" options={{ headerShown: false }} />
             <Stack.Screen name="certificationScreen" options={{ headerShown: false }} />
             <Stack.Screen name="acceptRideScreen" options={{ headerShown: false }} />
-            {isDev && <Stack.Screen name="devToolsScreen" options={{ headerShown: false }} />}
+            {/* `{isDev && <Stack.Screen/>}` yields `false` when isDev is off, and
+                React.Children.forEach hands that to expo-router as a `null`
+                child — which is not a <Screen>, so it warned on EVERY render of
+                a production build. <Stack.Protected> is the supported way to
+                register a screen conditionally, and unlike the `&&` form it
+                actually removes the route: expo-router auto-registers every file
+                under app/, so /devToolsScreen was reachable in production. */}
+            <Stack.Protected guard={isDev}>
+              <Stack.Screen name="devToolsScreen" options={{ headerShown: false }} />
+            </Stack.Protected>
             <Stack.Screen name="onboardingScreen" options={{ headerShown: false }} />
             <Stack.Screen name="countdown-confirmation" options={{ headerShown: false }} />
           </Stack>
@@ -680,13 +727,13 @@ function LayoutContent() {
               Distinct from the active-ride (pink/purple) banner; this one is always green
               and routes back to the driver inbox, not to an active ride. */}
           <GlobalDriverAvailabilityBanner isOnline={isOnline} session={session} goOffline={goOffline} />
+          {/* Release notes. A sibling overlay, not a Stack.Screen: it owns no
+              navigation, so it cannot leave the stack in a state the ride flow
+              has to recover from (see the findingDriverScreen note above). */}
+          {showWhatsNew && <WhatsNewScreen onDone={whatsNew.markSeen} />}
         </>
       )}
-      <StatusBar
-        style={STATUS_BAR_STYLE}
-        backgroundColor={BG}
-        translucent={false}
-      />
+      <StatusBar style={STATUS_BAR_STYLE} />
     </ThemeProvider>
     </CountdownConfigContext.Provider>
   );

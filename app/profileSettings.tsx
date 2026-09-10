@@ -1,16 +1,17 @@
-import { apiFetch, apiBaseUrl, firestoreDocumentUrl } from "@/constants/runtime-config";
-import { signOutUser } from "@/services/authService";
 import { autoFormatDateInput, calculateAgeFromBirthDate, formatBirthDateForDisplay, parseBirthDateInput } from "@/components/userHelper";
+import { apiBaseUrl, apiFetch, firestoreDocumentUrl, devError } from "@/constants/runtime-config";
+import { formatPhoneForDisplay, parsePhoneInput } from "@/utils/phoneNumber";
+import PhoneNumberCard from "@/components/phone/phone-number-card";
 import { useAuth } from "@/context/AuthContext";
 import { useLanguage } from "@/context/LanguageContext";
 import { useUserProfile } from "@/context/UserProfileContext";
+import { signOutUser } from "@/services/authService";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useState, useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  FlatList,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -18,49 +19,153 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  View,
+  View
 } from "react-native";
+import { P } from "@/constants/palette";
 
 const C = {
-  bg:          "#080810",
-  surface:     "#0f0f1e",
+  bg:          P.bg,
+  surface:     P.surface,
   border:      "rgba(137, 56, 213, 0.22)",
   borderFaint: "rgba(255, 255, 255, 0.06)",
-  purple:      "#8938D5",
-  purpleLight: "#e09af7",
-  text:        "#f3f4f6",
-  muted:       "#9ca3af",
-  dim:         "#4b5563",
+  purple:      P.accent,
+  purpleLight: P.accentLight,
+  text:        P.text,
+  muted:       P.textMuted,
+  dim:         P.textDim,
   inputBg:     "rgba(255, 255, 255, 0.05)",
   inputBorder: "rgba(137, 56, 213, 0.2)",
   inputFocus:  "rgba(137, 56, 213, 0.7)",
 };
 
-const SCHOOLS = [
-  'Cégep St-Foy',
+ const SCHOOLS = [
+  // Québec City / Chaudière-Appalaches
+  'Cégep de Sainte-Foy',
   'Cégep Garneau',
   'Cégep Champlain St-Lawrence',
+  'Cégep de Limoilou',
   'Cégep de Lévis',
   'Université Laval',
-  'UQAR',
+
+  // Montréal
+  'Cégep de Maisonneuve',
+  'Cégep du Vieux Montréal',
+  'Cégep André-Laurendeau',
+  'Cégep Ahuntsic',
+  'Cégep de Saint-Laurent',
+  'Cégep Édouard-Montpetit',
+  'Cégep de Rosemont',
+  'Cégep de Bois-de-Boulogne',
+  'Cégep Gérald-Godin',
+  'Cégep John Abbott',
+  'Dawson College',
+  'Vanier College',
+  'Marianopolis College',
+  'Collège LaSalle',
+  'Collège de Maisonneuve',
+  'Université de Montréal',
+  'Polytechnique Montréal',
+  'HEC Montréal',
+  'Université du Québec à Montréal',
+  'McGill University',
+  'Concordia University',
+
+  // Sherbrooke
+  'Cégep de Sherbrooke',
+  'Séminaire de Sherbrooke',
+  'Université de Sherbrooke',
+
+  // Trois-Rivières
+  'Cégep de Trois-Rivières',
+  'Collège Laflèche',
+  'Université du Québec à Trois-Rivières',
+
+  // Saguenay–Lac-Saint-Jean
+  'Cégep de Chicoutimi',
+  'Cégep de Jonquière',
+  'Cégep de Saint-Félicien',
+  'Université du Québec à Chicoutimi',
+
+  // Rimouski / Bas-Saint-Laurent
+  'Cégep de Rimouski',
+  'Cégep de La Pocatière',
+  'Cégep de Rivière-du-Loup',
+  'Université du Québec à Rimouski',
+
+  // Outaouais
+  'Cégep de l’Outaouais',
+  'Heritage College',
+  'Université du Québec en Outaouais',
+
+  // Abitibi-Témiscamingue
+  'Cégep de l’Abitibi-Témiscamingue',
+  'Université du Québec en Abitibi-Témiscamingue',
+
+  // Côte-Nord
+  'Cégep de Baie-Comeau',
+  'Cégep de Sept-Îles',
+
+  // Gaspésie / Îles-de-la-Madeleine
+  'Cégep de la Gaspésie et des Îles',
+
+  // Lanaudière
+  'Cégep régional de Lanaudière à Joliette',
+  'Cégep régional de Lanaudière à L’Assomption',
+  'Cégep régional de Lanaudière à Terrebonne',
+
+  // Laurentides
+  'Cégep de Saint-Jérôme',
+
+  // Montérégie
+  'Cégep de Saint-Hyacinthe',
+  'Cégep de Granby',
+  'Cégep de Sorel-Tracy',
+  'Cégep de Valleyfield',
+  'Cégep Édouard-Montpetit',
+  'Cégep de Saint-Jean-sur-Richelieu',
+  'Cégep de Drummondville',
+
+  // Centre-du-Québec
+  'Cégep de Drummondville',
+  'Cégep de Victoriaville',
+
+  // Estrie
+  'Cégep de Sherbrooke',
+  'Collège Champlain – Lennoxville',
+
+  // Universities – Québec
+  'Université du Québec',
+  'Université du Québec à Chicoutimi',
+  'Université du Québec à Montréal',
+  'Université du Québec à Rimouski',
+  'Université du Québec à Trois-Rivières',
+  'Université du Québec en Abitibi-Témiscamingue',
+  'Université du Québec en Outaouais',
 ];
+
 
 
 export default function ProfileSettingsScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const { t } = useLanguage();
-  const { updateUserData } = useUserProfile();
+  const { userData, updateUserData } = useUserProfile();
   const params = useLocalSearchParams<{
     name: string;
     birthDate: string;
     school: string;
     prefs: string;
+    phone: string;
   }>();
 
   const [name, setName]           = useState(params.name ?? "");
   const [birthDate, setBirthDate] = useState(formatBirthDateForDisplay(params.birthDate ?? ""));
   const [school, setSchool]       = useState(params.school ?? "");
+  const [phone, setPhone]         = useState(formatPhoneForDisplay(params.phone ?? ""));
+  // Controlled mode: this screen owns the tick box and writes `phoneConsent`
+  // with the rest of the form, so the permission and the number it covers land
+  // in the same PATCH.
+  const [phoneConsent, setPhoneConsent] = useState(userData?.phoneConsent ?? false);
   const [showSchoolDropdown, setShowSchoolDropdown] = useState(false);
   const preferences = params.prefs ? params.prefs.split(",").filter(Boolean) : [];
 
@@ -100,6 +205,37 @@ export default function ProfileSettingsScreen() {
         fields.birthDate = { stringValue: parsedBirthDate };
       }
 
+      // Blank means "leave it alone", not "erase it" — same as birthDate above.
+      // A non-blank value that will not parse is a typo worth stopping on:
+      // saving it silently would leave a driver calling a dead number.
+      const trimmedPhone = phone.trim();
+      const parsedPhone = parsePhoneInput(trimmedPhone);
+      if (trimmedPhone && !parsedPhone) {
+        setSaving(false);
+        Alert.alert(t("profileSettings.phoneLabel"), t("profileSettings.phoneInvalid"));
+        return;
+      }
+      // A number without the tick is not ours to keep: the card says so above
+      // the field, so saving one anyway would make that line a lie.
+      if (parsedPhone && !phoneConsent) {
+        setSaving(false);
+        Alert.alert(t("profileSettings.phoneLabel"), t("phoneCard.consentRequired"));
+        return;
+      }
+      if (parsedPhone) {
+        maskFields.push("phone", "phoneConsent");
+        fields.phone = { stringValue: parsedPhone };
+        fields.phoneConsent = { booleanValue: true };
+      } else if (!phoneConsent && userData?.phone) {
+        // Consent withdrawn on a number already on file. Clearing the field
+        // normally means "leave it alone", so the deletion has to be driven by
+        // the tick box instead — otherwise the digits would survive the
+        // permission that justified storing them.
+        maskFields.push("phone", "phoneConsent");
+        fields.phone = { stringValue: "" };
+        fields.phoneConsent = { booleanValue: false };
+      }
+
       const maskQuery = maskFields
         .map((f) => `updateMask.fieldPaths=${encodeURIComponent(f)}`)
         .join("&");
@@ -118,12 +254,14 @@ export default function ProfileSettingsScreen() {
 
       if (!res.ok) {
         const errText = await res.text();
-        console.error("[profileSettings] Firestore PATCH failed:", res.status, errText);
+        devError("[profileSettings] Firestore PATCH failed:", res.status, errText);
         throw new Error(errText);
       }
 
       // Update the in-memory cache so the profile screen reflects changes immediately.
       const patch: Record<string, unknown> = { name: name.trim(), school: school.trim() };
+      if (parsedPhone) { patch.phone = parsedPhone; patch.phoneConsent = true; }
+      else if (!phoneConsent && userData?.phone) { patch.phone = undefined; patch.phoneConsent = false; }
       if (parsedBirthDate) {
         patch.birthDate = parsedBirthDate;
         patch.age = calculateAgeFromBirthDate(parsedBirthDate);
@@ -132,7 +270,7 @@ export default function ProfileSettingsScreen() {
 
       router.back();
     } catch (err) {
-      console.error("[profileSettings] handleSave error:", err);
+      devError("[profileSettings] handleSave error:", err);
       Alert.alert(t("profileSettings.saveFailed"), t("profileSettings.saveFailedMsg"));
     } finally {
       setSaving(false);
@@ -241,6 +379,25 @@ export default function ProfileSettingsScreen() {
             maxLength={10}
             onFocus={() => setBirthDateFocused(true)}
             onBlur={() => setBirthDateFocused(false)}
+          />
+        </View>
+
+        {/* Phone — the only field on this screen another person ever sees, and
+            only the driver of a ride you are currently on. Rendered by the
+            shared card so the scope is explained the same way here as on the
+            profile tab. Controlled mode: this screen keeps batching every field
+            into the one masked PATCH below, so the card has no Save of its own. */}
+        <View style={styles.phoneCardSlot}>
+          <PhoneNumberCard
+            value={phone}
+            onChangeText={setPhone}
+            consent={phoneConsent}
+            onConsentChange={(next) => {
+              setPhoneConsent(next);
+              // Untick and the field empties with it: leaving digits in a box
+              // nobody is allowed to store reads as a number still on file.
+              if (!next) setPhone("");
+            }}
           />
         </View>
 
@@ -381,6 +538,9 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     marginTop: 4,
   },
+  // The phone card is a card, not a field: it supplies its own border and
+  // padding, so the slot only has to reproduce the 18pt gap the input rows use.
+  phoneCardSlot: { marginTop: -4, marginBottom: 18 },
   inputRow: {
     flexDirection: "row",
     alignItems: "center",

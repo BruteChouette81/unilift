@@ -27,7 +27,7 @@ export type CountdownRemoteConfig = {
   loading: boolean;
 };
 
-export const defaultCountdownConfig: CountdownRemoteConfig = {
+const defaultCountdownConfig: CountdownRemoteConfig = {
   enabled: COUNTDOWN_ENABLED,
   endMs: COUNTDOWN_END_MS,
   endDate: COUNTDOWN_END_DATE,

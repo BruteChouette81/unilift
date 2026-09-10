@@ -1,6 +1,6 @@
 import RewardCard from "@/components/reward-card";
 import { getRewardGroups, xpToLevel, type Reward } from "@/constants/rewards";
-import { isDev } from "@/constants/runtime-config";
+import { REWARDS_ENABLED } from "@/constants/rewards";
 import { useLanguage } from "@/context/LanguageContext";
 import { useUserProfile } from "@/context/UserProfileContext";
 import { Ionicons } from "@expo/vector-icons";
@@ -18,17 +18,18 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { P } from "@/constants/palette";
 
 const C = {
-  bg:          "#080810",
-  surface:     "#0f0f1e",
+  bg:          P.bg,
+  surface:     P.surface,
   border:      "rgba(137, 56, 213, 0.22)",
-  purple:      "#8938D5",
-  purpleLight: "#e09af7",
-  text:        "#f3f4f6",
-  muted:       "#9ca3af",
-  dim:         "#4b5563",
-  gold:        "#fbbf24",
+  purple:      P.accent,
+  purpleLight: P.accentLight,
+  text:        P.text,
+  muted:       P.textMuted,
+  dim:         P.textDim,
+  gold:        P.warning,
 };
 
 export default function RewardsScreen() {
@@ -60,7 +61,10 @@ export default function RewardsScreen() {
         <View style={{ width: 38 }} />
       </View>
 
-      {isDev ? (
+      {/* REWARDS_ENABLED, not isDev. This branched on the build type, so the flag
+          that exists to control this feature did nothing and a dev build showed
+          the full catalogue no matter what the flag said. */}
+      {REWARDS_ENABLED ? (
         <ScrollView contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
           {/* Your level summary */}
           <LinearGradient

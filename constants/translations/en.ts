@@ -22,6 +22,14 @@ export const en: typeof fr = {
     noPaymentMethodTitle: "Card required",
     noPaymentMethodBody: "Add a card to your wallet before joining a ride.",
     noPaymentMethodCta: "Go to Wallet",
+    balanceTooHigh: "You have too much unpaid ride balance to book another ride. It's settled on the 1st of the month, or you can clear it from your wallet.",
+    settlementFailed: "Your last payment didn't go through. Update your card in the wallet to start booking again.",
+    disputeOpen: "There's an open dispute on your account. Rides are paused until it's resolved — contact support if you think that's wrong.",
+    passengerCannotBeCharged: "This passenger can't be charged right now, so the ride couldn't be created. Nothing went wrong on your side.",
+    dispatchThrottled: "You just sent this request out. Give it a minute before trying again.",
+    contactWindowClosed: "This ride is over, so the passenger's number is no longer available.",
+    contactRideNotActive: "This ride isn't active, so contact details aren't available.",
+    contactNotPassenger: "That person isn't a passenger on this ride.",
     rideAlreadyStarted: "This ride has already started.",
     rideAlreadyCompleted: "This ride is already completed.",
     notRideDriver: "Only the driver can start the ride.",
@@ -59,45 +67,92 @@ export const en: typeof fr = {
       lockedButton: "Locked — {{seconds}}s",
     },
     signup: {
-      title: "Create Account",
-      subtitle: "Sign up to start using UniLift",
-      namePlaceholder: "Name",
-      emailPlaceholder: "Email",
-      passwordPlaceholder: "Password",
       passwordReqTitle: "Password must contain:",
       passwordReqMinLength: "At least 8 characters",
       passwordReqUpper: "One uppercase letter",
       passwordReqLower: "One lowercase letter",
       passwordReqNumber: "One number",
       passwordReqSpecial: "One special character (!@#$…)",
-      weakPasswordTitle: "Password too weak",
-      weakPasswordMsg: "Your password doesn't meet all the requirements listed below the password field yet.",
       continueBtn: "Continue",
       alreadyAccount: "Already have an account?",
       loginLink: "Log in",
-      step2Title: "Your Profile",
-      step2Subtitle: "Help others know who they're riding with",
-      stepIndicator: "2 / 3",
-      certStepIndicator: "3 / 3",
+      phoneLabel: "Phone number",
+      phonePlaceholder: "(514) 555-0142",
+      phoneSkip: "I'll add it later",
       birthDateLabel: "Date of birth",
       birthDatePlaceholder: "DD/MM/YYYY",
-      birthDateHint: "Format: DD/MM/YYYY — you must be 18 or older to use UniLift.",
       schoolLabel: "School",
-      schoolPlaceholder: "University or college",
-      prefsLabel: "Ride Preferences",
-      getStartedBtn: "Get Started",
       creatingAccount: "Creating account...",
-      missingInfo: "Missing info",
-      missingInfoMsg: "Please fill in name, email and password.",
+      emailTakenTitle: "Email already registered",
+      emailTakenMsg: "An account already exists for this email address. Log in instead, or use a different email.",
+      emailTakenLogin: "Log in",
+      emailTakenChange: "Change email",
       termsTitle: "Terms & Conditions",
       viewTerms: "View Terms & Conditions",
       termsAccepted: "Terms & Conditions accepted",
       termsScrollHint: "Scroll to the end to accept",
       termsCheckbox: "I have read and accept the terms and conditions",
-      termsError: "You must accept the terms to continue.",
       signupFailed: "Signup failed",
       appleSigninFailed: "Apple Sign-In failed",
       appleNoToken: "No identity token received. Please try again.",
+
+      // ── The eight-page flow ─────────────────────────────────────────────
+      // One question per page. `ask` is the question itself, `aside` the single
+      // line explaining why it is being asked.
+      stepOf: "{{n}} / {{total}}",
+
+      nameAsk: "What should we call you?",
+      nameAside: "Riders see your first name when you match.",
+      nameLabel: "First name",
+
+      emailAsk: "What's your email?",
+      emailAside: "This is your login, and where receipts go. A school address unlocks the Student badge later.",
+      emailLabel: "Email",
+
+      passwordAsk: "Pick a password",
+      passwordAside: "You'll use it every time you sign in.",
+      passwordLabel: "Password",
+      passwordShow: "Show password",
+      passwordHide: "Hide password",
+
+      birthDateAsk: "When were you born?",
+      birthDateAside: "UniLift is 18+. Your date of birth unlocks the Adult badge and lets you drive.",
+
+      schoolAsk: "Where do you study?",
+      schoolAside: "We match you with people heading to the same campus.",
+      schoolChoose: "Choose your school",
+      schoolSearchPlaceholder: "Search for a cégep or university",
+      schoolSearchEmpty: "No school matches “{{query}}”.",
+
+      phoneAsk: "What's your number?",
+      phoneAside: "Drivers use it to sort out the pickup — which corner, which door.",
+
+      termsAsk: "One last thing",
+      termsAside: "Read the terms and conditions, then accept to continue.",
+
+      reviewAsk: "You're all set",
+      reviewAside: "Check it over, then create your account.",
+      reviewPhoneNone: "Adding it later",
+      createAccountBtn: "Create my account",
+
+      // ── Errors shown under the field, never in an alert ──────────────────
+      errNameRequired: "Enter your first name to continue.",
+      errEmailInvalid: "That address doesn't look right. For example: you@school.ca",
+      errEmailTaken: "An account already exists for this address.",
+
+      // ── Account-creation firewall ────────────────────────────────────────
+      deviceLimitTitle: "Too many accounts on this device",
+      deviceLimitBody: "This device has reached the limit of {{max}} accounts. If you think that's wrong, get in touch and we'll take a look.",
+      deviceLimitContact: "Contact support",
+      deviceLimitBackToLogin: "Back to log in",
+      errPasswordWeak: "One of the requirements below isn't met yet.",
+      errBirthDateInvalid: "Enter a date as DD/MM/YYYY.",
+      errBirthDateTooYoung: "You must be 18 or older to use UniLift.",
+      errSchoolRequired: "Choose your school to continue.",
+      errPhoneInvalid: "Enter a 10-digit number, or choose “I'll add it later”.",
+      errPhoneConsent: "Tick the box so we can store your number.",
+      errTermsRequired: "Accept the terms to continue.",
+
       preferences: {
         no_smoking: "No Smoking",
         music_ok: "Music OK",
@@ -106,6 +161,27 @@ export const en: typeof fr = {
         chatty: "Chatty",
         fast_driver: "Fast Driver",
       },
+    },
+    // Firebase auth error copy — keys map 1:1 to `normalizeAuthError` codes.
+    errors: {
+      timeout: "Request timed out. Check your internet and try again.",
+      expoGoTitle: "Native build required",
+      expoGo: "Apple Sign-In doesn't work in Expo Go because the app bundle ID doesn't match. Run the app with expo run:ios instead.",
+      appleCancelled: "Apple Sign-In was cancelled.",
+      inProgressTitle: "Please wait",
+      inProgress: "An authentication request is already in progress.",
+      missingInput: "Please fill all required fields.",
+      invalidCredentials: "Invalid email or password.",
+      invalidEmail: "Please enter a valid email address.",
+      emailInUse: "This email is already in use.",
+      accountExistsOtherMethod: "An account already exists for this email. Sign in with the method you used originally.",
+      weakPassword: "Password is too weak.",
+      networkTitle: "Network error",
+      network: "Check your internet connection and try again.",
+      tooManyRequests: "Too many attempts. Please wait a moment and try again.",
+      userDisabled: "This account has been disabled.",
+      operationNotAllowed: "This sign-in method is not enabled.",
+      generic: "Something went wrong. Please try again.",
     },
   },
   home: {
@@ -261,6 +337,8 @@ export const en: typeof fr = {
     namePlaceholder: "Your name",
     birthDateLabel: "Date of Birth",
     birthDatePlaceholder: "DD/MM/YYYY",
+    phoneLabel: "Phone Number",
+    phoneInvalid: "That doesn't look like a valid phone number.",
     schoolLabel: "School",
     schoolPlaceholder: "University or college",
     prefsLabel: "Ride Preferences",
@@ -282,15 +360,18 @@ export const en: typeof fr = {
   },
   wallet: {
     loading: "Loading wallet…",
-    pendingThisMonth: "Pending This Month",
-    billedEndOfMonth: "Charged on the 1st of next month",
+    yourBalance: "Your Balance",
+    earningsRow: "Earnings",
+    chargesRow: "Ride charges",
+    settledOnFirst: "Settled on the 1st — we net your earnings against your charges",
+    tipPositive: "You're ahead: your next rides come out of this balance before your card is ever touched.",
+    tipNegative: "Drive to wipe this out — every ride you give is deducted from what you owe.",
+    tipNeutral: "All square. Drive to build up a balance, or ride and settle on the 1st.",
     paymentMethod: "Payment Method",
     addCard: "Add Payment Method",
     defaultCard: "Default card",
     removeCard: "Remove Card",
     removeCardMsg: "Are you sure you want to remove your payment method?",
-    pendingEarnings: "Pending Earnings",
-    paidEndOfMonth: "Paid out on the 1st of next month",
     transactions: "Transactions",
     noTransactions: "No transactions yet",
     noTransactionsSub: "Your ride charges will appear here",
@@ -302,22 +383,86 @@ export const en: typeof fr = {
     statusCompleted: "Completed",
     statusPending: "Pending",
     statusFailed: "Failed",
+    statusAwaitingSetup: "Setup needed",
+    statusCancelled: "Cancelled",
+    statusOutstanding: "Owed back",
+    statusOpen: "Under review",
     txRideCharge: "Ride Charge",
     txRideEarning: "Ride Earnings",
     txMonthlyCharge: "Monthly Top-up",
+    txFeeBreakdown: "Rides {{rides}} + processing {{fee}}",
+    txCashout: "Cashout",
     txMonthlyPayout: "Monthly Cashout",
+    txEarningsAvailable: "Earnings Available",
+    txRefund: "Refund",
+    txClawback: "Refund Adjustment",
+    txDispute: "Disputed Charge",
+    txPayoutFee: "Payout fee",
+    payouts: {
+      disconnect: "Disconnect",
+      disconnectTitle: "Disconnect your bank?",
+      disconnectBody: "Your bank details will be removed from Stripe.\n\nYour {{amount}} balance stays in your UniLift wallet and keeps paying for your own rides \u2014 you just won't be paid out until you reconnect.",
+      disconnectConfirm: "Disconnect",
+      disconnectDone: "Your bank account has been disconnected.",
+      errCashoutPending: "You have a payout on the way. You can disconnect once it arrives.",
+      errBalanceNotZero: "Stripe is still holding a payout for you. Once it reaches your bank you can disconnect.",
+      errStripeRefused: "Stripe couldn't disconnect this account right now. Try again later.",
+      available: "Ready for payout",
+      pendingLabel: "Earned this cycle",
+      pendingHint: "Available after the 1st",
+      needMore: "{{amount}} more to reach {{min}}",
+      needSetup: "Finish payout setup to get paid",
+      nextPayout: "{{amount}} arriving {{date}}",
+      nextPayoutSub: "Payouts are sent automatically each month",
+      // Stated up front: drivers earn the full fare on every ride, so the one
+      // deduction there is must never be a surprise in the ledger.
+      feeBreakdown: "{{earned}} earned − {{fee}} payout fee",
+      sending: "Payout on its way \u00b7 {{amount}}",
+      sendingSub: "Arriving in your account shortly",
+      confirmTitle: "Set up payouts?",
+      confirmBody: "You don't need this to use your earnings \u2014 they already pay for your own rides automatically.\n\nSet this up only if you want your earnings paid out to your bank each month. Stripe will ask for your ID and bank details.",
+      confirmCancel: "Not now",
+      confirmContinue: "Continue",
+      bannerTitle: "{{amount}} earned \u2014 already covering your own rides",
+      bannerSub: "Set up payouts to have your earnings sent to your bank",
+      section: "Payouts",
+      noneTitle: "Set up payouts",
+      noneSub: "Register with Stripe to receive your driver earnings. Your saved card pays for rides \u2014 it can't receive money, so payouts need a bank account.",
+      startCta: "Set up payouts",
+      pendingTitle: "Finish your payout setup",
+      pendingSub: "Stripe still needs a few details before it can send you money.",
+      finishCta: "Continue setup",
+      restrictedTitle: "Payouts on hold",
+      restrictedSub: "Stripe paused payouts to your account. Open your Stripe dashboard to resolve it.",
+      fixCta: "Fix with Stripe",
+      active: "Payouts active",
+      activeWithBank: "Payouts active \u00b7 \u2022\u2022\u2022\u2022 {{last4}}",
+      activeSub: "Earnings are sent automatically after each monthly settlement.",
+      manage: "Manage",
+      moreRequirements: "+{{count}} more",
+      errorTitle: "Payout setup",
+      errorBody: "Couldn't open Stripe right now. Please try again.",
+      // Platform-side configuration. "Try again" is wrong advice here, and the
+      // driver needs to know their own account is not the problem.
+      errNotAvailableYet:
+        "Payouts aren't available yet \u2014 we're finishing setup with our payment provider. Nothing is wrong with your account.",
+      errStripeUnavailable: "Stripe isn't responding right now. Please try again in a few minutes.",
+      // The code itself is deliberately NOT translated: a localized diagnostic
+      // token is unsearchable and cannot be reported. Only the label around it is.
+      errorCode: "Code: {{code}}",
+    },
     info: {
-      pendingCharge: {
-        title: "Pending Charge",
-        body: "Your ride costs for the month build up here. You're billed once at month-end — no immediate charge per ride.",
+      balance: {
+        title: "Your Balance",
+        body: "Your driver earnings and your passenger ride charges build up together all month. On the 1st we subtract one from the other and only the difference moves: if your balance is negative we charge that amount to your card, if it's positive we pay it out to you. Driving cuts straight into what you owe. UniLift takes no cut — a driver earns exactly the fare their passengers paid. The only extra on your monthly charge is the card processing fee, shown separately.",
       },
       paymentMethod: {
         title: "Payment Method",
-        body: "Add a card to pay for rides as a passenger. Your card is only charged once a month for all your rides combined.",
+        body: "Add a card to pay for rides as a passenger. Your card is only charged once a month for all your rides combined.\n\nTo receive money, you need to connect a debit card: that is what lets us transfer your payout to your bank account on the 5th of the month, once the month\u2019s ride charges have been collected. You need a positive balance of at least $25 for a payout to be sent. Conditions apply.",
       },
-      earnings: {
-        title: "Pending Earnings",
-        body: "Your earnings as a driver accumulate here. They are paid out to you at the end of the month.",
+      payouts: {
+        title: "Payouts",
+        body: "You do NOT need this to use your earnings. What you earn driving already pays for your own rides automatically \u2014 it's subtracted from your bill on the 1st, with no setup at all.\n\nThis is only for moving money OUT to your bank. A saved card can only be charged, never credited, so a payout needs a bank account registered with Stripe. Stripe collects those details directly; UniLift never sees them.\n\nOnce your available balance reaches $25 it is paid out automatically on the 5th of each month \u2014 four days after your passengers are charged, so the money is always collected before it is sent. There is nothing to request.",
       },
       transactions: {
         title: "Transactions",
@@ -739,6 +884,27 @@ export const en: typeof fr = {
     profileLoadError: "Could not load profile.",
     profileRides: "Rides",
     profileAge: "{{age}} years old",
+
+    // ── Passenger tracking (map + passenger card) ───────────────────────────
+    navigate: "Navigate",
+    callPassenger: "Call",
+    textPassenger: "Text",
+    noPhoneShared: "No number shared — they'll come to you",
+    contactLinkFailed: "Couldn't open your phone app.",
+    pickupAddress: "Pickup point",
+    dropoffAddress: "Drop-off point",
+    // The pickup is frozen at request time — we never receive the passenger's
+    // live position. Say so plainly, or the driver assumes the pin is tracking
+    // someone who is moving.
+    pickupStaticNote: "Fixed point set when they requested — not live",
+    etaAway: "{{dist}} · {{time}} away",
+    etaUnavailable: "Distance unavailable",
+    addressUnavailable: "Address unavailable",
+    nextStop: "Next stop",
+    legendYou: "You (live)",
+    legendPickup: "Pickup (fixed)",
+    legendDropoff: "Drop-off",
+    minutesShort: "min",
   },
   events: {
     hotTonight: "Hot Tonight",
@@ -864,27 +1030,26 @@ export const en: typeof fr = {
     keepRide: "Keep it",
   },
   onboarding: {
-    title: "Welcome to UniLift 🎉",
-    subtitle: "A few details to personalize your experience. You can change everything later.",
     homeLabel: "Home address",
-    homePlaceholder: "Where do you live?",
-    homeHint: "We use it to suggest rides close to home.",
-    driverLabel: "Driver availability",
-    driverToggle: "I'm open to driving sometimes",
-    driverHint: "Tell us when you can drive — passengers on your route will reach you by notification.",
-    driverDaysLabel: "Days",
-    driverTimeLabel: "Time window",
-    driverFrom: "From",
-    driverTo: "To",
-    driverDestLabel: "Usual destination",
-    driverDestPlaceholder: "e.g. Université Laval",
+
+    // ── The three-page flow ───────────────────────────────────────────────
+    // Same shape as signup: one question per page. Page 1 carries the welcome
+    // too, rather than spending a whole page saying hello.
+    homeAsk: "Where do you live?",
+    homeAside: "Welcome to UniLift. Your address is used to suggest rides close to home — you can change any of this later.",
+    favoritesAsk: "Where do you go often?",
+    favoritesAside: "Add the places you go often — school, the gym, a bar.",
+    favoritesEmpty: "No places yet.",
+    favoritesAdd: "Add this place",
+    favoritesRemove: "Remove {{place}}",
+    cardAsk: "Add a way to pay",
+    cardAside: "A card is needed to join or pay for a ride. You can add it later from your wallet.",
+    cardConnected: "{{brand}} •••• {{last4}}",
+    continueBtn: "Continue",
+    homePlaceholder: "Street and city",
     favoritesLabel: "Favorite places",
-    favoritesHint: "Add the places you go often (school, gym, bar…).",
-    favoritesPlaceholder: "Add a favorite place",
-    addFavorite: "Add",
-    cardLabel: "Payment card",
+    favoritesPlaceholder: "Search for a place",
     addCard: "Connect a card",
-    cardHint: "Required to join or pay for rides. You can add it later from Wallet.",
     finish: "Finish",
     skip: "Skip for now",
     saving: "Saving…",
@@ -912,6 +1077,75 @@ export const en: typeof fr = {
     openSettingsBtn: "Open Settings",
     deniedHint: "You've already denied permission. Go to Settings → UniLift → Notifications and enable them to continue.",
   },
+  // ── Sharing a phone number with your driver ────────────────────────────────
+  // This copy IS the consent. It has to say what the number is for, who sees
+  // it, and when that stops — trimming any of the three turns a disclosure back
+  // into a form.
+  phoneShare: {
+    title: "Let your driver reach you",
+    highlight: "Only your driver, only for this ride",
+    bodyWithName: "{{name}} is on the way. A number lets them tell you where they're parked — or find you if the pin is off.",
+    body: "Your driver is on the way. A number lets them tell you where they're parked — or find you if the pin is off.",
+    inputLabel: "Your phone number",
+    placeholder: "(514) 555-0142",
+    point1: "Shared only with the driver of this ride",
+    point2: "Stops working once you're dropped off",
+    // Not "never on your profile" — you can now see and edit it there. What
+    // stays true is that nobody else in the app ever gets to.
+    point3: "Never shown to anyone else in the app",
+    invalid: "That doesn't look like a valid phone number.",
+    share: "Share my number",
+    update: "Update my number",
+    skip: "Not now",
+    saveFailed: "Couldn't save your number",
+    saveFailedMsg: "Something went wrong. You can add it later from your profile.",
+    // The ride-screen row, after the number is on file.
+    sharedWithDriver: "Your driver can reach you at {{phone}}",
+    addPrompt: "Add a number so your driver can reach you",
+  },
+
+  // The phone-number card: profile tab, profile settings, and the passenger's
+  // waiting card. `boundary*` is the driver-side variant, where the number on
+  // screen belongs to someone else.
+  phoneCard: {
+    label: "Phone number",
+    // The empty readout. Digits only — the mask is drawn by the card.
+    ghostMask: "(___) ___-____",
+    addCta: "Add",
+    editCta: "Edit",
+    save: "Save",
+    cancel: "Cancel",
+    invalid: "That doesn't look like a valid number.",
+
+    // The eye. It is a visibility control, so it is labelled by what it reveals.
+    eyeLabel: "Who sees this",
+    // The pill and the panel it opens: the number policy.
+    policyLabel: "Policy",
+    policyTitle: "What your number is used for",
+    disclosureBody:
+      "Your number is used for one thing: letting you and your driver sort out where to meet — which corner, which door, how long they'll wait.",
+    disclosurePoint1: "Shared only with the driver of the ride you're on.",
+    disclosurePoint2: "Never shown on your public profile, never sold, never used for ads.",
+    disclosurePoint3: "Access ends the moment you're dropped off.",
+
+    // The consent, ticked before anything is stored.
+    consentLabel:
+      "I allow UniLift to store my phone number and share it with the other users on my rides.",
+    consentRequired: "Tick the box to save your number.",
+    revokeTitle: "Remove your number?",
+    revokeBody:
+      "Withdrawing permission deletes your number from UniLift. Drivers won't be able to reach you at pickup until you add it again.",
+    revokeConfirm: "Remove",
+    revokeFailed: "Couldn't remove your number",
+
+    // Driver side, reading a passenger's number.
+    boundaryLabel: "Until drop-off",
+    boundaryBody:
+      "{{name}} shared this number so you could arrange the pickup. It disappears from your screen once you drop them off.",
+    boundaryBodyGeneric:
+      "This number was shared so you could arrange the pickup. It disappears from your screen once you drop them off.",
+  },
+
   profileCompletion: {
     // Profile screen card
     cardTitle: "Complete your profile",
@@ -940,32 +1174,18 @@ export const en: typeof fr = {
       homeAddressDone:  "Home address",
       payment:          "Connect a payment card",
       paymentDone:      "Payment card",
+      phone:            "Add your phone number",
+      phoneDone:        "Phone number",
     },
   },
   wizard: {
     // Shared carousel buttons
     next: "Next",
     back: "Back",
+    stepBack: "Back to step {{n}}",
     skip: "Skip",
     gotIt: "Got it",
     replay: "Show the guide again",
-
-    // ── Sign-up ──────────────────────────────────────────────────────────────
-    signup: {
-      finalCta: "Get started",
-      step1Title: "Welcome to UniLift",
-      step1Highlight: "Student ride-sharing, for less",
-      step1Body: "In 3 quick steps we'll set up your account. We'll explain each field along the way — nothing complicated.",
-      step2Title: "Your login details",
-      step2Body: "Your name is shown to the people you match with — use your real first name for trust. Your email is your login and where receipts go: use your school email to unlock Student certification later.",
-      step3Title: "Your profile",
-      step3Body: "Your birth date unlocks Adult (18+) certification and eligibility to drive. Your school powers campus matching and the Student badge — pick it from the list.",
-      step4Title: "Notifications required",
-      step4Highlight: "Required to use the app",
-      step4Body: "UniLift needs notifications to alert you the instant a driver accepts your request, or when a passenger needs a lift on your route. We'll ask right after sign-up.",
-      step5Title: "Certification",
-      step5Body: "Three trust levels: Uncertified, Adult, Student. It's optional now — you can finish the verifications later from your profile.",
-    },
 
     // ── Wallet: connect a card ──────────────────────────────────────────────
     wallet: {
@@ -975,8 +1195,8 @@ export const en: typeof fr = {
       step1Body: "A payment card is required to request a ride. Without one, you can't send a request to a driver.",
       step2Title: "100% secure",
       step2Body: "We open Stripe's secure sheet to save your card. UniLift never sees your card number — it's stored encrypted.",
-      step3Title: "Billed monthly",
-      step3Body: "Rides aren't charged one by one: amounts are pooled and billed at the end of the month. If you drive, your earnings pay out end-of-month too.",
+      step3Title: "One settlement a month",
+      step3Body: "Rides aren't charged one by one. On the 1st we subtract your driver earnings from your passenger charges and only the difference moves: we charge you if you owe, we pay you if you're ahead.",
     },
 
     // ── Home: ride search ───────────────────────────────────────────────────
@@ -987,6 +1207,8 @@ export const en: typeof fr = {
       step1Body: "Type where you're going in the search bar. UniLift finds a driver already on the same route as you.",
       step2Title: "Smart suggestions",
       step2Body: "Icons help you pick fast: 🏠 home · ⭐ favorite · 🔥 Hype event · 🕐 recent · 📍 place. Tap a suggestion to start your request.",
+      // Used while the Hype map is off — same line without the 🔥 entry.
+      step2BodyNoHype: "Icons help you pick fast: 🏠 home · ⭐ favorite · 🕐 recent · 📍 place. Tap a suggestion to start your request.",
       step3Title: "Hype mode 🔥",
       step3Body: "Tap the flame button to switch to night mode and reveal events, parties and bars on the map.",
       step4Title: "Tap the map",
@@ -1020,6 +1242,12 @@ export const en: typeof fr = {
     },
   },
   cert: {
+    comingSoon: "Coming Soon",
+    comingSoonSub: "Verify your identity to earn trust badges other students can see. Certification is currently in development.",
+    featureAdult: "18+ identity check",
+    featureStudent: "Student email verification",
+    featureTrust: "Trust badges on your profile",
+    featurePriority: "Priority in ride matching",
     tier: {
       uncertified: "Uncertified",
       adult: "Adult",
@@ -1028,7 +1256,10 @@ export const en: typeof fr = {
     signup: {
       title: "Get certified",
       subtitle: "Certification builds trust across the community. It's optional — you can finish it later from your profile.",
-      laterNote: "Adult and Student verification are completed from your profile after signup.",
+      nextNote: "As soon as your account is created you'll move to the verification step — do it right away, or skip it.",
+      stepIndicator: "4 / 4",
+      continueBtn: "Continue",
+      skipBtn: "Skip for now",
     },
     screen: {
       title: "Certification",
@@ -1058,6 +1289,41 @@ export const en: typeof fr = {
       studentInvalidEmail: "Use an email from a partner school.",
       genericError: "Something went wrong. Please try again.",
       unavailable: "Certification is only available in dev mode.",
+    },
+  },
+
+  // ── Release takeover (components/whats-new) ─────────────────────────────────
+  // One slide per WHATS_NEW_SLIDES entry. The Next / Skip buttons reuse the
+  // `wizard` namespace.
+  whatsNew: {
+    intro: {
+      eyebrow: "Version {{version}}",
+      title: "See what's new in UniLift",
+      body: "Three changes, plus one thing we want to be clear about. Swipe to start — it takes about 20 seconds.",
+    },
+    rides: {
+      eyebrow: "Simplified",
+      title: "A lift, in one tap",
+      body: "Pick where you're going. That's the whole thing. No forms to fill and no listings to browse — type a destination, and we notify the drivers already heading that way.",
+    },
+    matching: {
+      eyebrow: "Matching",
+      title: "You both choose",
+      body: "A driver accepting doesn't lock you in. You see who they are — rating, rides, badges — and swipe to confirm. Pass, and your request goes straight back out. The ride starts once you've both said yes.",
+    },
+    certification: {
+      eyebrow: "Coming next",
+      title: "Certification",
+      body: "Two badges to earn: Adult, verified by ID, and Student, verified by your school email. They show on your profile so people know who they're riding with. We're finishing the verification flow now.",
+      badgeAdult: "Adult 18+",
+      badgeStudent: "Student",
+    },
+    fee: {
+      eyebrow: "The fare is the fare",
+      title: "UniLift takes no cut.",
+      body: "What the passenger pays is what the driver earns — same rate, both sides. We're a community before we're a platform.",
+      footnote: "The only extra on your monthly statement is the card processing fee, listed separately.",
+      cta: "Let's go",
     },
   },
 };

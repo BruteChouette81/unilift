@@ -72,7 +72,7 @@ const styles = StyleSheet.create({
     borderColor: "rgba(124, 58, 237, 0.3)",
   },
   cardGradient: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   icon: {
     fontSize: 48,

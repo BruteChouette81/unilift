@@ -23,9 +23,12 @@ import {
 } from "react-native";
 
 import CertBadges from "@/components/cert-badges";
+import { CERTIFICATION_ENABLED } from "@/constants/certifications";
+import { REWARDS_ENABLED } from "@/constants/rewards";
 import FavoriteRouteCard from "@/components/favorite-rides";
 import InfoButton from "@/components/info-button";
 import ProfileCompletionCard from "@/components/profile-completion-card";
+import PhoneNumberCard from "@/components/phone/phone-number-card";
 import WizardModal, { type WizardStep } from "@/components/wizard/wizard-modal";
 import { useFirstRun } from "@/hooks/use-first-run";
 import { PassengerRidesList } from "@/components/profile/passenger-rides-list";
@@ -37,7 +40,10 @@ import { useProfileAvatar } from "@/hooks/use-profile-avatar";
 import { useProfileData } from "@/hooks/use-profile-data";
 import { useLiveRefresh } from "@/hooks/use-live-refresh";
 import { useProfileRides } from "@/hooks/use-profile-rides";
+import { useRevokePhone, useSavePhone } from "@/hooks/use-save-phone";
 import type { FavoriteRoute, StartRidePayload, UserProfile } from "@/types/models";
+import { P } from "@/constants/palette";
+import { devWarn } from "@/constants/runtime-config";
 
 if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -45,21 +51,21 @@ if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental
 
 // ─── Design Tokens ─────────────────────────────────────────────────────────────
 const C = {
-  bg:          "#080810",
-  surface:     "#0f0f1e",
-  surfaceAlt:  "#13132a",
+  bg:          P.bg,
+  surface:     P.surface,
+  surfaceAlt:  P.surfaceRaised,
   border:      "rgba(137, 56, 213, 0.22)",
   borderFaint: "rgba(255, 255, 255, 0.06)",
-  purple:      "#8938D5",
-  purpleLight: "#e09af7",
-  blue:        "#FD165A",
+  purple:      P.accent,
+  purpleLight: P.accentLight,
+  blue:        P.hype,
   blueLight:   "#ff6b9d",
-  text:        "#f3f4f6",
-  muted:       "#9ca3af",
-  dim:         "#4b5563",
-  danger:      "#f87171",
-  gold:        "#fbbf24",
-  success:     "#34d399",
+  text:        P.text,
+  muted:       P.textMuted,
+  dim:         P.textDim,
+  danger:      P.danger,
+  gold:        P.warning,
+  success:     P.success,
 };
 
 const CARD_GRADIENT    = ["#1c0b2a", "#0d0518"] as const;
@@ -109,12 +115,77 @@ const sh = StyleSheet.create({
   actionText:{ color: C.purpleLight, fontSize: 12, fontWeight: "600" },
 });
 
+// ─── Rewards Banner ────────────────────────────────────────────────────────────
+/**
+ * Entry point to the rewards catalogue, shown inside the expanded profile card.
+ *
+ * While `REWARDS_ENABLED` is false it renders dimmed and inert with a "Coming
+ * Soon" badge instead of a chevron. The disabled branch is a plain View that
+ * claims the touch via `onStartShouldSetResponder` rather than a `disabled`
+ * Pressable: a disabled Pressable declines the responder, so the tap would
+ * bubble up to the profile card wrapper and collapse it.
+ */
+function RewardsBanner({
+  label,
+  soonLabel,
+  onPress,
+}: {
+  label: string;
+  soonLabel: string;
+  onPress: () => void;
+}) {
+  const inner = (
+    <LinearGradient
+      colors={["rgba(45,15,10,0.9)", "rgba(22,5,30,0.9)"]}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 0 }}
+      style={styles.rewardsBannerGrad}
+    >
+      <View style={styles.rewardsBannerLeft}>
+        <View style={styles.rewardsTrophyWrap}>
+          <Ionicons name="trophy" size={20} color={C.gold} />
+        </View>
+        <Text style={styles.rewardsBannerTitle} numberOfLines={1}>{label}</Text>
+      </View>
+      {REWARDS_ENABLED ? (
+        <Ionicons name="chevron-forward" size={18} color={C.purpleLight} />
+      ) : (
+        <View style={styles.soonBadge}>
+          <Text style={styles.soonBadgeText}>{soonLabel}</Text>
+        </View>
+      )}
+    </LinearGradient>
+  );
+
+  if (!REWARDS_ENABLED) {
+    return (
+      <View
+        style={[styles.rewardsBanner, styles.rewardsBannerDisabled]}
+        onStartShouldSetResponder={() => true}
+        accessibilityRole="button"
+        accessibilityState={{ disabled: true }}
+        accessibilityLabel={`${label} — ${soonLabel}`}
+      >
+        {inner}
+      </View>
+    );
+  }
+
+  return (
+    <Pressable onPress={onPress} style={styles.rewardsBanner}>
+      {inner}
+    </Pressable>
+  );
+}
+
 // ─── Main Screen ───────────────────────────────────────────────────────────────
 const ProfileScreen = () => {
   const { user, loading } = useAuth();
   const { t } = useLanguage();
-  const { userData, rides, refreshing, onRefresh } = useProfileData(user);
+  const { userData, rides, refreshing, onRefresh, onPullRefresh } = useProfileData(user);
   const { updateUserData } = useUserProfile();
+  const savePhone = useSavePhone();
+  const revokePhone = useRevokePhone();
   const [cardExpanded, setCardExpanded] = useState(false);
   const [driverToggleSaving, setDriverToggleSaving] = useState(false);
 
@@ -166,7 +237,7 @@ const ProfileScreen = () => {
         const token = await user.getIdToken();
         await patchUserField(token, user.uid, { driverModeEnabled: { booleanValue: next } });
       } catch (err) {
-        console.warn("Driver mode toggle failed:", err);
+        devWarn("Driver mode toggle failed:", err);
         updateUserData({ driverModeEnabled: !next });
         Alert.alert(t("driverMode.saveFailedTitle"), t("driverMode.saveFailedMsg"));
       } finally {
@@ -245,8 +316,13 @@ const ProfileScreen = () => {
         showsVerticalScrollIndicator={false}
         contentInsetAdjustmentBehavior="never"
         automaticallyAdjustContentInsets={false}
+        // The phone card holds the only text field on this screen. Without
+        // these two, tapping Edit opens the keyboard and the same gesture
+        // closes it, and anything typed sits behind the keyboard.
+        keyboardShouldPersistTaps="handled"
+        automaticallyAdjustKeyboardInsets
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.purpleLight} />
+          <RefreshControl refreshing={refreshing} onRefresh={onPullRefresh} tintColor={C.purpleLight} />
         }
       >
         <View style={styles.content}>
@@ -287,13 +363,19 @@ const ProfileScreen = () => {
                     <Ionicons name="flash" size={10} color={C.gold} />
                     <Text style={styles.levelPillText}>{t("profile.level", { level })}</Text>
                   </View>
-                  <Pressable
-                    onPress={() => router.push("/certificationScreen")}
-                    hitSlop={8}
-                    style={{ marginTop: 8, alignSelf: "flex-start" }}
-                  >
-                    <CertBadges certifications={safeUserData.certifications} size="medium" />
-                  </Pressable>
+                  {/* The whole Pressable is conditional, not just the badge:
+                      CertBadges renders null while certification is disabled, so
+                      keeping the wrapper would leave an invisible tap target
+                      routing to a Coming Soon screen. */}
+                  {CERTIFICATION_ENABLED ? (
+                    <Pressable
+                      onPress={() => router.push("/certificationScreen")}
+                      hitSlop={8}
+                      style={{ marginTop: 8, alignSelf: "flex-start" }}
+                    >
+                      <CertBadges certifications={safeUserData.certifications} size="medium" />
+                    </Pressable>
+                  ) : null}
                 </View>
 
                 <Ionicons
@@ -364,28 +446,12 @@ const ProfileScreen = () => {
                     </View>
                   </View>
 
-                  {/* Rewards banner */}
-                  <Pressable
+                  {/* Rewards banner — inert while REWARDS_ENABLED is false */}
+                  <RewardsBanner
+                    label={t("rewards.bannerTitle")}
+                    soonLabel={t("rewards.comingSoon")}
                     onPress={() => router.push("/rewardsScreen")}
-                    style={styles.rewardsBanner}
-                  >
-                    <LinearGradient
-                      colors={["rgba(45,15,10,0.9)", "rgba(22,5,30,0.9)"]}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 0 }}
-                      style={styles.rewardsBannerGrad}
-                    >
-                      <View style={styles.rewardsBannerLeft}>
-                        <View style={styles.rewardsTrophyWrap}>
-                          <Ionicons name="trophy" size={20} color={C.gold} />
-                        </View>
-                        <View>
-                          <Text style={styles.rewardsBannerTitle}>{t("rewards.bannerTitle")}</Text>
-                        </View>
-                      </View>
-                      <Ionicons name="chevron-forward" size={18} color={C.purpleLight} />
-                    </LinearGradient>
-                  </Pressable>
+                  />
                 </View>
               )}
 
@@ -396,6 +462,18 @@ const ProfileScreen = () => {
 
           {/* ── Complete Your Profile (self-hides once done) ──────────────────── */}
           <ProfileCompletionCard onPickAvatar={pickImage} />
+
+          {/* ── Phone number ─────────────────────────────────────────────────────
+              Sits here, not in Settings, because a number is what makes someone
+              reachable at a curb — and the completion card immediately above it
+              asks for one. Sending them to another screen to answer that was the
+              whole problem. */}
+          <PhoneNumberCard
+            phone={safeUserData.phone ?? null}
+            consent={safeUserData.phoneConsent ?? false}
+            onCommit={savePhone}
+            onRevoke={revokePhone}
+          />
 
           {/* ── Driver Mode Glass Card ───────────────────────────────────────── */}
           {(() => {
@@ -708,6 +786,23 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderWidth: 1,
     borderColor: "rgba(251,191,36,0.2)",
+  },
+  rewardsBannerDisabled: { opacity: 0.6 },
+  soonBadge: {
+    flexShrink: 0,
+    backgroundColor: "rgba(251,191,36,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(251,191,36,0.28)",
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  soonBadgeText: {
+    color: C.gold,
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
   },
   rewardsBannerTitle: { color: C.text, fontSize: 13, fontWeight: "700", marginBottom: 1 },
   rewardsBannerSub:   { color: C.muted, fontSize: 11, lineHeight: 15 },

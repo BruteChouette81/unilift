@@ -12,15 +12,16 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { P } from "@/constants/palette";
 
 const C = {
-  bg:          "#080810",
+  bg:          P.bg,
   border:      "rgba(137, 56, 213, 0.30)",
-  purple:      "#8938D5",
-  purpleLight: "#e09af7",
-  text:        "#f3f4f6",
-  muted:       "#9ca3af",
-  dim:         "#4b5563",
+  purple:      P.accent,
+  purpleLight: P.accentLight,
+  text:        P.text,
+  muted:       P.textMuted,
+  dim:         P.textDim,
 };
 
 interface RequestLiftSheetProps {

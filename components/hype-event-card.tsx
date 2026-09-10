@@ -8,16 +8,17 @@ import { LinearGradient } from "expo-linear-gradient";
 import React from "react";
 import { Dimensions, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { P } from "@/constants/palette";
 
 const C = {
-  fire: "#f97316",
+  fire: P.flame,
   fireDim: "rgba(249,115,22,0.15)",
-  purple: "#8938D5",
-  purpleLight: "#e09af7",
-  gold: "#fbbf24",
-  text: "#f3f4f6",
+  purple: P.accent,
+  purpleLight: P.accentLight,
+  gold: P.warning,
+  text: P.text,
   muted: "#cbd5e1",
-  dim: "#9ca3af",
+  dim: P.textMuted,
   border: "rgba(255,255,255,0.12)",
   scrim: "rgba(10,8,18,0.82)",
 };
@@ -165,7 +166,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 0,
     borderColor: C.border,
   },
-  scrim: { ...StyleSheet.absoluteFillObject, backgroundColor: C.scrim },
+  scrim: { ...StyleSheet.absoluteFill, backgroundColor: C.scrim },
   content: { paddingHorizontal: 22 },
 
   dragZone: { width: "100%", alignItems: "center", paddingVertical: 12 },

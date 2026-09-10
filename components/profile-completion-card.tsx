@@ -1,19 +1,21 @@
 import ProfileCompletionMeter from "@/components/profile-completion-meter";
 import { useLanguage } from "@/context/LanguageContext";
+import { useFirstRun } from "@/hooks/use-first-run";
 import { useProfileCompletion } from "@/hooks/use-profile-completion";
 import { type ProfileTaskKey } from "@/utils/profile-completion";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import React from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { LayoutAnimation, Pressable, StyleSheet, Text, View } from "react-native";
+import { P } from "@/constants/palette";
 
 const C = {
   border:      "rgba(137, 56, 213, 0.30)",
-  purpleLight: "#e09af7",
-  text:        "#f3f4f6",
-  muted:       "#9ca3af",
-  success:     "#34d399",
+  purpleLight: P.accentLight,
+  text:        P.text,
+  muted:       P.textMuted,
+  success:     P.success,
 };
 
 const CARD_GRADIENT = ["#1c0b2a", "#0d0518"] as const;
@@ -28,6 +30,8 @@ type Props = {
  *
  * Once every task is done it stays visible but switches to a compact success
  * state — confirming the profile is trusted rather than silently vanishing.
+ * That success row can be dismissed with its ✕; the dismissal is persisted, so
+ * the congratulation does not follow the user around forever.
  *
  * Each task routes to the surface that actually owns it: the avatar is
  * uploaded in place via the image picker, name/school live on profileSettings,
@@ -39,12 +43,22 @@ export default function ProfileCompletionCard({ onPickAvatar }: Props) {
   const router = useRouter();
   const { completion, userData, ready } = useProfileCompletion();
 
+  // Persisted dismissal of the success row (the ✕). Only gates the "complete"
+  // state — the checklist always comes back if something goes missing again.
+  const doneBadge = useFirstRun("profile-complete-badge");
+
+  const dismissDoneBadge = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    doneBadge.markSeen();
+  };
+
   // Hide until the profile AND wallet have loaded — otherwise the wallet's
   // in-flight `hasPaymentMethod: false` would under-count the score.
   if (!ready || !userData) return null;
 
-  // Complete: compact success row, no checklist.
+  // Complete: compact success row, no checklist — until the user dismisses it.
   if (completion.isComplete) {
+    if (!doneBadge.shouldShow) return null;
     return (
       <LinearGradient colors={CARD_GRADIENT} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.cardDone}>
         <View style={styles.doneIconWrap}>
@@ -60,6 +74,15 @@ export default function ProfileCompletionCard({ onPickAvatar }: Props) {
             total: completion.total,
           })}
         </Text>
+        <Pressable
+          onPress={dismissDoneBadge}
+          hitSlop={10}
+          accessibilityRole="button"
+          accessibilityLabel={t("common.close")}
+          style={({ pressed }) => [styles.dismissBtn, pressed && styles.dismissBtnPressed]}
+        >
+          <Ionicons name="close" size={14} color={C.muted} />
+        </Pressable>
       </LinearGradient>
     );
   }
@@ -68,7 +91,8 @@ export default function ProfileCompletionCard({ onPickAvatar }: Props) {
     const qs =
       `name=${encodeURIComponent(userData.name ?? "")}` +
       `&birthDate=${encodeURIComponent(userData.birthDate ?? "")}` +
-      `&school=${encodeURIComponent(userData.school ?? "")}`;
+      `&school=${encodeURIComponent(userData.school ?? "")}` +
+      `&phone=${encodeURIComponent(userData.phone ?? "")}`;
     router.push(`/profileSettings?${qs}`);
   };
 
@@ -76,6 +100,7 @@ export default function ProfileCompletionCard({ onPickAvatar }: Props) {
     switch (key) {
       case "avatar":       onPickAvatar(); break;
       case "name":
+      case "phone":
       case "school":       openProfileSettings(); break;
       case "verification": router.push("/certificationScreen"); break;
       // The home address field lives in the settings screen.
@@ -129,4 +154,10 @@ const styles = StyleSheet.create({
     alignItems: "center", justifyContent: "center",
   },
   donePct: { color: C.success, fontSize: 12, fontWeight: "800" },
+  dismissBtn: {
+    width: 24, height: 24, borderRadius: 12, marginLeft: 2,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    alignItems: "center", justifyContent: "center",
+  },
+  dismissBtnPressed: { backgroundColor: "rgba(255,255,255,0.14)" },
 });

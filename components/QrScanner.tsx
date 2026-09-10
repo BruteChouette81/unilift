@@ -92,7 +92,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#080810" },
 
   surround: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     alignItems: "center",
     justifyContent: "center",
   },

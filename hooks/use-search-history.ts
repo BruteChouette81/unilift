@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 
 const MAX_HISTORY = 5;
 
-export type SearchHistoryEntry = {
+type SearchHistoryEntry = {
   displayName: string;
   lat: string;
   lon: string;

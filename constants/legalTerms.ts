@@ -1,4 +1,4 @@
-export const LEGAL_TERMS_TEXT_FR = `
+const LEGAL_TERMS_TEXT_FR = `
 1. ACCEPTATION DES CONDITIONS
 En téléchargeant, installant, accédant ou utilisant l'application mobile UniLift (ci-après « l'Application »), vous acceptez d'être lié par les présentes conditions d'utilisation (ci-après « les Conditions »). Si vous n'acceptez pas l'ensemble des Conditions, vous devez immédiatement cesser toute utilisation de l'Application.
 Les présentes Conditions constituent un contrat juridiquement contraignant entre vous (ci-après « l'Utilisateur ») et Transport UniLift S.E.N.C., société en nom collectif enregistrée au Québec, ayant son siège social au Québec, Canada (ci-après « UniLift », « nous », « notre » ou « nos »).
@@ -90,7 +90,7 @@ Si une disposition des présentes Conditions est jugée invalide ou inapplicable
 Les présentes Conditions, conjointement avec la Politique de confidentialité et toute autre politique publiée dans l'Application, constituent l'intégralité de l'entente entre l'Utilisateur et Transport UniLift S.E.N.C. relativement à l'utilisation de l'Application et remplacent toute entente, communication ou déclaration antérieure, qu'elle soit écrite ou verbale.
 `;
 
-export const LEGAL_TERMS_TEXT_EN = `
+const LEGAL_TERMS_TEXT_EN = `
 1. ACCEPTANCE OF TERMS
 By downloading, installing, accessing, or using the UniLift mobile application (hereinafter the "Application"), you agree to be bound by these terms of use (hereinafter the "Terms"). If you do not agree to all of the Terms, you must immediately stop using the Application.
 These Terms constitute a legally binding agreement between you (hereinafter the "User") and Transport UniLift S.E.N.C., a general partnership registered in Québec, with its head office in Québec, Canada (hereinafter "UniLift," "we," "us," or "our").

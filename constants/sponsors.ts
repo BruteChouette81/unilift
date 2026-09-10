@@ -1,3 +1,13 @@
+/**
+ * Master switch for partner pins on the home map and the sponsor detail card.
+ *
+ * Separate from REWARDS_ENABLED in constants/rewards.ts: this controls whether
+ * partners appear on the map at all, that one controls whether their offers can
+ * be redeemed. Sponsors can ship before rewards do — the card falls back to a
+ * "rewards coming soon" line — but not the other way round.
+ */
+export const SPONSORS_ENABLED = false;
+
 // ─── Sponsors (Firestore-backed) ─────────────────────────────────────────────
 // A paying partner business shown on the home map with its brand logo. Admins
 // add documents directly in the Firebase console (or via the seed script). The

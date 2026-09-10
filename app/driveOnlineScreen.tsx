@@ -1,4 +1,5 @@
 import InfoButton from "@/components/info-button";
+import PayoutSetupBanner from "@/components/payout-setup-banner";
 import { useAuth } from "@/context/AuthContext";
 import { useLanguage } from "@/context/LanguageContext";
 import { useUserProfile } from "@/context/UserProfileContext";
@@ -37,13 +38,17 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useResponsive } from "@/hooks/use-responsive";
+import { FONT_CAP } from "@/constants/typography";
+import { P } from "@/constants/palette";
+import { devError } from "@/constants/runtime-config";
 
 const C = {
-  bg: "#080810", surface: "#0f0f1e", surfaceAlt: "#13132a",
+  bg: P.bg, surface: P.surface, surfaceAlt: P.surfaceRaised,
   border: "rgba(137, 56, 213, 0.30)", borderFaint: "rgba(255, 255, 255, 0.06)",
-  purple: "#8938D5", purpleLight: "#e09af7", pink: "#FD165A", blue: "#60a5fa",
-  gold: "#fbbf24", text: "#f3f4f6", muted: "#9ca3af", dim: "#4b5563",
-  success: "#34d399", inputBg: "rgba(15, 15, 30, 0.55)",
+  purple: P.accent, purpleLight: P.accentLight, pink: P.hype, blue: P.info,
+  gold: P.warning, text: P.text, muted: P.textMuted, dim: P.textDim,
+  success: P.success, inputBg: "rgba(15, 15, 30, 0.55)",
 };
 const GO_GRADIENT = ["#059669", "#34d399"] as const;
 
@@ -60,6 +65,7 @@ function suggestionIcon(kind: SuggestionKind): { name: "home-outline" | "star" |
 }
 
 export default function DriveOnlineScreen() {
+  const { isNarrow } = useResponsive();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { t } = useLanguage();
@@ -218,7 +224,7 @@ export default function DriveOnlineScreen() {
       });
       router.replace("/driverRequestsScreen");
     } catch (err) {
-      console.error(err);
+      devError(err);
       Alert.alert(t("driveOnline.failedTitle"), t("driveOnline.failedMsg"));
     } finally {
       setSubmitting(false);
@@ -233,19 +239,22 @@ export default function DriveOnlineScreen() {
             <Ionicons name="arrow-back" size={18} color="#2d0015" />
           </View>
         </Pressable>
-        <Text style={styles.headerTitle}>{t("driveOnline.title")}</Text>
+        <Text style={styles.headerTitle} numberOfLines={1} maxFontSizeMultiplier={FONT_CAP.body}>{t("driveOnline.title")}</Text>
         <View style={{ width: 38 }} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={[styles.scroll, isNarrow && styles.scrollNarrow]} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+        {/* Renders itself away unless this driver has unpaid earnings and no
+            working payout account — see components/payout-setup-banner.tsx. */}
+        <PayoutSetupBanner />
         <LinearGradient colors={["#06281d", "#08120e"]} style={styles.hero}>
           <View style={styles.pulseDot} />
-          <Text style={styles.heroTitle}>{t("driveOnline.heroTitle")}</Text>
-          <Text style={styles.heroSub}>{t("driveOnline.heroSub")}</Text>
+          <Text style={styles.heroTitle} maxFontSizeMultiplier={FONT_CAP.display}>{t("driveOnline.heroTitle")}</Text>
+          <Text style={styles.heroSub} maxFontSizeMultiplier={FONT_CAP.body}>{t("driveOnline.heroSub")}</Text>
         </LinearGradient>
 
         {/* Destination */}
-        <Text style={styles.label}>{t("driveOnline.destinationLabel")}</Text>
+        <Text style={styles.label} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("driveOnline.destinationLabel")}</Text>
         <View style={[styles.inputRow, destFocused && styles.inputRowFocused]}>
           <Ionicons name="navigate-outline" size={18} color={C.muted} style={{ marginRight: 10 }} />
           <TextInput
@@ -271,7 +280,7 @@ export default function DriveOnlineScreen() {
                 <TouchableOpacity key={`${item.kind}-${i}`} onPress={() => onSelectSuggestion(item)}
                   style={[styles.suggestionItem, i === suggestions.length - 1 && { borderBottomWidth: 0 }]}>
                   <Ionicons name={icon.name} size={14} color={icon.color} style={{ marginRight: 10 }} />
-                  <Text style={styles.suggestionText} numberOfLines={1}>{item.displayName}</Text>
+                  <Text style={styles.suggestionText} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.body}>{item.displayName}</Text>
                 </TouchableOpacity>
               );
             })}
@@ -279,29 +288,29 @@ export default function DriveOnlineScreen() {
         )}
 
         {/* Seats */}
-        <Text style={[styles.label, { marginTop: 24 }]}>{t("createRide.availableSeats")}</Text>
+        <Text style={[styles.label, { marginTop: 24 }]} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("createRide.availableSeats")}</Text>
         <View style={styles.seatsCard}>
           <TouchableOpacity style={styles.seatBtn} onPress={() => setSeats((s) => String(Math.max(1, parseInt(s) - 1)))}>
-            <Text style={styles.seatBtnText}>−</Text>
+            <Text style={styles.seatBtnText} allowFontScaling={false}>−</Text>
           </TouchableOpacity>
           <View style={styles.seatDisplay}>
-            <Text style={styles.seatNumber}>{seats}</Text>
-            <Text style={styles.seatLabel}>{t("rides.seat", { count: parseInt(seats) })}</Text>
+            <Text style={styles.seatNumber} maxFontSizeMultiplier={FONT_CAP.display}>{seats}</Text>
+            <Text style={styles.seatLabel} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("rides.seat", { count: parseInt(seats) })}</Text>
           </View>
           <TouchableOpacity style={styles.seatBtn} onPress={() => setSeats((s) => String(Math.min(7, parseInt(s) + 1)))}>
-            <Text style={styles.seatBtnText}>+</Text>
+            <Text style={styles.seatBtnText} allowFontScaling={false}>+</Text>
           </TouchableOpacity>
         </View>
 
         {/* Destination match radius */}
         <View style={[styles.labelRow, { marginTop: 24 }]}>
-          <Text style={styles.label}>{t("createRide.matchRadius")}</Text>
+          <Text style={styles.label} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("createRide.matchRadius")}</Text>
           <InfoButton title={t("createRide.info.matchRadius.title")} body={t("createRide.info.matchRadius.body")} />
         </View>
         <View style={styles.detourCard}>
           <View style={styles.detourValueRow}>
             <Ionicons name="locate-outline" size={18} color={C.purpleLight} />
-            <Text style={styles.detourValue}>{matchRadius} {t("createRide.matchRadiusUnit")}</Text>
+            <Text style={styles.detourValue} maxFontSizeMultiplier={FONT_CAP.display}>{matchRadius} {t("createRide.matchRadiusUnit")}</Text>
           </View>
           <Slider
             style={{ width: "100%", height: 36, marginTop: 6 }}
@@ -317,7 +326,7 @@ export default function DriveOnlineScreen() {
             {submitting ? <ActivityIndicator color="#fff" /> : (
               <>
                 <Ionicons name="radio-outline" size={20} color="#fff" />
-                <Text style={styles.goBtnText}>{t("driveOnline.goOnline")}</Text>
+                <Text style={styles.goBtnText} maxFontSizeMultiplier={FONT_CAP.action}>{t("driveOnline.goOnline")}</Text>
               </>
             )}
           </LinearGradient>
@@ -422,8 +431,9 @@ const styles = StyleSheet.create({
   },
   backBtn: { borderRadius: 10, overflow: "hidden" },
   backBtnGrad: { width: 38, height: 38, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: C.purpleLight },
-  headerTitle: { color: C.text, fontSize: 17, fontWeight: "700" },
+  headerTitle: { color: C.text, fontSize: 17, fontWeight: "700", flexShrink: 1, marginHorizontal: 8, textAlign: "center" },
   scroll: { padding: 20 },
+  scrollNarrow: { padding: 14 },
 
   hero: {
     borderRadius: 20, padding: 20, alignItems: "center", gap: 6, marginBottom: 24,
@@ -453,29 +463,32 @@ const styles = StyleSheet.create({
     flexDirection: "row", alignItems: "center", paddingVertical: 14, paddingHorizontal: 14,
     borderBottomWidth: 1, borderBottomColor: "rgba(137,56,213,0.12)",
   },
-  suggestionText: { color: C.text, fontSize: 14, flex: 1 },
+  suggestionText: { color: C.text, fontSize: 14, flexGrow: 1, flexShrink: 1 },
 
   seatsCard: {
-    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12,
     backgroundColor: "rgba(137,56,213,0.06)", borderWidth: 1, borderColor: C.border, borderRadius: 20, padding: 18,
   },
   seatBtn: {
-    width: 44, height: 44, borderRadius: 14, backgroundColor: "rgba(137,56,213,0.15)",
+    width: 44, height: 44, borderRadius: 14, flexShrink: 0, backgroundColor: "rgba(137,56,213,0.15)",
     alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: C.border,
   },
   seatBtnText: { color: C.purpleLight, fontSize: 22, fontWeight: "700", lineHeight: 26 },
-  seatDisplay: { alignItems: "center" },
+  seatDisplay: { alignItems: "center", flexShrink: 1 },
   seatNumber: { color: C.text, fontSize: 28, fontWeight: "800" },
-  seatLabel: { color: C.muted, fontSize: 12, marginTop: -2 },
+  seatLabel: { color: C.muted, fontSize: 12, marginTop: -2, textAlign: "center" },
 
   detourCard: {
     backgroundColor: "rgba(137,56,213,0.06)", borderWidth: 1, borderColor: C.border, borderRadius: 20, padding: 18,
   },
   detourValueRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  detourValue: { color: C.text, fontSize: 20, fontWeight: "800" },
+  detourValue: { color: C.text, fontSize: 20, fontWeight: "800", flexShrink: 1 },
 
-  goBtn: { height: 56, borderRadius: 16, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 8 },
-  goBtnText: { color: "#fff", fontWeight: "800", fontSize: 16 },
+  goBtn: {
+    minHeight: 56, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 16,
+    alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 8,
+  },
+  goBtnText: { color: "#fff", fontWeight: "800", fontSize: 16, flexShrink: 1, textAlign: "center" },
 });
 
 const notif = StyleSheet.create({

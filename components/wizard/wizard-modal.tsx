@@ -13,16 +13,17 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { P } from "@/constants/palette";
 
 const C = {
-  surface:     "#0f0f1e",
+  surface:     P.surface,
   border:      "rgba(137, 56, 213, 0.30)",
-  purple:      "#8938D5",
-  purpleLight: "#e09af7",
-  textOnLight: "#2d0015",
-  gold:        "#fbbf24",
-  text:        "#f3f4f6",
-  muted:       "#9ca3af",
+  purple:      P.accent,
+  purpleLight: P.accentLight,
+  textOnLight: P.gradientStart,
+  gold:        P.warning,
+  text:        P.text,
+  muted:       P.textMuted,
 };
 
 const ICON_GRADIENT = ["#FD165A", "#8938D5"] as const;

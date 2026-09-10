@@ -1,4 +1,3 @@
-import { RIDE_SEARCH, isWithinDepartureWindow } from "@/constants/ride-search";
 import type { Ride, ScoredRide, UserProfile } from "@/types/models";
 import { findMatchesForPassenger, MatchResult, PassengerRequest } from "@/utils/matching/matchRide";
 
@@ -22,7 +21,7 @@ export function haversineKm(
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-export function bearingDeg(
+function bearingDeg(
   lat1: number,
   lon1: number,
   lat2: number,
@@ -152,77 +151,3 @@ export function useDetourRecommendations(
 
 // ─── Main Export ─────────────────────────────────────────────────────────────
 
-/** @deprecated Use useDetourRecommendations for detour-based matching */
-export function recommendRides(
-  rides: Ride[],
-  userProfile: UserProfile,
-  options: RecommendOptions = {},
-): ScoredRide[] {
-  if (rides.length === 0) return [];
-
-  const nowMs = options.nowMs ?? Date.now();
-  const w = { ...DEFAULT_WEIGHTS, ...options.weights };
-  const driverCache = options.driverLevelCache ?? new Map<string, number>();
-
-  const refs = (userProfile.favorite ?? [])
-    .filter((f) => !(f.destinationGeo.lat === 0 && f.destinationGeo.lon === 0))
-    .map((f) => ({ lat: f.destinationGeo.lat, lon: f.destinationGeo.lon }));
-
-  const userLat = userProfile.localisation.latitude;
-  const userLon = userProfile.localisation.longitude;
-  const hasUserLoc = userLat !== null && userLon !== null;
-
-  const params = getAdaptiveParams(rides.length);
-
-  const scored: ScoredRide[] = [];
-  const departureFilterMs = options.searchDepartureMs;
-  const departureTolerance =
-    options.departureToleranceMinutes ?? RIDE_SEARCH.departureToleranceMinutes;
-
-  for (const ride of rides) {
-    if (departureFilterMs !== undefined) {
-      if (
-        !isWithinDepartureWindow(
-          ride.departureAt,
-          departureFilterMs,
-          departureTolerance,
-        )
-      ) {
-        continue;
-      }
-    }
-
-    const pickupKm = hasUserLoc
-      ? haversineKm(userLat!, userLon!, ride.localisation.latitude, ride.localisation.longitude)
-      : null;
-
-    const distance   = scoreDistance(pickupKm, params.decayRadius);
-    const time       = scoreTime(ride.date, nowMs, params.peakMinutes);
-    const direction  = scoreDirection(
-      userLat,
-      userLon,
-      ride.destinationCoords.latitude,
-      ride.destinationCoords.longitude,
-      refs,
-    );
-    const driverLevel = driverCache.get(ride.driverId) ?? 0;
-    const preference  = scorePreference(ride, userProfile.preferences ?? [], driverLevel);
-
-    const composite =
-      w.distance   * distance +
-      w.time       * time +
-      w.direction  * direction +
-      w.preference * preference;
-
-    if (composite < params.minScoreCutoff) continue;
-
-    scored.push({
-      ...ride,
-      score: composite,
-      scoreBreakdown: { distance, time, direction, preference, composite },
-    });
-  }
-
-  scored.sort((a, b) => b.score - a.score);
-  return scored;
-}

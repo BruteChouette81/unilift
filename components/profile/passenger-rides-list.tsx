@@ -1,24 +1,26 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { FlatList, StyleSheet, Text, View, Pressable } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import type { Ride } from "@/types/models";
 import { useLanguage } from "@/context/LanguageContext";
 import type { Language } from "@/constants/translations";
+import { P } from "@/constants/palette";
 
 const C = {
-  bg:          "#080810",
-  surface:     "#0f0f1e",
-  surfaceAlt:  "#13132a",
+  bg:          P.bg,
+  surface:     P.surface,
+  surfaceAlt:  P.surfaceRaised,
   border:      "rgba(124, 58, 237, 0.22)",
   borderFaint: "rgba(255, 255, 255, 0.06)",
-  purple:      "#7C3AED",
-  purpleLight: "#a78bfa",
+  purple:      P.accentDeep,
+  purpleLight: P.accentSoft,
   purpleFaint: "rgba(124,58,237,0.12)",
   green:       "#10b981",
   greenFaint:  "rgba(16,185,129,0.12)",
-  gold:        "#fbbf24",
-  text:        "#f3f4f6",
-  muted:       "#9ca3af",
-  dim:         "#4b5563",
+  gold:        P.warning,
+  text:        P.text,
+  muted:       P.textMuted,
+  dim:         P.textDim,
 };
 
 type PassengerRidesListProps = {
@@ -99,7 +101,7 @@ export function PassengerRidesList({ rides, userId }: PassengerRidesListProps) {
             {/* Destination */}
             <View style={styles.destinationRow}>
               <View style={styles.destIconWrap}>
-                <Text style={{ fontSize: 12 }}>📍</Text>
+                <Ionicons name="location-sharp" size={13} color={C.purpleLight} />
               </View>
               <Text style={styles.destination} numberOfLines={1}>
                 {item.destination}
@@ -110,16 +112,16 @@ export function PassengerRidesList({ rides, userId }: PassengerRidesListProps) {
             <View style={styles.metaRow}>
               {formatted && (
                 <View style={styles.metaChip}>
-                  <Text style={{ fontSize: 10 }}>⏱</Text>
+                  <Ionicons name="time-outline" size={11} color={C.muted} />
                   <Text style={styles.metaText}>{formatted.time}</Text>
                 </View>
               )}
               <View style={styles.metaChip}>
-                <Text style={{ fontSize: 10 }}>🚗</Text>
+                <Ionicons name="car-sport-outline" size={11} color={C.muted} />
                 <Text style={styles.metaText}>{item.driverName ?? t("rides.unknownDriver")}</Text>
               </View>
               <View style={styles.metaChip}>
-                <Text style={{ fontSize: 10 }}>👥</Text>
+                <Ionicons name="people-outline" size={11} color={C.muted} />
                 <Text style={styles.metaText}>
                   {t("rides.passengersCount", { current: passengerCount, total: totalSeats })}
                 </Text>
@@ -136,7 +138,7 @@ export function PassengerRidesList({ rides, userId }: PassengerRidesListProps) {
     return (
       <View style={styles.empty}>
         <View style={styles.emptyIconWrap}>
-          <Text style={{ fontSize: 22 }}>🎒</Text>
+          <Ionicons name="car-sport-outline" size={24} color={C.purpleLight} />
         </View>
         <Text style={styles.emptyTitle}>{t("rides.noPassengerRides")}</Text>
         <Text style={styles.emptySubtext}>{t("rides.noPassengerRidesSub")}</Text>

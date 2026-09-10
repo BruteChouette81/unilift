@@ -21,8 +21,7 @@ import {
   startRideService,
   updateDriverLocation,
 } from "@/services/rideServices";
-import { fetchUserDocument } from "@/services/userService";
-import { calculateAgeFromBirthDate } from "@/components/userHelper";
+import { fetchPublicProfile, fetchPublicProfiles, type PublicProfile } from "@/services/publicProfileService";
 import type { JoinRequest } from "@/types/models";
 import { useActiveRide } from "@/context/ActiveRideContext";
 import { useAuth } from "@/context/AuthContext";
@@ -38,17 +37,25 @@ import React, { useEffect, useRef, useState } from "react";
 import { Image as ExpoImage } from "expo-image";
 import { ActivityIndicator, Alert, AppState, Linking, Modal, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { getMultiWaypointRoute } from "@/services/routeService";
+import { useDriverRoute } from "@/hooks/use-driver-route";
+import { fetchRideRequestById } from "@/services/rideRequestService";
+import { fetchPassengerContact } from "@/services/contactService";
+import { smsUri, telUri } from "@/utils/phoneNumber";
+import ContactCard from "@/components/phone/contact-card";
 import { devLog, devWarn } from "@/constants/runtime-config";
 import { rideLog } from "@/utils/ride-logger";
 import { maybeShowGmapsHint } from "@/utils/gmapsHint";
 import { rideErrorMessage } from "@/utils/rideErrors";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useResponsive } from "@/hooks/use-responsive";
+import { FONT_CAP } from "@/constants/typography";
+import { P } from "@/constants/palette";
 
 const C = {
-  bg: "#080810", surface: "#0f0f1e", surfaceAlt: "#13132a",
-  purple: "#8938D5", purpleLight: "#e09af7", blue: "#FD165A",
-  text: "#f3f4f6", muted: "#9ca3af", dim: "#4b5563",
-  danger: "#ef4444", gold: "#fbbf24", success: "#34d399",
+  bg: P.bg, surface: P.surface, surfaceAlt: P.surfaceRaised,
+  purple: P.accent, purpleLight: P.accentLight, blue: P.hype,
+  text: P.text, muted: P.textMuted, dim: P.textDim,
+  danger: P.dangerStrong, gold: P.warning, success: P.success,
   border: "rgba(137, 56, 213, 0.22)", borderFaint: "rgba(255, 255, 255, 0.06)",
 };
 
@@ -62,10 +69,15 @@ type RideParams = {
   Destination: string;
   /** "true" when launched already-started from the driver waiting screen. */
   started: string;
-  /** "true" only on the fresh inbox hand-off — triggers the one-time Google
-   *  Maps launch. Absent on banner re-entry so reopening the app doesn't
-   *  hijack the driver back into Maps. */
-  autostart: string;
+  /** The accepted passenger and their pickup/dropoff, forwarded by
+   *  acceptRideScreen from the accept response. Optional — the ride-doc
+   *  snapshot is still the source of truth; these only seed the map so it is
+   *  never blank on the first frame. */
+  PaxId?: string;
+  PaxLat?: string;
+  PaxLng?: string;
+  PaxDestLat?: string;
+  PaxDestLng?: string;
 };
 
 const toSafeNumber = (value: string, fallback = 0): number => {
@@ -73,73 +85,33 @@ const toSafeNumber = (value: string, fallback = 0): number => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
-type PassengerProfile = {
-  uid: string;
-  name: string;
-  email: string;
-  xp: number;
-  rating: number;
-  avatar: string | null;
-  ridesCompleted: number;
-  school?: string;
-  age?: number;
-  instagramHandle?: string;
-  certifications: string[];
-};
+// The cross-user view of a person is `users/{uid}/public/profile` — see
+// services/publicProfileService.ts. The local type and decoder that used to live
+// here read `users/{uid}` directly, which is now owner-only: it carried the other
+// person's email and birth date into a screen that only ever rendered their name,
+// avatar, rating and badges.
+type PassengerProfile = PublicProfile;
 
-function extractPassengerProfile(uid: string, doc: { fields?: Record<string, unknown> }): PassengerProfile {
-  const fields = doc?.fields ?? {};
-  const str = (key: string): string => {
-    const v = fields[key] as Record<string, unknown> | undefined;
-    return typeof v?.stringValue === "string" ? v.stringValue : "";
-  };
-  const num = (key: string): number => {
-    const v = fields[key] as Record<string, unknown> | undefined;
-    return Number(v?.integerValue ?? v?.doubleValue ?? 0);
-  };
-  const strArr = (key: string): string[] => {
-    const v = fields[key] as Record<string, unknown> | undefined;
-    const values = (v?.arrayValue as Record<string, unknown> | undefined)?.values;
-    if (!Array.isArray(values)) return [];
-    return values
-      .map((e) => (e as Record<string, unknown>)?.stringValue)
-      .filter((s): s is string => typeof s === "string");
-  };
-  const email = str("email");
-  const name = str("name") || email.split("@")[0] || "Unknown";
-  const birthDate = str("birthDate");
-  const storedAge = num("age");
-  const age = birthDate ? calculateAgeFromBirthDate(birthDate) : (storedAge > 0 ? storedAge : undefined);
-  const school = str("school");
-  const instagramHandle = str("instagramHandle");
-  return {
-    uid,
-    name,
-    email,
-    xp: num("xp"),
-    rating: num("rating"),
-    avatar: str("avatar") || null,
-    ridesCompleted: num("ridesCompleted"),
-    school: school || undefined,
-    age: typeof age === "number" && age > 0 ? age : undefined,
-    instagramHandle: instagramHandle || undefined,
-    certifications: strArr("certifications"),
-  };
-}
 
 export default function RideModeDriver() {
   useKeepAwake();
   const router = useRouter();
   const { t } = useLanguage();
   const insets = useSafeAreaInsets();
+  const { isNarrow, shouldStack, scaleBox, panelMaxHeight, height: winHeight, fontScale } = useResponsive();
   const { user } = useAuth();
   const { setActiveRide, clearActiveRide } = useActiveRide();
-  const { rideId, Originlat, OriginLng, DestinationLat, DestinationLng, Destination, started, autostart } = useLocalSearchParams<RideParams>();
+  const {
+    rideId, Originlat, OriginLng, DestinationLat, DestinationLng, Destination, started,
+    PaxId, PaxLat, PaxLng, PaxDestLat, PaxDestLng,
+  } = useLocalSearchParams<RideParams>();
   const startedFromInbox = started === "true";
-  // Only the genuine inbox hand-off carries autostart — banner re-entry doesn't,
-  // so reopening the app mid-ride won't relaunch Google Maps unprompted.
-  const autoLaunchMaps = autostart === "true";
 
+  // Deliberately NOT seeded from the accept params: `passengers` gates the Start
+  // Ride button, and `pendingConfirmation` is empty until the first snapshot —
+  // seeding it would briefly let the driver start a ride the passenger has not
+  // confirmed yet. The map renders straight off the pickup map below, so the
+  // passenger pin still paints on the first frame without this.
   const [passengers, setPassengers] = useState<string[]>([]);
   const [joinRequests, setJoinRequests] = useState<Record<string, JoinRequest>>({});
   const [rideStarted, setRideStarted] = useState(startedFromInbox);
@@ -148,8 +120,19 @@ export default function RideModeDriver() {
   const [qrExpiresAt, setQrExpiresAt] = useState<number>(0);
   const [showQrModal, setShowQrModal] = useState(false);
   const [paymentProcessing, setPaymentProcessing] = useState(false);
-  const [passengerPickups, setPassengerPickups] = useState<Record<string, { latitude: number; longitude: number }>>({});
-  const [passengerDropoffs, setPassengerDropoffs] = useState<Record<string, { latitude: number; longitude: number }>>({});
+  // Seeded from the accept hand-off when it carried the passenger's coords, so
+  // the map has a passenger on it before the first snapshot. Overwritten by the
+  // ride doc as soon as it arrives.
+  const [passengerPickups, setPassengerPickups] = useState<Record<string, { latitude: number; longitude: number }>>(
+    () => (PaxId && PaxLat && PaxLng
+      ? { [PaxId]: { latitude: toSafeNumber(PaxLat), longitude: toSafeNumber(PaxLng) } }
+      : {}),
+  );
+  const [passengerDropoffs, setPassengerDropoffs] = useState<Record<string, { latitude: number; longitude: number }>>(
+    () => (PaxId && PaxDestLat && PaxDestLng
+      ? { [PaxId]: { latitude: toSafeNumber(PaxDestLat), longitude: toSafeNumber(PaxDestLng) } }
+      : {}),
+  );
   const [droppedPassengers, setDroppedPassengers] = useState<string[]>([]);
   // Legs the server measured as in-range at dropoff — the only ones that bill.
   // Server-owned and unwritable by the client; mirrored here so the driver can
@@ -164,6 +147,22 @@ export default function RideModeDriver() {
 const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
   const [passengerProfiles, setPassengerProfiles] = useState<Record<string, PassengerProfile>>({});
+
+  // The driver's own live GPS. Previously the watcher's fix went straight to
+  // Firestore and was never held here, so the driver's marker sat on the
+  // accept-time `originCoords` for the whole ride — the "I'm a house parked in
+  // the wrong place" report.
+  const [myLocation, setMyLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  // Street address per stop coordinate, keyed by "lat,lng". Filled from the
+  // originating request's label when there is one, else reverse-geocoded.
+  const [stopAddresses, setStopAddresses] = useState<Record<string, string>>({});
+  const [requestId, setRequestId] = useState<string | null>(null);
+  // Passenger phone numbers, keyed by uid. `undefined` = not fetched yet,
+  // `null` = the passenger shared none. Deliberately not persisted anywhere:
+  // the server re-checks permission on every call and stops answering once the
+  // passenger is dropped off, so a cache that outlived the ride would outlive
+  // the consent behind it.
+  const [passengerPhones, setPassengerPhones] = useState<Record<string, string | null>>({});
 
   const locationSubRef = useRef<Location.LocationSubscription | null>(null);
 
@@ -182,11 +181,9 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
       return;
     }
     setProfileLoading(true);
-    const token = await user?.getIdToken().catch(() => undefined);
-    const doc = await fetchUserDocument(uid, token);
+    const profile = await fetchPublicProfile(uid);
     setProfileLoading(false);
-    if (doc) {
-      const profile = extractPassengerProfile(uid, doc);
+    if (profile) {
       setPassengerProfiles((prev) => ({ ...prev, [uid]: profile }));
       setProfileModal(profile);
     } else {
@@ -220,7 +217,7 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
       const parsed = JSON.parse(atob(tokenPayload));
       setQrExpiresAt(parsed.expiresAt);
     } catch (e) {
-      console.warn('QR generation failed', e);
+      devWarn('QR generation failed', e);
     }
   };
 
@@ -365,6 +362,12 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
           setAllPassengersDropped(true);
         }
 
+        // The originating rideRequests doc — the only place a human-readable
+        // pickup address exists. Rules let the matched driver read it.
+        if (typeof data.requestId === "string") {
+          setRequestId((prev) => (prev === data.requestId ? prev : data.requestId));
+        }
+
         // setRideStarted(true) is idempotent — React bails out if value unchanged
         if (data.status === "started") {
           setRideStarted(true);
@@ -391,18 +394,10 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
 
     if (uids.length === 0) return;
 
-    user?.getIdToken().then((token) => {
-      uids.forEach((uid) => {
-        fetchUserDocument(uid, token).then((doc) => {
-          if (doc) {
-            setPassengerProfiles((prev) => ({
-              ...prev,
-              [uid]: extractPassengerProfile(uid, doc),
-            }));
-          }
-        });
-      });
-    }).catch(() => {});
+    void fetchPublicProfiles(uids).then((profiles) => {
+      if (Object.keys(profiles).length === 0) return;
+      setPassengerProfiles((prev) => ({ ...prev, ...profiles }));
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [passengers, joinRequests]);
 
@@ -483,6 +478,7 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
       // watcher entirely so the driver location is deterministic in testing.
       const devCoords = getDevLocationOverride();
       if (devCoords) {
+        setMyLocation(devCoords);
         void updateDriverLocation(rideId, devCoords).catch(() => {});
         return;
       }
@@ -500,11 +496,12 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
           timeInterval: 8000,
         },
         (loc) => {
+          const fix = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
+          // Drive the map/ETA off the same fix we broadcast — one watcher, two
+          // consumers, no second GPS subscription.
+          setMyLocation(fix);
           // Never let a rejected write escape the watcher callback.
-          void updateDriverLocation(rideId, {
-            latitude: loc.coords.latitude,
-            longitude: loc.coords.longitude,
-          }).catch(() => {});
+          void updateDriverLocation(rideId, fix).catch(() => {});
         },
       );
     } finally {
@@ -524,11 +521,17 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
   // destination is where they happen to be heading afterwards (often home), not
   // part of the ride, and routing them there made Google Maps keep navigating
   // after the final drop-off.
-  const buildRouteCoords = (includeDropped = false): { latitude: number; longitude: number }[] => {
+  //
+  // `buildStops` is the list WITHOUT the driver: every remaining place they have
+  // to drive to, in order. A passenger who has already boarded no longer needs
+  // their pickup visited, so it drops out — routing a driver back to a corner
+  // they already left is what made the old route look nonsensical mid-ride.
+  const buildStops = (includeDropped = false): { latitude: number; longitude: number }[] => {
     const activePassengers = includeDropped
       ? passengers
       : passengers.filter((uid) => !droppedPassengers.includes(uid));
     const pickups = activePassengers
+      .filter((uid) => includeDropped || !boardedPassengers.includes(uid))
       .map((uid) => passengerPickups[uid])
       .filter((l): l is { latitude: number; longitude: number } => !!l);
     const dropoffs = activePassengers
@@ -536,21 +539,162 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
       .filter((l): l is { latitude: number; longitude: number } => !!l);
     const ridesToDestination = activePassengers.some((uid) => !passengerDropoffs[uid]);
     const destIsReal = destCoords.latitude !== 0 || destCoords.longitude !== 0;
-    const coords = [
-      originCoords,
+    const stops = [
       ...pickups,
       ...dropoffs,
       ...(ridesToDestination && destIsReal ? [destCoords] : []),
     ];
-    devLog("[RIDE-DEBUG] buildRouteCoords", {
+    devLog("[RIDE-DEBUG] buildStops", {
       activePassengers: activePassengers.length,
       pickups: pickups.length,
       dropoffs: dropoffs.length,
       ridesToDestination,
-      totalCoords: coords.length,
+      totalStops: stops.length,
     });
-    return coords;
+    return stops;
   };
+
+  // Full ordered coordinate list for navigation: where the driver IS right now,
+  // then every remaining stop. The live fix is what matters — the old code put
+  // `originCoords` here, i.e. wherever the driver happened to be when they
+  // accepted, which Google Maps then rendered as pinned point A. That stale pin
+  // is what drivers were seeing instead of their passenger.
+  const buildRouteCoords = (includeDropped = false): { latitude: number; longitude: number }[] => {
+    const start = myLocation ?? originCoords;
+    return [start, ...buildStops(includeDropped)];
+  };
+
+  // ── Where is my passenger, in words and in minutes ────────────────────────
+  //
+  // The stops the driver still has to visit, from where they are right now.
+  const remainingStops = buildStops(false);
+  const route = useDriverRoute(myLocation, remainingStops);
+
+  /** Stable key for a coordinate, so an address is fetched once per place. */
+  const coordKey = (c: { latitude: number; longitude: number }): string =>
+    `${c.latitude.toFixed(5)},${c.longitude.toFixed(5)}`;
+
+  // Resolve every pickup/dropoff to a street address. The originating request
+  // carries the label the passenger actually typed, which beats a reverse
+  // geocode; anything else (planned-ride joins, drop-offs) falls back to the
+  // on-device reverse geocoder. Each place is resolved once and cached.
+  useEffect(() => {
+    const targets = [
+      ...Object.values(passengerPickups),
+      ...Object.values(passengerDropoffs),
+    ].filter((c) => c && (c.latitude !== 0 || c.longitude !== 0));
+    const missing = targets.filter((c) => !stopAddresses[coordKey(c)]);
+    if (missing.length === 0) return;
+
+    let cancelled = false;
+    (async () => {
+      // The request label, when this ride came from a dispatch match.
+      let requestLabel: { key: string; label: string } | null = null;
+      if (requestId) {
+        try {
+          const req = await fetchRideRequestById(requestId);
+          if (req?.originLabel && req.origin) {
+            requestLabel = { key: coordKey(req.origin), label: req.originLabel };
+          }
+        } catch { /* fall through to reverse geocoding */ }
+      }
+
+      const resolved: Record<string, string> = {};
+      if (requestLabel) resolved[requestLabel.key] = requestLabel.label;
+
+      for (const c of missing) {
+        const key = coordKey(c);
+        if (resolved[key]) continue;
+        try {
+          const [place] = await Location.reverseGeocodeAsync(c);
+          if (!place) continue;
+          const line = [place.streetNumber, place.street].filter(Boolean).join(" ");
+          const address = [line || place.name, place.city].filter(Boolean).join(", ");
+          if (address) resolved[key] = address;
+        } catch { /* leave unresolved — the card shows a fallback */ }
+      }
+
+      if (!cancelled && Object.keys(resolved).length > 0) {
+        setStopAddresses((prev) => ({ ...resolved, ...prev }));
+      }
+    })();
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [passengerPickups, passengerDropoffs, requestId]);
+
+  /** The stop this passenger is associated with right now: their pickup until
+   *  they board, their drop-off afterwards. */
+  const stopForPassenger = (uid: string): { latitude: number; longitude: number } | undefined =>
+    boardedPassengers.includes(uid) ? passengerDropoffs[uid] : passengerPickups[uid];
+
+  const addressForPassenger = (uid: string): string | null => {
+    const stop = stopForPassenger(uid);
+    if (!stop) return null;
+    return stopAddresses[coordKey(stop)] ?? null;
+  };
+
+  /** "3.2 km · 8 min away" for a passenger's current stop, or null when the
+   *  route hasn't resolved yet. `route.legs` is in `remainingStops` order. */
+  const etaForPassenger = (uid: string): string | null => {
+    const stop = stopForPassenger(uid);
+    if (!stop || route.legs.length === 0) return null;
+    const index = remainingStops.findIndex((s) => coordKey(s) === coordKey(stop));
+    if (index < 0) return null;
+    // legs[i] is the drive INTO stops[i], so cumulative up to and including it.
+    const upTo = route.legs.slice(0, index + 1);
+    if (upTo.length !== index + 1) return null;
+    const km = upTo.reduce((sum, l) => sum + l.distanceKm, 0);
+    const minutes = Math.max(1, Math.round(upTo.reduce((sum, l) => sum + l.durationSeconds, 0) / 60));
+    return t("driverRide.etaAway", {
+      dist: km < 10 ? `${km.toFixed(1)} km` : `${Math.round(km)} km`,
+      time: `${minutes} ${t("driverRide.minutesShort")}`,
+    });
+  };
+
+  // Fetch each active passenger's number once. The server refuses after
+  // drop-off, so dropped passengers are skipped rather than retried into a 400.
+  useEffect(() => {
+    if (!rideId) return;
+    const missing = passengers.filter(
+      (uid) => !droppedPassengers.includes(uid) && !(uid in passengerPhones),
+    );
+    if (missing.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      for (const uid of missing) {
+        try {
+          const { phone } = await fetchPassengerContact(rideId, uid);
+          if (!cancelled) setPassengerPhones((prev) => ({ ...prev, [uid]: phone }));
+        } catch (err) {
+          // A refusal is not worth an alert — the card falls back to "no number
+          // shared", which is the same thing from the driver's point of view.
+          devWarn("[RIDE-DEBUG] passenger contact unavailable", err);
+          if (!cancelled) setPassengerPhones((prev) => ({ ...prev, [uid]: null }));
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rideId, passengers, droppedPassengers]);
+
+  /** Open the dialer or Messages. Deliberately does NOT gate on canOpenURL:
+   *  that returns false on any device without a dialer (iPad, simulator), which
+   *  would hide the buttons on exactly the hardware this gets tested on. */
+  const openContactUri = async (uri: string) => {
+    if (!uri) return;
+    try {
+      await Linking.openURL(uri);
+    } catch (err) {
+      devWarn("[RIDE-DEBUG] contact link failed", err);
+      Alert.alert(t("common.error"), t("driverRide.contactLinkFailed"));
+    }
+  };
+
+  /** Passenger display names for the map callouts. */
+  const passengerNames: Record<string, string> = {};
+  for (const [uid, profile] of Object.entries(passengerProfiles)) {
+    if (profile?.name) passengerNames[uid] = profile.name;
+  }
 
   const openGoogleMaps = async (coords: { latitude: number; longitude: number }[]) => {
     // Fewer than two points means there is nothing left to navigate to (every
@@ -558,12 +702,24 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
     // destination here — the ride is over.
     if (coords.length < 2) return;
 
-    // Web URL: google.com/maps/dir/LAT,LNG/LAT,LNG/... supports arbitrary stops
-    const path = coords.map(c => `${c.latitude},${c.longitude}`).join('/');
-    const webUrl = `https://www.google.com/maps/dir/${path}`;
+    const ll = (c: { latitude: number; longitude: number }) => `${c.latitude},${c.longitude}`;
 
     const dest = coords[coords.length - 1];
     const intermediates = coords.slice(1, -1); // everything between origin and destination
+
+    // Web URL, documented `api=1` form. The legacy `dir/A/B/C` path form made
+    // coords[0] a literal pinned place, so Google Maps opened focused on a dot
+    // labelled with the driver's own start point rather than routing them. With
+    // an explicit `origin` the driver's live position is the route's start and
+    // the passenger's pickup is the first thing they see.
+    const webUrl =
+      `https://www.google.com/maps/dir/?api=1` +
+      `&origin=${encodeURIComponent(ll(coords[0]))}` +
+      `&destination=${encodeURIComponent(ll(dest))}` +
+      (intermediates.length > 0
+        ? `&waypoints=${encodeURIComponent(intermediates.map(ll).join("|"))}`
+        : "") +
+      `&travelmode=driving`;
 
     let nativeUrl: string;
     if (Platform.OS === "ios") {
@@ -785,63 +941,232 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
   };
 
 
-  // Side-effects for an in-progress ride. The frozen polyline + Google Maps
-  // hand-off (below) wait until the passenger list has loaded from the first
-  // poll and only auto-fire on the genuine inbox hand-off.
-  const startedSideEffectsRef = useRef(false);
-  // Keep the live-location broadcast running whenever the ride is in progress.
-  // This fires on the inbox hand-off (rideStarted starts true), on manual start,
-  // and — crucially — when the driver re-opens the app mid-ride and polling
-  // flips rideStarted back to true. startLocationBroadcast() is idempotent.
+  // Keep the live-location broadcast running for the whole time this screen is
+  // mounted. startLocationBroadcast() is idempotent, so re-entry after a cold
+  // start (or a `rideStarted` flip from the snapshot) never opens a second
+  // watcher. Armed as soon as the screen mounts, not only once the ride is started: the
+  // drive TO the pickup is exactly the stretch where the driver needs to see
+  // themselves move, and it keeps `rides.driverLocation` fresh so the waiting
+  // passenger can watch their driver approach too.
   useEffect(() => {
-    if (rideStarted && rideId) void startLocationBroadcast();
+    if (rideId) void startLocationBroadcast();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rideStarted, rideId]);
+
+  // First fix on mount so the car pin is right immediately instead of waiting
+  // for the watcher's first callback (up to 8 s / 50 m away).
   useEffect(() => {
-    if (!autoLaunchMaps || startedSideEffectsRef.current || passengers.length === 0) return;
-    // Wait until every accepted passenger has a pickup coord in state before
-    // launching Google Maps. Without this guard the effect can fire in the
-    // render where `passengers` first becomes non-empty but `passengerPickups`
-    // hasn't been committed yet (state batching timing), which causes Google
-    // Maps to open with only origin→destination and no passenger stops.
-    const allPickupsReady = passengers.every((uid) => passengerPickups[uid]);
-    if (!allPickupsReady) return;
-    startedSideEffectsRef.current = true;
+    let cancelled = false;
     (async () => {
       try {
-        const routeResult = await getMultiWaypointRoute(buildRouteCoords(true));
-        if (routeResult?.overviewPolyline) setFrozenPolyline(routeResult.overviewPolyline);
-        await openGoogleMaps(buildRouteCoords(true));
-      } catch { /* non-fatal — driver can reopen maps manually */ }
+        const pos = await devAwareCurrentPosition({ accuracy: Location.Accuracy.Balanced });
+        if (!cancelled && pos) {
+          setMyLocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
+        }
+      } catch { /* permission prompt is handled by startLocationBroadcast */ }
     })();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoLaunchMaps, passengers, passengerPickups]);
+    return () => { cancelled = true; };
+  }, []);
+
+  // A passenger row grows with the text, so a flat 140pt cap showed one clipped
+  // row at large sizes. Track the text, but stay a fraction of the window so two
+  // lists plus the action buttons still fit. At the default text size this
+  // resolves to exactly the previous 140.
+  const listMaxHeight = Math.min(winHeight * 0.22, 140 * Math.min(fontScale, 2));
+
+  /**
+   * One passenger, everything the driver needs to reach them: who they are,
+   * the street address of the stop, how far and how long away it is, and a
+   * one-tap hand-off to Google Maps.
+   *
+   * The pickup pin is a fixed point captured when the passenger sent their
+   * request — we never receive their live position — so the card says so
+   * outright. A driver who thinks a static pin is tracking a moving person
+   * circles the block looking for someone who was never there.
+   */
+  function PassengerStopCard({ passengerId: pid }: { passengerId: string }) {
+    const profile = passengerProfiles[pid];
+    const isDropped = droppedPassengers.includes(pid);
+    const isBoarded = boardedPassengers.includes(pid);
+    // Dropped but out of range of their destination ⇒ this leg pays nothing.
+    // Surface it now, not after the ride is over.
+    const isUnpaidLeg = isDropped && isBoarded && !confirmedDropoffs.includes(pid);
+    const stop = stopForPassenger(pid);
+    const address = addressForPassenger(pid);
+    const eta = etaForPassenger(pid);
+    // Read through the drop-off check rather than trusting what was fetched
+    // earlier. The server stops answering once a passenger is dropped, and this
+    // is what makes the client agree with it instead of showing a number whose
+    // window has closed.
+    const phone = isDropped ? null : (passengerPhones[pid] ?? null);
+    const busy = loading || paymentProcessing;
+
+    return (
+      <View style={styles.stopCard}>
+        {/* Identity */}
+        <View style={styles.stopCardHead}>
+          <TouchableOpacity
+            style={[styles.avatarPlaceholder, { width: avatarBox, height: avatarBox, borderRadius: avatarBox / 2 }]}
+            onPress={() => openPassengerProfile(pid)}
+            activeOpacity={0.7}
+          >
+            {profile?.avatar ? (
+              <ExpoImage
+                source={{ uri: profile.avatar }}
+                style={styles.avatarThumb}
+                contentFit="cover"
+                cachePolicy="memory-disk"
+              />
+            ) : (
+              <Text style={{ fontSize: 16 }} allowFontScaling={false}>👤</Text>
+            )}
+          </TouchableOpacity>
+
+          <View style={styles.stopCardIdentity}>
+            <View style={styles.passengerNameRow}>
+              <Text style={styles.passengerIdText} numberOfLines={1} maxFontSizeMultiplier={FONT_CAP.body}>
+                {profile?.name ?? pid.slice(0, 12) + "..."}
+              </Text>
+              {profile && profile.ratingCount > 0 && (
+                <Text style={styles.stopCardRating} maxFontSizeMultiplier={FONT_CAP.chrome}>
+                  ⭐ {profile.rating.toFixed(1)}
+                </Text>
+              )}
+              <CertBadges certifications={profile?.certifications} size="compact" hideWhenEmpty />
+            </View>
+            <Text style={styles.passengerSubtext} maxFontSizeMultiplier={FONT_CAP.chrome}>
+              {isDropped
+                ? t("driverRide.droppedOff")
+                : isBoarded
+                  ? t("driverRide.inRide")
+                  : rideStarted
+                    ? t("driverRide.notBoardedYet")
+                    : t("driverRide.accepted")}
+            </Text>
+          </View>
+
+          {isDropped && (
+            <View style={isUnpaidLeg ? styles.unpaidBadge : styles.droppedBadge}>
+              <Text
+                style={isUnpaidLeg ? styles.unpaidBadgeText : styles.droppedBadgeText}
+                maxFontSizeMultiplier={FONT_CAP.chrome}
+              >
+                {isUnpaidLeg ? t("driverRide.unpaidLeg") : t("driverRide.droppedOff")}
+              </Text>
+            </View>
+          )}
+        </View>
+
+        {/* Where to go */}
+        {!isDropped && stop && (
+          <View style={styles.stopCardWhere}>
+            <Text style={styles.stopCardLabel} maxFontSizeMultiplier={FONT_CAP.chrome}>
+              {isBoarded ? t("driverRide.dropoffAddress") : t("driverRide.pickupAddress")}
+            </Text>
+            <Text style={styles.stopCardAddress} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.body}>
+              📍 {address ?? t("driverRide.addressUnavailable")}
+            </Text>
+            {!isBoarded && (
+              <Text style={styles.stopCardStaticNote} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.chrome}>
+                {t("driverRide.pickupStaticNote")}
+              </Text>
+            )}
+            <Text style={styles.stopCardEta} maxFontSizeMultiplier={FONT_CAP.chrome}>
+              {eta ?? (route.loading ? "…" : t("driverRide.etaUnavailable"))}
+            </Text>
+          </View>
+        )}
+
+        {/* How to reach them. A driver standing outside the wrong door needs
+            this more than any other thing on the card.
+
+            `phone` is already null for a dropped passenger (see above), and the
+            card renders "no number shared" for null — so the visibility rule
+            stays in one place rather than being restated by this branch. */}
+        {!isDropped && (
+          <ContactCard
+            phone={phone}
+            name={profile?.name}
+            onCall={() => void openContactUri(telUri(phone ?? ""))}
+            onText={() => void openContactUri(smsUri(phone ?? ""))}
+            stacked={shouldStack}
+          />
+        )}
+
+        {/* Actions */}
+        {!isDropped && (
+          <View style={[styles.stopCardActions, shouldStack && styles.stopCardActionsStacked]}>
+            {stop && (
+              <TouchableOpacity
+                style={[styles.navigateBtn, shouldStack && styles.stopCardActionStacked]}
+                onPress={() => openGoogleMaps(buildRouteCoords(false))}
+                activeOpacity={0.8}
+              >
+                <Text style={{ fontSize: 14 }} allowFontScaling={false}>🧭</Text>
+                <Text style={styles.navigateBtnText} maxFontSizeMultiplier={FONT_CAP.action}>
+                  {t("driverRide.navigate")}
+                </Text>
+              </TouchableOpacity>
+            )}
+            {isBoarded ? (
+              <TouchableOpacity
+                style={[styles.dropoffBtn, styles.stopCardSecondaryAction, shouldStack && styles.stopCardActionStacked, busy && styles.btnDisabled]}
+                onPress={() => dropOffPassenger(pid)}
+                disabled={busy}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.dropoffBtnText} maxFontSizeMultiplier={FONT_CAP.chrome}>
+                  {t("driverRide.dropOff")}
+                </Text>
+              </TouchableOpacity>
+            ) : rideStarted ? (
+              // Never boarded — let the driver resolve them as a no-show so the
+              // ride can still be ended (no softlock).
+              <TouchableOpacity
+                style={[styles.noShowBtn, styles.stopCardSecondaryAction, shouldStack && styles.stopCardActionStacked, busy && styles.btnDisabled]}
+                onPress={() => markNoShow(pid)}
+                disabled={busy}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.noShowBtnText} maxFontSizeMultiplier={FONT_CAP.chrome}>
+                  {t("driverRide.noShow")}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        )}
+      </View>
+    );
+  }
+
+  const avatarBox = scaleBox(36);
+  const panelPad = isNarrow ? 12 : 16;
 
   return (
     <View style={styles.root}>
       <StatusBar style="light" />
 
       {/* Header — dark glass (frosted blur + scrim), no gradient */}
-      <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
+      <View style={[styles.header, { paddingTop: insets.top + 16, paddingHorizontal: isNarrow ? 14 : 20 }]}>
         <BlurView intensity={40} tint="dark" experimentalBlurMethod="dimezisBlurView" style={StyleSheet.absoluteFill} pointerEvents="none" />
         <View style={styles.headerScrim} pointerEvents="none" />
-        <View style={styles.headerTopRow}>
+        <View style={[styles.headerTopRow, shouldStack && styles.headerRowStacked]}>
           <View style={styles.headerLeft}>
             <View style={styles.liveDot} />
-            <Text style={styles.headerTitle}>{t("driverRide.headerTitle")}</Text>
+            <Text style={styles.headerTitle} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.body}>{t("driverRide.headerTitle")}</Text>
           </View>
-          <View style={styles.modeBadge}>
-            <Text style={{fontSize: 12}}>🚗</Text>
-            <Text style={styles.modeBadgeText}>{rideStarted ? t("driverRide.inProgress") : t("driverRide.waiting")}</Text>
+          <View style={[styles.modeBadge, !shouldStack && styles.badgeInline]}>
+            <Text style={{fontSize: 12}} allowFontScaling={false}>🚗</Text>
+            <Text style={styles.modeBadgeText} maxFontSizeMultiplier={FONT_CAP.chrome}>{rideStarted ? t("driverRide.inProgress") : t("driverRide.waiting")}</Text>
           </View>
         </View>
-        <View style={styles.headerBottomRow}>
-          <Text style={styles.headerDestination} numberOfLines={1}>
+        <View style={[styles.headerBottomRow, shouldStack && styles.headerRowStacked]}>
+          <Text style={styles.headerDestination} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.body}>
             {Destination ? decodeURIComponent(Destination) : `${DestinationLat}, ${DestinationLng}`}
           </Text>
-          <View style={styles.headerPaxPill}>
-            <Text style={{fontSize: 11}}>👥</Text>
-            <Text style={styles.headerPaxText}>
+          <View style={[styles.headerPaxPill, !shouldStack && styles.badgeInline]}>
+            <Text style={{fontSize: 11}} allowFontScaling={false}>👥</Text>
+            <Text style={styles.headerPaxText} maxFontSizeMultiplier={FONT_CAP.chrome}>
               {passengers.length} {t("driverRide.acceptedCount")}
             </Text>
           </View>
@@ -852,29 +1177,64 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
       <View style={styles.mapContainer}>
         <DriverRideMapView
           origin={originCoords}
+          driverLocation={myLocation ?? undefined}
           destination={destCoords}
           passengers={passengers}
           pendingLocations={pendingLocations}
           passengerPickups={passengerPickups}
           passengerDropoffs={passengerDropoffs}
-          frozenPolyline={frozenPolyline}
+          passengerNames={passengerNames}
+          labels={{
+            driver: t("driverRide.legendYou"),
+            pickup: t("driverRide.pickupAddress"),
+            dropoff: t("driverRide.dropoffAddress"),
+            destination: t("driverRide.destination"),
+          }}
+          // Before the ride starts this is the live route to the pickup; once it
+          // starts the polyline is frozen at the agreed multi-stop route — with
+          // the live one as a fallback, so a failed Directions call at start
+          // leaves a route on screen rather than a bare set of pins.
+          frozenPolyline={rideStarted ? (frozenPolyline ?? route.polyline) : route.polyline}
         />
+
+        {/* Legend. Lives here rather than inside the map component so it renders
+            identically on Apple Maps (iOS), where customMapStyle is a no-op. */}
+        <View style={styles.mapLegend} pointerEvents="none">
+          <View style={styles.legendItem}>
+            <View style={[styles.legendDot, { backgroundColor: C.blue }]} />
+            <Text style={styles.legendText} numberOfLines={1} maxFontSizeMultiplier={FONT_CAP.chrome}>
+              {t("driverRide.legendYou")}
+            </Text>
+          </View>
+          <View style={styles.legendItem}>
+            <View style={[styles.legendDot, { backgroundColor: C.success }]} />
+            <Text style={styles.legendText} numberOfLines={1} maxFontSizeMultiplier={FONT_CAP.chrome}>
+              {t("driverRide.legendPickup")}
+            </Text>
+          </View>
+          <View style={styles.legendItem}>
+            <View style={[styles.legendDot, { backgroundColor: C.purple }]} />
+            <Text style={styles.legendText} numberOfLines={1} maxFontSizeMultiplier={FONT_CAP.chrome}>
+              {t("driverRide.legendDropoff")}
+            </Text>
+          </View>
+        </View>
       </View>
 
       {!rideStarted ? (
         /* ── Pre-Start Panel ── */
-        <View style={[styles.panel, { paddingBottom: insets.bottom + 16 }]}>
+        <View style={[styles.panel, { paddingBottom: insets.bottom + 16, paddingHorizontal: panelPad }]}>
           <BlurView intensity={55} tint="dark" experimentalBlurMethod="dimezisBlurView" style={styles.panelGlass} pointerEvents="none" />
           <View style={styles.panelScrim} pointerEvents="none" />
           {/* Pending Join Requests */}
           {pendingRequests.length > 0 && (
             <>
-              <Text style={styles.sectionTitle}>{t("driverRide.joinRequests")}</Text>
-              <ScrollView style={styles.passengerList} nestedScrollEnabled>
+              <Text style={styles.sectionTitle} maxFontSizeMultiplier={FONT_CAP.body}>{t("driverRide.joinRequests")}</Text>
+              <ScrollView style={[styles.passengerList, { maxHeight: listMaxHeight }]} nestedScrollEnabled>
                 {pendingRequests.map((req) => (
-                  <View key={req.passengerId} style={styles.requestCard}>
+                  <View key={req.passengerId} style={[styles.requestCard, shouldStack && styles.passengerCardStacked]}>
                     <TouchableOpacity
-                      style={styles.avatarPlaceholder}
+                      style={[styles.avatarPlaceholder, { width: avatarBox, height: avatarBox, borderRadius: avatarBox / 2 }]}
                       onPress={() => openPassengerProfile(req.passengerId)}
                       activeOpacity={0.7}
                     >
@@ -886,79 +1246,55 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
                           cachePolicy="memory-disk"
                         />
                       ) : (
-                        <Text style={{fontSize: 16}}>🙋</Text>
+                        <Text style={{fontSize: 16}} allowFontScaling={false}>🙋</Text>
                       )}
                     </TouchableOpacity>
-                    <View style={styles.passengerInfo}>
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                        <Text style={styles.passengerIdText} numberOfLines={1}>
+                    <View style={[styles.passengerInfo, shouldStack && styles.passengerInfoStacked]}>
+                      <View style={styles.passengerNameRow}>
+                        <Text style={styles.passengerIdText} numberOfLines={1} maxFontSizeMultiplier={FONT_CAP.body}>
                           {passengerProfiles[req.passengerId]?.name ?? req.passengerId.slice(0, 12) + "..."}
                         </Text>
                         <CertBadges certifications={passengerProfiles[req.passengerId]?.certifications} size="compact" hideWhenEmpty />
                       </View>
-                      <Text style={styles.passengerSubtext}>{t("driverRide.wantsToJoin")}</Text>
+                      <Text style={styles.passengerSubtext} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("driverRide.wantsToJoin")}</Text>
                     </View>
-                    <TouchableOpacity
-                      onPress={() => handleAcceptRequest(req.passengerId)}
-                      style={styles.acceptBtn}
-                      disabled={loading}
-                      activeOpacity={0.8}
-                    >
-                      <Text style={{fontSize: 14}}>✅</Text>
-                      <Text style={styles.acceptText}>{t("driverRide.accept")}</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      onPress={() => handleRejectRequest(req.passengerId)}
-                      style={styles.kickBtn}
-                      disabled={loading}
-                      activeOpacity={0.8}
-                    >
-                      <Text style={{fontSize: 14}}>✕</Text>
-                    </TouchableOpacity>
+                    <View style={styles.rowActions}>
+                      <TouchableOpacity
+                        onPress={() => handleAcceptRequest(req.passengerId)}
+                        style={styles.acceptBtn}
+                        disabled={loading}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={{fontSize: 14}} allowFontScaling={false}>✅</Text>
+                        <Text style={styles.acceptText} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("driverRide.accept")}</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => handleRejectRequest(req.passengerId)}
+                        style={styles.kickBtn}
+                        disabled={loading}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={{fontSize: 14}} allowFontScaling={false}>✕</Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
                 ))}
               </ScrollView>
             </>
           )}
 
-          {/* Accepted Passengers */}
+          {/* Accepted Passengers — the "where do I go and who am I getting" card */}
           {passengers.length > 0 ? (
             <>
-              <Text style={styles.sectionTitle}>{t("driverRide.acceptedPassengers")}</Text>
-              <ScrollView style={styles.passengerList} nestedScrollEnabled>
+              <Text style={styles.sectionTitle} maxFontSizeMultiplier={FONT_CAP.body}>{t("driverRide.acceptedPassengers")}</Text>
+              <ScrollView style={[styles.passengerList, { maxHeight: panelMaxHeight(0.42) }]} nestedScrollEnabled>
                 {passengers.map((pid) => (
-                  <View key={pid} style={styles.passengerCard}>
-                    <TouchableOpacity
-                      style={styles.avatarPlaceholder}
-                      onPress={() => openPassengerProfile(pid)}
-                      activeOpacity={0.7}
-                    >
-                      {passengerProfiles[pid]?.avatar ? (
-                        <ExpoImage
-                          source={{ uri: passengerProfiles[pid].avatar! }}
-                          style={styles.avatarThumb}
-                          contentFit="cover"
-                          cachePolicy="memory-disk"
-                        />
-                      ) : (
-                        <Text style={{fontSize: 16}}>👤</Text>
-                      )}
-                    </TouchableOpacity>
-                    <View style={styles.passengerInfo}>
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                        <Text style={styles.passengerIdText} numberOfLines={1}>
-                          {passengerProfiles[pid]?.name ?? pid.slice(0, 12) + "..."}
-                        </Text>
-                        <CertBadges certifications={passengerProfiles[pid]?.certifications} size="compact" hideWhenEmpty />
-                      </View>
-                      <Text style={styles.passengerSubtext}>{t("driverRide.accepted")}</Text>
-                    </View>
-                  </View>
+                  <PassengerStopCard key={pid} passengerId={pid} />
                 ))}
               </ScrollView>
             </>
           ) : pendingRequests.length === 0 ? (
-            <Text style={styles.waitingText}>{t("driverRide.waitingForPassengers")}</Text>
+            <Text style={styles.waitingText} maxFontSizeMultiplier={FONT_CAP.body}>{t("driverRide.waitingForPassengers")}</Text>
           ) : null}
 
           {/* Show Boarding QR */}
@@ -968,8 +1304,8 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
               activeOpacity={0.8}
               style={styles.primaryBtn}
             >
-              <Text style={[{fontSize: 16}, { marginRight: 6 }]}>📱</Text>
-              <Text style={styles.btnText}>{t("driverRide.showBoardingQr")}</Text>
+              <Text style={[{fontSize: 16}, { marginRight: 6 }]} allowFontScaling={false}>📱</Text>
+              <Text style={styles.btnText} maxFontSizeMultiplier={FONT_CAP.action}>{t("driverRide.showBoardingQr")}</Text>
             </TouchableOpacity>
           )}
 
@@ -978,7 +1314,7 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
           {pendingConfirmation.length > 0 ? (
             <View style={[styles.primaryBtn, styles.btnDisabled, styles.waitingConfirmChip]}>
               <ActivityIndicator size="small" color="#e09af7" style={{ marginRight: 8 }} />
-              <Text style={styles.waitingConfirmText}>{t("driverRide.waitingForRiderConfirm")}</Text>
+              <Text style={styles.waitingConfirmText} maxFontSizeMultiplier={FONT_CAP.action}>{t("driverRide.waitingForRiderConfirm")}</Text>
             </View>
           ) : (
             <TouchableOpacity
@@ -987,8 +1323,8 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
               activeOpacity={0.8}
               style={[styles.primaryBtn, (loading || passengers.length === 0) && styles.btnDisabled]}
             >
-              <Text style={[{fontSize: 16}, { marginRight: 6 }]}>🧭</Text>
-              <Text style={styles.btnText}>{t("driverRide.startRide")}</Text>
+              <Text style={[{fontSize: 16}, { marginRight: 6 }]} allowFontScaling={false}>🧭</Text>
+              <Text style={styles.btnText} maxFontSizeMultiplier={FONT_CAP.action}>{t("driverRide.startRide")}</Text>
             </TouchableOpacity>
           )}
 
@@ -999,95 +1335,25 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
             disabled={loading}
             activeOpacity={0.8}
           >
-            <Text style={styles.btnText}>{t("driverRide.cancelRide")}</Text>
+            <Text style={styles.btnText} maxFontSizeMultiplier={FONT_CAP.action}>{t("driverRide.cancelRide")}</Text>
           </TouchableOpacity>
         </View>
       ) : (
         /* ── In-Progress Panel ── */
-        <View style={[styles.panel, { paddingBottom: insets.bottom + 16 }]}>
+        <View style={[styles.panel, { paddingBottom: insets.bottom + 16, paddingHorizontal: panelPad }]}>
           <BlurView intensity={55} tint="dark" experimentalBlurMethod="dimezisBlurView" style={styles.panelGlass} pointerEvents="none" />
           <View style={styles.panelScrim} pointerEvents="none" />
           <View style={styles.infoCard}>
-            <Text style={[styles.infoLabel, { color: C.success }]}>{t("driverRide.rideInProgress")}</Text>
-            <Text style={styles.waitingText}>{t("driverRide.locationShared")}</Text>
+            <Text style={[styles.infoLabel, { color: C.success }]} maxFontSizeMultiplier={FONT_CAP.body}>{t("driverRide.rideInProgress")}</Text>
+            <Text style={styles.waitingText} maxFontSizeMultiplier={FONT_CAP.body}>{t("driverRide.locationShared")}</Text>
           </View>
 
           {/* Passenger drop-off list */}
           {passengers.length > 0 && (
-            <ScrollView style={styles.passengerList} nestedScrollEnabled>
-              {passengers.map((pid) => {
-                const isDropped = droppedPassengers.includes(pid);
-                const isBoarded = boardedPassengers.includes(pid);
-                // Dropped but out of range of their destination ⇒ this leg pays
-                // nothing. Surface it now, not after the ride is over.
-                const isUnpaidLeg = isDropped && isBoarded && !confirmedDropoffs.includes(pid);
-                return (
-                  <View key={pid} style={styles.passengerCard}>
-                    <TouchableOpacity
-                      style={styles.avatarPlaceholder}
-                      onPress={() => openPassengerProfile(pid)}
-                      activeOpacity={0.7}
-                    >
-                      {passengerProfiles[pid]?.avatar ? (
-                        <ExpoImage
-                          source={{ uri: passengerProfiles[pid].avatar! }}
-                          style={styles.avatarThumb}
-                          contentFit="cover"
-                          cachePolicy="memory-disk"
-                        />
-                      ) : (
-                        <Text style={{fontSize: 16}}>👤</Text>
-                      )}
-                    </TouchableOpacity>
-                    <View style={styles.passengerInfo}>
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                        <Text style={styles.passengerIdText} numberOfLines={1}>
-                          {passengerProfiles[pid]?.name ?? pid.slice(0, 12) + "..."}
-                        </Text>
-                        <CertBadges certifications={passengerProfiles[pid]?.certifications} size="compact" hideWhenEmpty />
-                      </View>
-                      <Text style={styles.passengerSubtext}>
-                        {isDropped
-                          ? t("driverRide.droppedOff")
-                          : isBoarded
-                            ? t("driverRide.inRide")
-                            : t("driverRide.notBoardedYet")}
-                      </Text>
-                    </View>
-                    {isDropped ? (
-                      <View style={isUnpaidLeg ? styles.unpaidBadge : styles.droppedBadge}>
-                        <Text style={isUnpaidLeg ? styles.unpaidBadgeText : styles.droppedBadgeText}>
-                          {isUnpaidLeg ? t("driverRide.unpaidLeg") : t("driverRide.droppedOff")}
-                        </Text>
-                      </View>
-                    ) : isBoarded ? (
-                      <TouchableOpacity
-                        style={[
-                          styles.dropoffBtn,
-                          (loading || paymentProcessing) && styles.btnDisabled,
-                        ]}
-                        onPress={() => dropOffPassenger(pid)}
-                        disabled={loading || paymentProcessing}
-                      >
-                        <Text style={styles.dropoffBtnText}>{t("driverRide.dropOff")}</Text>
-                      </TouchableOpacity>
-                    ) : (
-                      // Never boarded — let the driver resolve them as a no-show so
-                      // the ride can still be ended (no softlock).
-                      <TouchableOpacity
-                        style={[
-                          styles.noShowBtn,
-                          (loading || paymentProcessing) && styles.btnDisabled,
-                        ]}
-                        onPress={() => markNoShow(pid)}
-                        disabled={loading || paymentProcessing}
-                      >
-                        <Text style={styles.noShowBtnText}>{t("driverRide.noShow")}</Text>
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                );
-              })}
+            <ScrollView style={[styles.passengerList, { maxHeight: panelMaxHeight(0.42) }]} nestedScrollEnabled>
+              {passengers.map((pid) => (
+                <PassengerStopCard key={pid} passengerId={pid} />
+              ))}
             </ScrollView>
           )}
 
@@ -1102,8 +1368,8 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
               }}
               activeOpacity={0.8}
             >
-              <Text style={{fontSize: 14}}>🗺</Text>
-              <Text style={styles.secondaryBtnText}>{t("driverRide.reopenMaps")}</Text>
+              <Text style={{fontSize: 14}} allowFontScaling={false}>🗺</Text>
+              <Text style={styles.secondaryBtnText} maxFontSizeMultiplier={FONT_CAP.action}>{t("driverRide.reopenMaps")}</Text>
             </TouchableOpacity>
           )}
 
@@ -1114,14 +1380,14 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
               activeOpacity={0.8}
               style={styles.primaryBtn}
             >
-              <Text style={[{fontSize: 16}, { marginRight: 6 }]}>📱</Text>
-              <Text style={styles.btnText}>{t("driverRide.showQrCode")}</Text>
+              <Text style={[{fontSize: 16}, { marginRight: 6 }]} allowFontScaling={false}>📱</Text>
+              <Text style={styles.btnText} maxFontSizeMultiplier={FONT_CAP.action}>{t("driverRide.showQrCode")}</Text>
             </TouchableOpacity>
           )}
 
           {paymentProcessing && (
             <View style={styles.infoCard}>
-              <Text style={[styles.waitingText, { color: C.gold }]}>{t("driverRide.processingPayment")}</Text>
+              <Text style={[styles.waitingText, { color: C.gold }]} maxFontSizeMultiplier={FONT_CAP.body}>{t("driverRide.processingPayment")}</Text>
             </View>
           )}
 
@@ -1145,7 +1411,7 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
                 );
               }}
             >
-              <Text style={styles.btnText}>{t("driverRide.endRide")}</Text>
+              <Text style={styles.btnText} maxFontSizeMultiplier={FONT_CAP.action}>{t("driverRide.endRide")}</Text>
             </TouchableOpacity>
           )}
 
@@ -1156,7 +1422,7 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
             activeOpacity={0.8}
             onPress={cancelRide}
           >
-            <Text style={styles.cancelInlineText}>{t("driverRide.cancelRide")}</Text>
+            <Text style={styles.cancelInlineText} maxFontSizeMultiplier={FONT_CAP.action}>{t("driverRide.cancelRide")}</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -1189,13 +1455,17 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
           activeOpacity={1}
           onPress={() => setProfileModal(null)}
         >
-          <TouchableOpacity activeOpacity={1} style={styles.profileSheet}>
+          <TouchableOpacity activeOpacity={1} style={[styles.profileSheet, { maxHeight: panelMaxHeight(0.85) }]}>
             {profileLoading ? (
               <View style={styles.profileLoadingWrap}>
-                <Text style={styles.profileLoadingText}>{t("common.loading")}</Text>
+                <Text style={styles.profileLoadingText} maxFontSizeMultiplier={FONT_CAP.body}>{t("common.loading")}</Text>
               </View>
             ) : profileModal ? (
-              <>
+              <ScrollView
+                contentContainerStyle={styles.profileScrollContent}
+                bounces={false}
+                showsVerticalScrollIndicator={false}
+              >
                 {/* Avatar */}
                 <View style={styles.profileAvatarWrap}>
                   {profileModal.avatar ? (
@@ -1207,28 +1477,28 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
                     />
                   ) : (
                     <View style={[styles.profileAvatar, styles.profileAvatarFallback]}>
-                      <Text style={{ fontSize: 32 }}>👤</Text>
+                      <Text style={{ fontSize: 32 }} allowFontScaling={false}>👤</Text>
                     </View>
                   )}
                 </View>
 
                 {/* Name + XP */}
-                <Text style={styles.profileName}>{profileModal.name}</Text>
+                <Text style={styles.profileName} maxFontSizeMultiplier={FONT_CAP.display}>{profileModal.name}</Text>
                 <View style={{ alignItems: "center", marginTop: 8 }}>
                   <CertBadges certifications={profileModal.certifications} size="full" />
                 </View>
                 <View style={styles.profileXpRow}>
-                  <Text style={styles.profileXpText}>⚡ {profileModal.xp} XP</Text>
+                  <Text style={styles.profileXpText} maxFontSizeMultiplier={FONT_CAP.chrome}>⚡ {profileModal.xp} XP</Text>
                   {profileModal.rating > 0 && (
-                    <Text style={styles.profileRatingText}>⭐ {profileModal.rating.toFixed(1)}</Text>
+                    <Text style={styles.profileRatingText} maxFontSizeMultiplier={FONT_CAP.chrome}>⭐ {profileModal.rating.toFixed(1)}</Text>
                   )}
                 </View>
 
                 {/* Stats */}
                 <View style={styles.profileStatsRow}>
                   <View style={styles.profileStat}>
-                    <Text style={styles.profileStatVal}>{profileModal.ridesCompleted}</Text>
-                    <Text style={styles.profileStatLabel}>{t("driverRide.profileRides")}</Text>
+                    <Text style={styles.profileStatVal} maxFontSizeMultiplier={FONT_CAP.display}>{profileModal.ridesCompleted}</Text>
+                    <Text style={styles.profileStatLabel} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("driverRide.profileRides")}</Text>
                   </View>
                 </View>
 
@@ -1236,20 +1506,20 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
                 <View style={styles.profileInfoList}>
                   {profileModal.school ? (
                     <View style={styles.profileInfoRow}>
-                      <Text style={styles.profileInfoIcon}>🎓</Text>
-                      <Text style={styles.profileInfoText}>{profileModal.school}</Text>
+                      <Text style={styles.profileInfoIcon} allowFontScaling={false}>🎓</Text>
+                      <Text style={styles.profileInfoText} maxFontSizeMultiplier={FONT_CAP.body}>{profileModal.school}</Text>
                     </View>
                   ) : null}
                   {profileModal.age ? (
                     <View style={styles.profileInfoRow}>
-                      <Text style={styles.profileInfoIcon}>🎂</Text>
-                      <Text style={styles.profileInfoText}>{t("driverRide.profileAge", { age: profileModal.age })}</Text>
+                      <Text style={styles.profileInfoIcon} allowFontScaling={false}>🎂</Text>
+                      <Text style={styles.profileInfoText} maxFontSizeMultiplier={FONT_CAP.body}>{t("driverRide.profileAge", { age: profileModal.age })}</Text>
                     </View>
                   ) : null}
                   {profileModal.instagramHandle ? (
                     <View style={styles.profileInfoRow}>
-                      <Text style={styles.profileInfoIcon}>📷</Text>
-                      <Text style={styles.profileInfoText}>@{profileModal.instagramHandle}</Text>
+                      <Text style={styles.profileInfoIcon} allowFontScaling={false}>📷</Text>
+                      <Text style={styles.profileInfoText} maxFontSizeMultiplier={FONT_CAP.body}>@{profileModal.instagramHandle}</Text>
                     </View>
                   ) : null}
                 </View>
@@ -1258,9 +1528,9 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
                   style={styles.profileCloseBtn}
                   onPress={() => setProfileModal(null)}
                 >
-                  <Text style={styles.profileCloseBtnText}>{t("common.close")}</Text>
+                  <Text style={styles.profileCloseBtnText} maxFontSizeMultiplier={FONT_CAP.action}>{t("common.close")}</Text>
                 </TouchableOpacity>
-              </>
+              </ScrollView>
             ) : null}
           </TouchableOpacity>
         </TouchableOpacity>
@@ -1272,14 +1542,13 @@ const [profileModal, setProfileModal] = useState<PassengerProfile | null>(null);
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
   header: {
-    paddingHorizontal: 20,
     paddingBottom: 18,
     gap: 12,
     overflow: "hidden",
     borderBottomWidth: 1,
     borderBottomColor: "rgba(255,255,255,0.10)",
   },
-  headerScrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(10,8,18,0.86)" },
+  headerScrim: { ...StyleSheet.absoluteFill, backgroundColor: "rgba(10,8,18,0.86)" },
   headerTopRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1291,8 +1560,21 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 10,
   },
+  // Large text: the title/destination and its pill each get a line.
+  headerRowStacked: {
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: 8,
+  },
+  // Inline pills must not outgrow their share of the row, and must not be the
+  // element squeezed to nothing either.
+  badgeInline: {
+    flexShrink: 0,
+    maxWidth: "55%",
+  },
   headerDestination: {
-    flex: 1,
+    flexGrow: 1,
+    flexShrink: 1,
     color: C.text,
     fontSize: 15,
     fontWeight: "700",
@@ -1312,6 +1594,8 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   headerLeft: {
+    flexGrow: 1,
+    flexShrink: 1,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
@@ -1320,9 +1604,11 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
+    flexShrink: 0,
     backgroundColor: C.success,
   },
   headerTitle: {
+    flexShrink: 1,
     fontSize: 16,
     fontWeight: "bold",
     color: C.text,
@@ -1349,7 +1635,6 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: "rgba(255,255,255,0.14)",
     overflow: "hidden",
-    paddingHorizontal: 16,
     paddingTop: 18,
     paddingBottom: 16,
     gap: 10,
@@ -1357,8 +1642,8 @@ const styles = StyleSheet.create({
     marginTop: -28,
   },
   // Frosted blur + dark scrim guarantee text contrast over any map content.
-  panelGlass: { ...StyleSheet.absoluteFillObject },
-  panelScrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(10,8,18,0.78)" },
+  panelGlass: { ...StyleSheet.absoluteFill },
+  panelScrim: { ...StyleSheet.absoluteFill, backgroundColor: "rgba(10,8,18,0.78)" },
   infoCard: {
     backgroundColor: "rgba(255,255,255,0.06)",
     borderRadius: 14,
@@ -1380,15 +1665,18 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   infoLabel: {
-    flex: 1,
+    flexGrow: 1,
+    flexShrink: 1,
     fontSize: 13,
     color: C.muted,
   },
   infoValue: {
+    flexShrink: 1,
     fontSize: 13,
     color: C.text,
     fontWeight: "600",
     maxWidth: "50%",
+    textAlign: "right",
   },
   sectionTitle: {
     fontSize: 13,
@@ -1396,9 +1684,119 @@ const styles = StyleSheet.create({
     color: C.purpleLight,
     marginTop: 4,
   },
-  passengerList: {
-    maxHeight: 140,
+  // maxHeight is supplied per-render from useResponsive() so the list tracks the
+  // text size instead of clipping to a flat 140pt.
+  passengerList: {},
+
+  // ── Passenger stop card ───────────────────────────────────────────────────
+  // Replaces the old one-line row: a driver needs the address, the distance and
+  // a way to start navigating, not just a name.
+  stopCard: {
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: C.borderFaint,
+    padding: 12,
+    marginVertical: 4,
+    gap: 10,
   },
+  stopCardHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  stopCardIdentity: { flex: 1, gap: 2 },
+  stopCardRating: {
+    color: C.gold,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  stopCardWhere: {
+    gap: 3,
+    borderLeftWidth: 2,
+    borderLeftColor: C.success,
+    paddingLeft: 10,
+  },
+  stopCardLabel: {
+    color: C.dim,
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+  },
+  stopCardAddress: {
+    color: C.text,
+    fontSize: 13.5,
+    fontWeight: "600",
+    lineHeight: 19,
+  },
+  // Deliberately quiet but always present: the pickup pin never moves, and a
+  // driver must not read it as live tracking.
+  stopCardStaticNote: {
+    color: C.dim,
+    fontSize: 10.5,
+    fontStyle: "italic",
+    lineHeight: 15,
+  },
+  stopCardEta: {
+    color: C.purpleLight,
+    fontSize: 13,
+    fontWeight: "800",
+    marginTop: 2,
+  },
+  stopCardActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  stopCardActionsStacked: { flexDirection: "column", alignItems: "stretch" },
+  // Matches navigateBtn's height so the action row reads as one control group.
+  stopCardSecondaryAction: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 10,
+    borderRadius: 12,
+  },
+  stopCardActionStacked: { width: "100%" },
+  navigateBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: C.purple,
+  },
+  navigateBtnText: {
+    flexShrink: 1,
+    textAlign: "center",
+    color: C.text,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+
+  // ── Map legend ────────────────────────────────────────────────────────────
+  mapLegend: {
+    position: "absolute",
+    left: 12,
+    bottom: 12,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: "rgba(8,8,16,0.72)",
+    borderWidth: 1,
+    borderColor: C.borderFaint,
+  },
+  legendItem: { flexDirection: "row", alignItems: "center", gap: 5 },
+  legendDot: { width: 7, height: 7, borderRadius: 4 },
+  legendText: { color: C.muted, fontSize: 10.5, fontWeight: "600" },
+
   passengerCard: {
     flexDirection: "row",
     alignItems: "center",
@@ -1419,25 +1817,47 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(251,191,36,0.3)",
   },
+  // Large text: avatar + name on the first line, actions on their own line.
+  passengerCardStacked: {
+    flexWrap: "wrap",
+    rowGap: 8,
+  },
+  passengerInfoStacked: {
+    minWidth: "60%",
+  },
+  passengerNameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flexWrap: "wrap",
+  },
+  rowActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flexShrink: 0,
+  },
+  rowActionInline: {
+    flexShrink: 0,
+    maxWidth: "45%",
+  },
   avatarPlaceholder: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
     backgroundColor: "rgba(137,56,213,0.15)",
     justifyContent: "center",
     alignItems: "center",
     marginRight: 10,
     overflow: "hidden",
   },
+  // Fills the placeholder, which is sized from useResponsive().
   avatarThumb: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: "100%",
+    height: "100%",
   },
   passengerInfo: {
     flex: 1,
   },
   passengerIdText: {
+    flexShrink: 1,
     fontSize: 13,
     color: C.text,
     fontWeight: "600",
@@ -1454,9 +1874,10 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: "rgba(52,211,153,0.12)",
     alignItems: "center",
-    marginRight: 6,
+    flexShrink: 1,
   },
   acceptText: {
+    flexShrink: 1,
     fontSize: 12,
     color: C.success,
     fontWeight: "600",
@@ -1484,7 +1905,9 @@ const styles = StyleSheet.create({
   primaryBtn: {
     backgroundColor: C.purple,
     borderRadius: 16,
-    paddingVertical: 18,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    minHeight: 56,
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
@@ -1497,10 +1920,15 @@ const styles = StyleSheet.create({
   dangerBtn: {
     backgroundColor: C.danger,
     borderRadius: 16,
-    paddingVertical: 18,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    minHeight: 56,
+    justifyContent: "center",
     alignItems: "center",
   },
   btnText: {
+    flexShrink: 1,
+    textAlign: "center",
     color: "#fff",
     fontWeight: "bold",
     fontSize: 16,
@@ -1533,6 +1961,8 @@ const styles = StyleSheet.create({
     backgroundColor: "transparent",
   },
   secondaryBtnText: {
+    flexShrink: 1,
+    textAlign: "center",
     color: "#8938D5",
     fontSize: 13,
     fontWeight: "600",
@@ -1612,7 +2042,11 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     borderWidth: 1,
     borderColor: "rgba(137,56,213,0.3)",
-    padding: 24,
+    paddingVertical: 24,
+    paddingHorizontal: 20,
+    alignItems: "center",
+  },
+  profileScrollContent: {
     alignItems: "center",
     gap: 12,
   },
@@ -1682,6 +2116,7 @@ const styles = StyleSheet.create({
   profileStatLabel: {
     color: "#9ca3af",
     fontSize: 11,
+    textAlign: "center",
   },
   profileInfoList: {
     width: "100%",

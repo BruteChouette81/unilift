@@ -1,6 +1,6 @@
 export type LatLng = { lat: number; lng: number };
-export type ProjectionResult = { point: LatLng; progress: number };
-export type DetourResult = { detourKm: number; pickupProgress: number };
+type ProjectionResult = { point: LatLng; progress: number };
+type DetourResult = { detourKm: number; pickupProgress: number };
 
 const EARTH_R = 6371;
 

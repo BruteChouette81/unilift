@@ -26,10 +26,21 @@ const OVERWRITE = process.argv.includes("--overwrite");
 // Keep in sync with DEFAULT_PRICING (functions/index.js) and
 // DEFAULT_RIDE_PRICING (constants/pricing.ts).
 const DEFAULT_PRICING = {
-  passengerRateCentsPerKm: 25,
-  driverRateCentsPerKm: 20,
+  passengerRateCentsPerKm: 25,   // charged to the passenger AND credited to the
+                                 // driver — one rate, no platform cut
   minimumChargeCents: 100,
   minimumDistanceKm: 0.5,
+  stripePercentBps: 290,         // 2.90% — Stripe CA standard
+  stripeFixedCents: 30,          // $0.30 per successful charge
+  payoutReserveBps: 0,           // retired; kept at 0 as a rollback lever
+  payoutFeeFlatCents: 225,       // $2.00 Connect active account + $0.25/payout
+  payoutFeeBps: 25,              // Stripe's 0.25% per payout
+  minSettlementCents: 100,       // below this the balance rolls forward
+  minChargeableCents: 50,        // Stripe's CAD minimum — gates account deletion
+  minPayoutCents: 2500,          // $25.00 payout floor
+  maxOutstandingChargeCents: 7500, // $75.00 booking cutoff
+  currency: "cad",
+  operatingFloatCents: 0,        // withheld from what the payout sweeper spends
 };
 
 (async () => {

@@ -1,7 +1,7 @@
 import type { Language } from "@/constants/translations";
 import { useAuth } from "@/context/AuthContext";
 import { useLanguage } from "@/context/LanguageContext";
-import { normalizeAuthError } from "@/services/authService";
+import { resolveAuthError } from "@/services/authService";
 import { registerForPushNotifications, savePushTokenToFirestore, setupNotificationChannel } from "@/services/notificationService";
 import NotificationPromptModal from "@/components/notification-prompt-modal";
 import { Ionicons } from "@expo/vector-icons";
@@ -24,18 +24,20 @@ import {
 import { useProfileData } from "@/hooks/use-profile-data";
 import { useProfileFavorites } from "@/hooks/use-profile-favorites";
 import type { UserProfile } from "@/types/models";
+import { P } from "@/constants/palette";
+import { devWarn } from "@/constants/runtime-config";
 
 // ─── Design Tokens ─────────────────────────────────────────────────────────────
 const C = {
-  bg:          "#080810",
-  surface:     "#0f0f1e",
+  bg:          P.bg,
+  surface:     P.surface,
   border:      "rgba(137, 56, 213, 0.22)",
   borderFaint: "rgba(255, 255, 255, 0.06)",
-  purpleLight: "#e09af7",
-  text:        "#f3f4f6",
-  muted:       "#9ca3af",
-  dim:         "#4b5563",
-  danger:      "#f87171",
+  purpleLight: P.accentLight,
+  text:        P.text,
+  muted:       P.textMuted,
+  dim:         P.textDim,
+  danger:      P.danger,
 };
 
 // ─── Section Header ────────────────────────────────────────────────────────────
@@ -168,7 +170,7 @@ export default function SettingsScreen() {
       const { status } = await Notifications.getPermissionsAsync();
       setNotifStatus(status);
     } catch (err) {
-      console.warn("Enabling notifications failed:", err);
+      devWarn("Enabling notifications failed:", err);
     } finally {
       setNotifEnabling(false);
       setNotifModalVisible(false);
@@ -194,7 +196,7 @@ export default function SettingsScreen() {
       await signOutUser();
       router.replace("/(auth)/login");
     } catch (err) {
-      const authError = normalizeAuthError(err, t("profile.account.logoutFailed"));
+      const authError = resolveAuthError(err, t, t("profile.account.logoutFailed"));
       if (authError.retryable) {
         Alert.alert(authError.title, authError.message, [
           { text: t("common.cancel"), style: "cancel" },
@@ -269,7 +271,7 @@ export default function SettingsScreen() {
           value={name || undefined}
           onPress={() =>
             router.push(
-              `/profileSettings?name=${encodeURIComponent(name ?? "")}&birthDate=${encodeURIComponent(safeUserData.birthDate ?? "")}&school=${encodeURIComponent(safeUserData.school ?? "")}`,
+              `/profileSettings?name=${encodeURIComponent(name ?? "")}&birthDate=${encodeURIComponent(safeUserData.birthDate ?? "")}&school=${encodeURIComponent(safeUserData.school ?? "")}&phone=${encodeURIComponent(safeUserData.phone ?? "")}`,
             )
           }
         />

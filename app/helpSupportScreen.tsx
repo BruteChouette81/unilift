@@ -12,18 +12,19 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { P } from "@/constants/palette";
 
 const C = {
-  bg:          "#080810",
-  surface:     "#0f0f1e",
-  surfaceAlt:  "#13132a",
+  bg:          P.bg,
+  surface:     P.surface,
+  surfaceAlt:  P.surfaceRaised,
   border:      "rgba(137, 56, 213, 0.22)",
   borderFaint: "rgba(255, 255, 255, 0.06)",
-  purple:      "#8938D5",
-  purpleLight: "#e09af7",
-  text:        "#f3f4f6",
-  muted:       "#9ca3af",
-  dim:         "#4b5563",
+  purple:      P.accent,
+  purpleLight: P.accentLight,
+  text:        P.text,
+  muted:       P.textMuted,
+  dim:         P.textDim,
 };
 
 export default function HelpSupportScreen() {
@@ -49,7 +50,7 @@ export default function HelpSupportScreen() {
       {/* Content */}
       <View style={styles.content}>
         <View style={styles.iconWrap}>
-          <Text style={{ fontSize: 36 }}>✉️</Text>
+          <Ionicons name="mail-unread-outline" size={36} color={C.purpleLight} />
         </View>
 
         <Text style={styles.title}>{t("profile.support.title")}</Text>
@@ -100,11 +101,11 @@ const styles = StyleSheet.create({
     width: 80,
     height: 80,
     borderRadius: 20,
-    backgroundColor: "rgba(253,22,90,0.1)",
+    backgroundColor: "rgba(137,56,213,0.10)",
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "rgba(253,22,90,0.2)",
+    borderColor: C.border,
     marginBottom: 8,
   },
   title: {

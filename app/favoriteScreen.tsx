@@ -6,7 +6,6 @@ import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { geoSuggestion } from "@/services/rideServices";
 import type { FavoriteRoute } from "@/types/models";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import React, { useEffect, useState } from "react";
 import {
@@ -22,20 +21,21 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { P } from "@/constants/palette";
 
 // ─── Design Tokens (matches profileSettings) ─────────────────────────────────
 const C = {
-  bg:          "#080810",
-  surface:     "#0f0f1e",
-  surfaceAlt:  "#13132a",
+  bg:          P.bg,
+  surface:     P.surface,
+  surfaceAlt:  P.surfaceRaised,
   border:      "rgba(137, 56, 213, 0.22)",
   borderFaint: "rgba(255, 255, 255, 0.06)",
-  purple:      "#8938D5",
-  purpleLight: "#e09af7",
-  text:        "#f3f4f6",
-  muted:       "#9ca3af",
-  dim:         "#4b5563",
-  danger:      "#f87171",
+  purple:      P.accent,
+  purpleLight: P.accentLight,
+  text:        P.text,
+  muted:       P.textMuted,
+  dim:         P.textDim,
+  danger:      P.danger,
   inputBg:     "rgba(255, 255, 255, 0.05)",
   inputBorder: "rgba(137, 56, 213, 0.2)",
   inputFocus:  "rgba(137, 56, 213, 0.7)",
@@ -70,19 +70,29 @@ export default function FavoriteScreen() {
   const [error, setError]                   = useState("");
 
   const debouncedAddress = useDebouncedValue(endAddress, 450);
+  // Primitives, so the effect re-fires only when the position actually moves.
+  const originLat = userData?.localisation?.latitude ?? null;
+  const originLon = userData?.localisation?.longitude ?? null;
 
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
       if (debouncedAddress.length < 2) { setShowSuggestions(false); return; }
-      const results = await geoSuggestion(debouncedAddress.trim());
+      // Capped to MAX_SUGGESTION_DISTANCE_KM around the user's stored position.
+      const results = await geoSuggestion(
+        debouncedAddress.trim(),
+        undefined,
+        originLat != null && originLon != null
+          ? { latitude: originLat, longitude: originLon }
+          : null,
+      );
       if (cancelled) return;
       setSuggestions(results ?? []);
       setShowSuggestions((results?.length ?? 0) > 0);
     };
     void run();
     return () => { cancelled = true; };
-  }, [debouncedAddress]);
+  }, [debouncedAddress, originLat, originLon]);
 
   const onSelectSuggestion = (item: any) => {
     setEndAddress(item.displayName);
@@ -201,7 +211,7 @@ export default function FavoriteScreen() {
         {/* ── Destination ──────────────────────────────────────────────────── */}
         <Text style={styles.label}>{t("favorites.destination")}</Text>
         <View style={[styles.inputRow, inputFocused && styles.inputRowFocused, !!error && styles.inputRowError]}>
-          <Text style={[{ fontSize: 16 }, styles.inputIcon]}>📍</Text>
+          <Ionicons name="location-outline" size={18} color={C.purpleLight} style={styles.inputIcon} />
           <TextInput
             style={styles.textInput}
             value={endAddress}
@@ -213,7 +223,7 @@ export default function FavoriteScreen() {
           />
           {endAddress.length > 0 && (
             <TouchableOpacity onPress={() => { setEndAddress(""); setShowSuggestions(false); setEndGeolocation(undefined); }}>
-              <Text style={{ fontSize: 14, color: C.muted }}>✕</Text>
+              <Ionicons name="close-circle" size={18} color={C.muted} />
             </TouchableOpacity>
           )}
         </View>
@@ -228,7 +238,7 @@ export default function FavoriteScreen() {
                 onPress={() => onSelectSuggestion(item)}
                 style={[styles.suggestionItem, index === suggestions.length - 1 && { borderBottomWidth: 0 }]}
               >
-                <Text style={{ fontSize: 12, marginRight: 8 }}>📍</Text>
+                <Ionicons name="location-outline" size={14} color={C.muted} style={{ marginRight: 8 }} />
                 <Text style={styles.suggestionText} numberOfLines={1}>{item?.displayName}</Text>
               </TouchableOpacity>
             ))}
@@ -236,24 +246,21 @@ export default function FavoriteScreen() {
         )}
 
         {/* ── Save ─────────────────────────────────────────────────────────── */}
-        <Pressable onPress={handleSave} disabled={saving} style={{ marginTop: 32 }}>
-          <LinearGradient
-            colors={["#7C3AED", "#2563eb"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            style={[styles.saveBtn, saving && { opacity: 0.7 }]}
-          >
-            {saving ? (
-              <View style={styles.saveBtnContent}>
-                <ActivityIndicator color="#fff" size="small" />
-                <Text style={[styles.saveBtnText, { marginLeft: 8 }]}>{t("favorites.saving")}</Text>
-              </View>
-            ) : (
-              <Text style={styles.saveBtnText}>
-                {isEditing ? t("favorites.saveChanges") : t("favorites.addFavorite")}
-              </Text>
-            )}
-          </LinearGradient>
+        <Pressable
+          onPress={handleSave}
+          disabled={saving}
+          style={[styles.saveBtn, { marginTop: 32 }, saving && { opacity: 0.7 }]}
+        >
+          {saving ? (
+            <View style={styles.saveBtnContent}>
+              <ActivityIndicator color="#2d0015" size="small" />
+              <Text style={[styles.saveBtnText, { marginLeft: 8 }]}>{t("favorites.saving")}</Text>
+            </View>
+          ) : (
+            <Text style={styles.saveBtnText}>
+              {isEditing ? t("favorites.saveChanges") : t("favorites.addFavorite")}
+            </Text>
+          )}
         </Pressable>
 
         {/* ── Delete (editing only) ─────────────────────────────────────────── */}
@@ -264,7 +271,7 @@ export default function FavoriteScreen() {
             style={styles.deleteBtn}
             activeOpacity={0.8}
           >
-            <Text style={{ fontSize: 13 }}>🗑️</Text>
+            <Ionicons name="trash-outline" size={15} color={C.danger} />
             <Text style={styles.deleteText}>{t("favorites.deleteFavorite")}</Text>
           </TouchableOpacity>
         )}
@@ -379,13 +386,14 @@ const styles = StyleSheet.create({
     borderRadius: 13,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "#e09af7",
   },
   saveBtnContent: {
     flexDirection: "row",
     alignItems: "center",
   },
   saveBtnText: {
-    color: "#fff",
+    color: "#2d0015",
     fontWeight: "700",
     fontSize: 16,
   },

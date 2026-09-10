@@ -12,14 +12,15 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { P } from "@/constants/palette";
 
 const C = {
-  bg:          "#080810",
-  surface:     "#0f0f1e",
+  bg:          P.bg,
+  surface:     P.surface,
   borderFaint: "rgba(255, 255, 255, 0.06)",
-  text:        "#f3f4f6",
-  muted:       "#9ca3af",
-  dim:         "#4b5563",
+  text:        P.text,
+  muted:       P.textMuted,
+  dim:         P.textDim,
 };
 
 export default function PrivacyScreen() {

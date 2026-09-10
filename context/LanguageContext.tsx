@@ -9,7 +9,7 @@ import {
 } from "@/constants/translations";
 import { useAuth } from "@/context/AuthContext";
 import { useUserProfile } from "@/context/UserProfileContext";
-import { firestoreDocumentUrl } from "@/constants/runtime-config";
+import { firestoreDocumentUrl, devWarn } from "@/constants/runtime-config";
 
 const STORAGE_KEY = "unilift.language";
 
@@ -106,7 +106,7 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
             body: JSON.stringify({
               fields: { language: { stringValue: lang } },
             }),
-          }).catch((err) => console.warn("Language save failed:", err));
+          }).catch((err) => devWarn("Language save failed:", err));
         });
       }
     },

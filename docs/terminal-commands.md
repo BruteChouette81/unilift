@@ -82,6 +82,7 @@ eas init                       # links a project (already linked here)
 
 ```bash
 eas build --profile development --platform ios      # dev client, dev DB + test Stripe
+eas build --profile testflight --platform ios      # TestFlight, dev DB + test Stripe (see /testflight skill)
 eas build --profile preview     --platform ios      # prod DB + live Stripe, APK on Android
 eas build --profile production  --platform ios      # store build (Android → .aab)
 eas build --profile production  --platform all
@@ -130,6 +131,8 @@ eas device:list
 ## 3. Apple / iOS / TestFlight
 
 ```bash
+eas build --profile testflight --platform ios --auto-submit  # the usual "put it on my phone" command
+eas submit --profile testflight --platform ios --latest
 eas submit --profile production --platform ios          # uploads latest build to App Store Connect
 eas submit --platform ios --latest
 eas submit --platform ios --id <build-id>
@@ -138,6 +141,15 @@ eas build --profile production --platform ios --auto-submit   # build + submit i
 
 `ascAppId` (`6755918549`) is already in [eas.json](../eas.json), so submission
 only asks for your Apple ID + an app-specific password (or an ASC API key).
+
+For **non-interactive** submits (what the `/testflight` skill uses), export
+`EXPO_APPLE_ID` and `EXPO_APPLE_APP_SPECIFIC_PASSWORD` in `~/.zshrc` instead of
+answering the prompts.
+
+iOS build numbers are EAS-managed (`cli.appVersionSource: "remote"` +
+`autoIncrement` on the `testflight` profile), initialized at 78. Check with
+`eas build:version:get -p ios -e testflight`. Do **not** add `ios.buildNumber` to
+app.config.js — it would fight the remote counter.
 
 ### Simulator control
 
@@ -238,8 +250,8 @@ firebase functions:secrets:prune
 ### Live endpoints (curl smoke tests)
 
 ```bash
-curl -s https://api-qsxtpust2a-uc.a.run.app/health
-curl -s https://us-central1-unilift-6e756.cloudfunctions.net/apiSandbox/health
+curl -s https://api-qsxtpust2a-uc.a.run.app/hello
+curl -s https://us-central1-unilift-6e756.cloudfunctions.net/apiSandbox/hello
 curl -s -H "X-App-Env: dev" -H "Authorization: Bearer $ID_TOKEN" \
   https://api-qsxtpust2a-uc.a.run.app/<route>
 ```

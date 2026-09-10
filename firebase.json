@@ -5,11 +5,13 @@
   "firestore": [
     {
       "database": "uniliftdefault",
-      "rules": "firestore.rules"
+      "rules": "firestore.rules",
+      "indexes": "firestore.indexes.json"
     },
     {
       "database": "uniliftdev",
-      "rules": "firestore.dev.rules"
+      "rules": "firestore.dev.rules",
+      "indexes": "firestore.indexes.json"
     }
   ],
   "functions": [

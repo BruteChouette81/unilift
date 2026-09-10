@@ -30,24 +30,25 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { P } from "@/constants/palette";
 
 // ─── Design Tokens (UniLift brand) ──────────────────────────────────────────
 const C = {
-  bg:          "#080810",
-  surface:     "#0f0f1e",
-  surfaceAlt:  "#13132a",
+  bg:          P.bg,
+  surface:     P.surface,
+  surfaceAlt:  P.surfaceRaised,
   border:      "rgba(137, 56, 213, 0.30)",
   borderFaint: "rgba(255, 255, 255, 0.06)",
-  purple:      "#8938D5",
-  purpleLight: "#e09af7",
-  pink:        "#FD165A",
-  blue:        "#60a5fa",
-  gold:        "#fbbf24",
-  text:        "#f3f4f6",
-  muted:       "#9ca3af",
-  dim:         "#4b5563",
-  success:     "#34d399",
-  danger:      "#f87171",
+  purple:      P.accent,
+  purpleLight: P.accentLight,
+  pink:        P.hype,
+  blue:        P.info,
+  gold:        P.warning,
+  text:        P.text,
+  muted:       P.textMuted,
+  dim:         P.textDim,
+  success:     P.success,
+  danger:      P.danger,
   inputBg:     "rgba(15, 15, 30, 0.55)",
 };
 

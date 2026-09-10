@@ -1,19 +1,21 @@
-import { runtimeConfig } from "@/constants/runtime-config";
+import { devWarn, devError } from "@/constants/runtime-config";
+import { mapsDirections } from "@/services/mapsService";
 import type { LocationPoint } from "@/types/models";
+import { isRecord } from "@/services/firestore-rest";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-export type RouteStats = {
+type RouteStats = {
   distanceKm: number;
   durationSeconds: number;
 };
 
-export type SegmentStats = {
+type SegmentStats = {
   distanceKm: number;
   durationSeconds: number;
 };
 
-export type MultiWaypointResult = {
+type MultiWaypointResult = {
   total: RouteStats;
   segments: SegmentStats[];
   /** Google-encoded overview polyline for the entire route. */
@@ -22,13 +24,7 @@ export type MultiWaypointResult = {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-const GOOGLE_DIRECTIONS_URL =
-  "https://maps.googleapis.com/maps/api/directions/json";
-
 const toLatLng = (p: LocationPoint): string => `${p.latitude},${p.longitude}`;
-
-const isRecord = (v: unknown): v is Record<string, unknown> =>
-  typeof v === "object" && v !== null;
 
 async function fetchGoogleDirections(
   origin: LocationPoint,
@@ -37,32 +33,22 @@ async function fetchGoogleDirections(
   signal?: AbortSignal,
 ): Promise<unknown | null> {
   try {
-    const params = new URLSearchParams({
-      origin: toLatLng(origin),
-      destination: toLatLng(destination),
-      key: runtimeConfig.googleMapsApiKey,
-    });
-
-    if (waypoints && waypoints.length > 0) {
-      params.set("waypoints", waypoints.map(toLatLng).join("|"));
-    }
-
-    const res = await fetch(`${GOOGLE_DIRECTIONS_URL}?${params.toString()}`, {
+    // Proxied through the server — see services/mapsService.ts.
+    const data = await mapsDirections(
+      toLatLng(origin),
+      toLatLng(destination),
+      waypoints && waypoints.length > 0 ? waypoints.map(toLatLng).join("|") : undefined,
       signal,
-    });
-    if (!res.ok) {
-      console.warn(`[routeService] Google Directions HTTP error (${res.status})`);
-      return null;
-    }
-    const data = await res.json();
+    );
+    if (!data) return null;
     if (isRecord(data) && data.status !== "OK") {
-      console.warn(`[routeService] Google Directions status: ${data.status}`);
+      devWarn(`[routeService] Google Directions status: ${data.status}`);
       return null;
     }
     return data;
   } catch (e: unknown) {
     if (e instanceof Error && e.name === "AbortError") return null;
-    console.error("[routeService] Directions fetch error:", e);
+    devError("[routeService] Directions fetch error:", e);
     return null;
   }
 }
@@ -148,25 +134,6 @@ export async function getMultiWaypointRoute(
 }
 
 /**
- * Returns the extra road distance (km) a driver adds by detouring to pick up
- * a passenger at `pickup`, compared to going directly to `destination`.
- * Returns null when either Directions API call fails.
- */
-export async function getDetourKm(
-  driverOrigin: LocationPoint,
-  passengerPickup: LocationPoint,
-  driverDestination: LocationPoint,
-  signal?: AbortSignal,
-): Promise<number | null> {
-  const [direct, withPickup] = await Promise.all([
-    getRouteStats(driverOrigin, driverDestination, signal),
-    getMultiWaypointRoute([driverOrigin, passengerPickup, driverDestination], signal),
-  ]);
-  if (!direct || !withPickup) return null;
-  return Math.max(0, withPickup.total.distanceKm - direct.distanceKm);
-}
-
-/**
  * Computes the route-length difference (km) introduced by inserting a
  * passenger pickup AND dropoff as intermediate waypoints in the driver's
  * route. The "extended" route is:
@@ -180,7 +147,7 @@ export async function getDetourKm(
  * Returns `{ baseKm, extendedKm, diffKm }` or `null` if any required
  * Directions call fails.
  */
-export async function getRouteExtensionKm(
+async function getRouteExtensionKm(
   driverOrigin: LocationPoint,
   driverDestination: LocationPoint,
   passengerPickup: LocationPoint,
@@ -200,11 +167,11 @@ export async function getRouteExtensionKm(
   const [direct, extended] = await Promise.all([directPromise, extendedPromise]);
 
   if (!direct) {
-    console.warn("[routeService] getRouteExtensionKm: missing direct route stats");
+    devWarn("[routeService] getRouteExtensionKm: missing direct route stats");
     return null;
   }
   if (!extended) {
-    console.warn("[routeService] getRouteExtensionKm: missing extended route stats");
+    devWarn("[routeService] getRouteExtensionKm: missing extended route stats");
     return null;
   }
 

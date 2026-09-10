@@ -8,26 +8,24 @@ import {
 } from "@/constants/sponsors";
 import {
   devLog,
-  firestoreDocumentUrl,
-  withFirebaseApiKey,
 } from "@/constants/runtime-config";
-import { getRouteStats } from "@/services/routeService";
 import { Ionicons } from "@expo/vector-icons";
 import * as Location from "expo-location";
 import React, { useEffect, useRef, useState } from "react";
 import { Animated, Image, StyleSheet, TouchableOpacity, View } from "react-native";
 import MapView, { Marker, Polyline, type Region } from "react-native-maps";
+import { P } from "@/constants/palette";
 
 // ─── Design Tokens ───────────────────────────────────────────────────────────
 const C = {
-  purple:  "#8938D5",
-  gold:    "#fbbf24",
-  success: "#34d399",
-  danger:  "#f87171",
-  blue:    "#60a5fa",
-  white:   "#ffffff",
-  bg:      "#080810",
-  fire:    "#f97316",
+  purple:  P.accent,
+  gold:    P.warning,
+  success: P.success,
+  danger:  P.danger,
+  blue:    P.info,
+  white:   P.white,
+  bg:      P.bg,
+  fire:    P.flame,
 };
 
 // ─── Dark Map Style ───────────────────────────────────────────────────────────
@@ -277,38 +275,11 @@ function decodePolyline(encoded: string): number[][] {
   return path;
 }
 
-async function fetchUser(uid: string) {
-  const url = withFirebaseApiKey(firestoreDocumentUrl("users", uid));
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return;
-    const data = await res.json();
-    return data;
-  } catch (err) {
-    console.error(err);
-  }
-}
-
-/** @deprecated Use getRouteStats from services/routeService instead. */
-async function getPathForRide(origin: number[], destination: number[]) {
-  // Kept for backward compatibility; delegates to the shared route service.
-  const from = { latitude: origin[1], longitude: origin[0] };
-  const to = { latitude: destination[1], longitude: destination[0] };
-  return getRouteStats(from, to);
-}
-
-function getPassengerPath(passengerId: string[]) {
-  const locations: any[] = [];
-  for (let i = 0; i < passengerId.length; i++) {
-    fetchUser(passengerId[i]).then((data) => {
-      if (data) {
-        const loc = data.fields.localisation.geoPointValue;
-        locations.push(loc);
-      }
-    });
-  }
-  return locations;
-}
+// REMOVED: fetchUser / getPathForRide / getPassengerPath.
+//
+// All three were dead code, and fetchUser read another user's `users/{uid}`
+// document — including their `localisation` — which is now owner-only. Route
+// geometry comes from getRouteStats in services/routeService.ts.
 
 // ─── Interfaces ──────────────────────────────────────────────────────────────
 interface RideMapViewProps {
@@ -340,6 +311,21 @@ interface DriverRideMapViewProps {
   /** Encoded polyline captured at ride start. When provided the component
    *  decodes and renders it directly — no Google Directions call is made. */
   frozenPolyline?: string;
+  /** The driver's LIVE GPS fix. `origin` is only the position they were in when
+   *  the ride was created, so without this the car pin never moves — which is
+   *  exactly what made the driver map useless for finding a passenger. */
+  driverLocation?: { latitude: number; longitude: number };
+  /** Passenger display names keyed by uid, so a pickup/dropoff callout says who
+   *  it belongs to instead of a generic "Passenger pickup". */
+  passengerNames?: Record<string, string>;
+  /** Translated marker titles. Defaults are English so the other two driver
+   *  screens keep working unchanged. */
+  labels?: {
+    driver?: string;
+    pickup?: string;
+    dropoff?: string;
+    destination?: string;
+  };
 }
 
 interface UserRideMapViewProps {
@@ -358,8 +344,11 @@ const DEFAULT_REGION = {
 // ─── DriverRideMapView ────────────────────────────────────────────────────────
 export function DriverRideMapView(props: DriverRideMapViewProps) {
   const [routePath, setRoutePath] = useState<{ latitude: number; longitude: number }[]>([]);
-  // Track whether we've already decoded a frozen polyline so we don't redo it.
-  const frozenDecodedRef = useRef(false);
+  // The polyline string we last decoded. Compared by value rather than latched
+  // once: before the ride starts the parent recomputes the route as the driver
+  // drives toward the pickup, and a one-shot latch would freeze the very first
+  // line on screen forever.
+  const lastDecodedRef = useRef<string | undefined>(undefined);
   const mapRef = useRef<MapView>(null);
   const [mapReady, setMapReady] = useState(false);
   // Signature of the last set of coords we framed — avoids re-fitting (and the
@@ -393,8 +382,12 @@ export function DriverRideMapView(props: DriverRideMapViewProps) {
   // Collect every meaningful point so the camera can frame them all. Without
   // this the map sat on a fixed wide region and the passenger pickup/dropoff/
   // destination markers were off-screen — appearing as if no data loaded.
+  // The car pin follows the live fix when there is one; `origin` (the ride's
+  // creation-time position) is only a fallback for the first frame.
+  const driverCoord = isReal(props.driverLocation) ? props.driverLocation : props.origin;
+
   const fitTargets: { latitude: number; longitude: number }[] = [];
-  if (isReal(props.origin)) fitTargets.push(props.origin);
+  if (isReal(driverCoord)) fitTargets.push(driverCoord);
   if (isReal(props.destination)) fitTargets.push(props.destination);
   for (const [, l] of pickups) fitTargets.push(l);
   for (const [, l] of dropoffs) fitTargets.push(l);
@@ -428,9 +421,15 @@ export function DriverRideMapView(props: DriverRideMapViewProps) {
   // Polyline: render only when the frozen encoded polyline is provided (post-start).
   // Before the ride starts, no polyline is drawn on the driver map.
   useEffect(() => {
-    if (!props.frozenPolyline) return;
-    if (frozenDecodedRef.current) return;
-    frozenDecodedRef.current = true;
+    if (!props.frozenPolyline) {
+      if (lastDecodedRef.current !== undefined) {
+        lastDecodedRef.current = undefined;
+        setRoutePath([]);
+      }
+      return;
+    }
+    if (lastDecodedRef.current === props.frozenPolyline) return;
+    lastDecodedRef.current = props.frozenPolyline;
     const decoded = decodePolyline(props.frozenPolyline).map(
       ([lat, lng]) => ({ latitude: lat, longitude: lng }),
     );
@@ -446,19 +445,28 @@ export function DriverRideMapView(props: DriverRideMapViewProps) {
         customMapStyle={DARK_MAP_STYLE}
         onMapReady={() => setMapReady(true)}
       >
-        <SnapshottingMarker
-          coordinate={{ latitude: props.origin.latitude, longitude: props.origin.longitude }}
-          title="Driver"
-        >
-          <PinMarker icon="home" color={C.blue} />
-        </SnapshottingMarker>
+        {/* The driver themselves. A car, not a house — and pinned to the live
+            fix, so it actually moves as they drive to the pickup. Skipped
+            entirely when there is no real coordinate, so a missing route param
+            can no longer plant a marker off the coast of Africa. */}
+        {isReal(driverCoord) && (
+          <SnapshottingMarker
+            coordinate={{ latitude: driverCoord.latitude, longitude: driverCoord.longitude }}
+            title={props.labels?.driver ?? "You"}
+            zIndex={3}
+          >
+            <PinMarker icon="car-sport" color={C.blue} />
+          </SnapshottingMarker>
+        )}
 
         {/* Passenger pickup points (green) */}
         {pickups.map(([uid, loc]) => (
           <SnapshottingMarker
             key={`pickup-${uid}`}
             coordinate={{ latitude: loc.latitude, longitude: loc.longitude }}
-            title="Passenger pickup"
+            title={props.passengerNames?.[uid] ?? props.labels?.pickup ?? "Passenger pickup"}
+            description={props.passengerNames?.[uid] ? props.labels?.pickup : undefined}
+            zIndex={2}
           >
             <PinMarker icon="person" color={C.success} />
           </SnapshottingMarker>
@@ -469,7 +477,8 @@ export function DriverRideMapView(props: DriverRideMapViewProps) {
           <SnapshottingMarker
             key={`dropoff-${uid}`}
             coordinate={{ latitude: loc.latitude, longitude: loc.longitude }}
-            title="Passenger drop-off"
+            title={props.passengerNames?.[uid] ?? props.labels?.dropoff ?? "Passenger drop-off"}
+            description={props.passengerNames?.[uid] ? props.labels?.dropoff : undefined}
           >
             <PinMarker icon="location-sharp" color={C.purple} />
           </SnapshottingMarker>
@@ -477,12 +486,12 @@ export function DriverRideMapView(props: DriverRideMapViewProps) {
 
         {props.pendingLocations?.map((loc, index) => (
           <React.Fragment key={`req-${loc.passengerId}`}>
-            <Marker
+            <SnapshottingMarker
               coordinate={{ latitude: loc.latitude, longitude: loc.longitude }}
-              title={`Request ${index + 1}`}
+              title={props.passengerNames?.[loc.passengerId] ?? `Request ${index + 1}`}
             >
               <AvatarPinMarker uri={loc.avatarUri ?? null} color={C.gold} />
-            </Marker>
+            </SnapshottingMarker>
             {loc.dropoff && (
               <SnapshottingMarker
                 key={`req-dropoff-${loc.passengerId}`}
@@ -495,12 +504,14 @@ export function DriverRideMapView(props: DriverRideMapViewProps) {
           </React.Fragment>
         ))}
 
-        <SnapshottingMarker
-          coordinate={{ latitude: props.destination.latitude, longitude: props.destination.longitude }}
-          title="Destination"
-        >
-          <PinMarker icon="flag" color={C.danger} />
-        </SnapshottingMarker>
+        {isReal(props.destination) && (
+          <SnapshottingMarker
+            coordinate={{ latitude: props.destination.latitude, longitude: props.destination.longitude }}
+            title={props.labels?.destination ?? "Destination"}
+          >
+            <PinMarker icon="flag" color={C.danger} />
+          </SnapshottingMarker>
+        )}
 
         {routePath.length > 1 && (
           <Polyline
@@ -767,7 +778,7 @@ const styles = StyleSheet.create({
   // correctly whether it's full-screen (ride screens) or a shorter panel
   // (driver ready-to-start). Full-screen parents are flex:1, so this still
   // fills the screen there.
-  map: { ...StyleSheet.absoluteFillObject },
+  map: { ...StyleSheet.absoluteFill },
   recenterBtn: {
     position: "absolute",
     bottom: 150,

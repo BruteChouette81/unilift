@@ -8,14 +8,18 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import React from "react";
 import { AppState } from "react-native";
 
-export interface UserProfileContextValue {
+interface UserProfileContextValue {
   userData: UserProfile | null;
   rides: Ride[] | null;
   refreshing: boolean;
   /** Merge a partial update into the in-memory cache (no Firestore read). */
   updateUserData: (patch: Partial<UserProfile>) => void;
-  /** Force a full re-fetch of the user profile from Firestore. */
-  refreshProfile: () => Promise<void>;
+  /**
+   * Force a full re-fetch of the user profile from Firestore.
+   * Pass `{ silent: true }` for background syncs so `refreshing` stays false —
+   * only a real pull-to-refresh should drive a RefreshControl.
+   */
+  refreshProfile: (options?: { silent?: boolean }) => Promise<void>;
   /** Force a full re-fetch of the rides list. */
   refreshRides: () => Promise<void>;
 }
@@ -99,12 +103,12 @@ export function UserProfileProvider({ children }: { children: React.ReactNode })
     setUserData((prev) => (prev ? { ...prev, ...patch } : prev));
   }, []);
 
-  const refreshProfile = useCallback(async () => {
-    setRefreshing(true);
+  const refreshProfile = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
+    if (!silent) setRefreshing(true);
     try {
       await doFetchProfile();
     } finally {
-      setRefreshing(false);
+      if (!silent) setRefreshing(false);
     }
   }, [doFetchProfile]);
 

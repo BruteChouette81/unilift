@@ -2,6 +2,11 @@
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "strict": true,
+    // TypeScript 6 (Expo SDK 57) no longer auto-includes `@types/*` packages, so
+    // the global-scope ones have to be listed explicitly. Packages imported by
+    // name (leaflet, geojson, …) resolve through normal module resolution and
+    // do not belong here.
+    "types": ["jest", "react"],
     "paths": {
       "@/*": [
         "./*"

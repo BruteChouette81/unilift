@@ -1,4 +1,3 @@
-import { isDev } from "@/constants/runtime-config";
 import {
   fetchMyDriverSession,
   goOffline as goOfflineSvc,
@@ -51,15 +50,17 @@ export function useDriverSession(user: User | null) {
 
   const isOnline = session?.status === "online";
 
-  // ── Session liveness (dev only for now) ────────────────────────────────────
-  // Both effects are gated on isDev while broadcast dispatch is active: neither
-  // server reads driverSessions in broadcast mode, so this changes nothing in
-  // production today. Drop the gate when proximity matching is switched back on
-  // — that is when a stale "online" session starts corrupting real matching.
+  // ── Session liveness ───────────────────────────────────────────────────────
+  // Both effects used to be gated on `isDev`, on the reasoning that broadcast
+  // dispatch ignores driverSessions so a stale session was harmless. That was
+  // true but fragile: it made the day `USE_LEGACY_MATCHING` flips back to true
+  // the day stale "online" sessions silently start corrupting real matching,
+  // with nothing to connect the two. Ungated — the cost is one location read per
+  // heartbeat for a driver who is deliberately online.
 
   // Heartbeat: refresh origin + updatedAt so the session reads as alive.
   useEffect(() => {
-    if (!isDev || !isOnline) return;
+    if (!isOnline) return;
     const update = async () => {
       try {
         const { status } = await Location.getForegroundPermissionsAsync();
@@ -80,7 +81,7 @@ export function useDriverSession(user: User | null) {
   // trustworthy — end it rather than keep advertising a driver who has moved on.
   const backgroundedAtRef = useRef<number | null>(null);
   useEffect(() => {
-    if (!isDev || !isOnline) return;
+    if (!isOnline) return;
     const onChange = (next: AppStateStatus) => {
       if (next === "active") {
         const since = backgroundedAtRef.current;

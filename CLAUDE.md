@@ -23,10 +23,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 expo start          # Start dev server (Expo Go or dev build)
 expo start --ios    # Launch iOS simulator
 expo start --android # Launch Android emulator
-expo lint           # Run ESLint
+
+npm run lint              # ESLint (expo lint)
+npm test                  # Jest unit tests
+npm run check:server-drift # LIVE vs SANDBOX route table + mirrored constants
+npm run check             # all three of the above
 ```
 
-No test runner is configured. There is no build or test script beyond `expo lint`.
+Jest is configured (`jest.config.js`, ts-jest, `**/__tests__/**/*.test.ts`).
+Run it with `npm test`. `npm run check` runs lint + tests + the server-drift
+guard together. There is no build script beyond Expo's own.
 
 ## Architecture
 
@@ -57,7 +63,12 @@ Config (`firebaseConfig.js`) reads credentials from `EXPO_PUBLIC_*` env vars via
 - **TypeScript strict mode** is on. Use explicit return types.
 - **Design tokens**: In-file constant objects (e.g., `const C = { bg: "#080810", surface: "#0f0f1e", ... }`) are used per-screen rather than a global theme file.
 - **UI**: `LinearGradient`, `Ionicons`, `Pressable`/`TouchableOpacity`. No UI component library.
-- **Error feedback**: `Alert.alert()` for user-facing errors; `console.warn`/`console.error` for debugging.
+- **Error feedback**: `Alert.alert()` for user-facing errors. For debugging use
+  `devLog`/`devWarn`/`devError` from `constants/runtime-config.ts` (or `rideLog`
+  from `utils/ride-logger.ts` for ride-flow traces) — all no-op unless
+  `EXPO_PUBLIC_APP_ENV=dev`, so production builds stay silent. Raw `console.*` is
+  banned in app code by the `no-console` ESLint rule; the servers are exempt
+  (their output is Cloud Logging).
 - **Firestore writes**: Build payloads as `{ fields: { fieldName: { typeValue: value } } }`.
 - **Auth actions**: Set `authActionLoading = true` before async auth ops; use `finally` to reset. Guard against concurrent calls by checking the flag first.
 - **Rides cache**: `invalidateRidesCache()` must be called after mutating ride documents.

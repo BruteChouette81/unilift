@@ -7,6 +7,7 @@ import {
   savePushTokenToFirestore,
   setupNotificationChannel,
 } from "@/services/notificationService";
+import { devError } from "@/constants/runtime-config";
 
 /** Configure how notifications appear when the app is in the foreground. */
 Notifications.setNotificationHandler({
@@ -89,7 +90,7 @@ export function usePushNotifications(): void {
         const idToken = await user.getIdToken();
         await savePushTokenToFirestore(user.uid, token, idToken);
       } catch (err) {
-        console.error("Push notification registration failed:", err);
+        devError("Push notification registration failed:", err);
       }
     })();
 
