@@ -2,7 +2,13 @@ import * as Notifications from "expo-notifications";
 import * as Device from "expo-device";
 import Constants from "expo-constants";
 import { Platform } from "react-native";
-import { firestoreDocumentUrl, withFirebaseApiKey } from "@/constants/runtime-config";
+import { getAuth } from "firebase/auth";
+import {
+  apiBaseUrl,
+  apiFetch,
+  firestoreDocumentUrl,
+  withFirebaseApiKey,
+} from "@/constants/runtime-config";
 
 /**
  * Set up the default Android notification channel.
@@ -61,15 +67,45 @@ export async function registerForPushNotifications(): Promise<string | null> {
 }
 
 /**
- * Persist the Expo push token to the user's Firestore document.
+ * Register the Expo push token for this account, via the backend.
+ * A push token identifies one physical device, not one account — the server
+ * also strips it from any other account that previously registered it on
+ * this device, so only the currently signed-in account is ever reachable
+ * through it. `uid` is kept for call-site clarity; the server derives the
+ * account from `idToken`.
  */
 export async function savePushTokenToFirestore(
   uid: string,
   token: string,
   idToken: string,
 ): Promise<void> {
+  const res = await apiFetch(`${apiBaseUrl}/notifications/register-token`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ token }),
+  });
+
+  if (!res.ok) {
+    console.error("Failed to register push token:", res.status);
+  }
+}
+
+/**
+ * Clear this device's push token from the currently signed-in account.
+ * Call on sign-out so a device that logs into a different account (or none)
+ * stops receiving pushes for the account it just left. Best-effort — a
+ * failure here must never block sign-out.
+ */
+export async function clearPushToken(): Promise<void> {
+  const user = getAuth().currentUser;
+  if (!user) return;
+
+  const idToken = await user.getIdToken();
   const url = withFirebaseApiKey(
-    `${firestoreDocumentUrl("users", uid)}?updateMask.fieldPaths=expoPushToken`,
+    `${firestoreDocumentUrl("users", user.uid)}?updateMask.fieldPaths=expoPushToken`,
   );
 
   const res = await fetch(url, {
@@ -78,14 +114,10 @@ export async function savePushTokenToFirestore(
       Authorization: `Bearer ${idToken}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      fields: {
-        expoPushToken: { stringValue: token },
-      },
-    }),
+    body: JSON.stringify({ fields: {} }),
   });
 
   if (!res.ok) {
-    console.error("Failed to save push token to Firestore:", res.status);
+    console.error("Failed to clear push token:", res.status);
   }
 }

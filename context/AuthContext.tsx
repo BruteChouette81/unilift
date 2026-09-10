@@ -7,6 +7,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { type AuthState, type AuthStatus } from "@/types/models";
 import { isDev } from "@/constants/runtime-config";
 import { goOffline } from "@/services/driverSessionService";
+import { clearPushToken } from "@/services/notificationService";
 import {
   ensureSessionIsValid,
   signInWithApple as signInWithAppleService,
@@ -169,6 +170,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           if (isDev) {
             try { await goOffline(); } catch { /* non-fatal */ }
           }
+          // Clear this device's push token before it's no longer authenticated
+          // to write it — otherwise this account keeps receiving pushes for
+          // this device after logging out of it. Best-effort, must never
+          // block sign-out.
+          try { await clearPushToken(); } catch { /* non-fatal */ }
           await signOutService();
           // Keep navigation state deterministic even if auth listener is delayed.
           setUser(null);

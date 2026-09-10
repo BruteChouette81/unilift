@@ -419,6 +419,42 @@ app.post("/notifications/send", authenticate, async (req, res) => {
   }
 });
 
+// A push token identifies one physical device, not one account. If the same
+// device previously registered this token under a different account (signed
+// out, signed in as someone else), that other account must stop being able
+// to receive pushes meant for this device — otherwise a signed-out account
+// keeps buzzing the phone forever, or two accounts on one device both fire
+// for the same event. Registering always atomically moves the token to the
+// caller and strips it from every other account that has it.
+app.post("/notifications/register-token", authenticate, async (req, res) => {
+  const db = getDb(req);
+  try {
+    const { token } = req.body;
+    if (!token) {
+      return res.status(400).json({ error: "token is required" });
+    }
+    const staleSnap = await db.collection("users").where("expoPushToken", "==", token).get();
+    const batch = db.batch();
+    let staleCleared = 0;
+    staleSnap.docs.forEach((doc) => {
+      if (doc.id === req.uid) return;
+      batch.update(doc.ref, { expoPushToken: FieldValue.delete() });
+      staleCleared += 1;
+    });
+    // set+merge, not update: the previous client-side PATCH upserted the user
+    // doc if it didn't exist yet (e.g. token registers before the signup
+    // flow finishes writing the profile). update() would throw NOT_FOUND in
+    // that case and silently break registration — keep the same upsert
+    // semantics here.
+    batch.set(db.collection("users").doc(req.uid), { expoPushToken: token }, { merge: true });
+    await batch.commit();
+    res.json({ success: true, staleCleared });
+  } catch (err) {
+    console.error("/notifications/register-token:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Billing: Charge passengers at month-end ───────────────────────────────────
 //
 // Reads all users with pendingChargeCents > 0, creates an off-session
