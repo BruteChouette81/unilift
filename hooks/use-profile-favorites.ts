@@ -1,4 +1,4 @@
-import { firestoreDocumentUrl } from "@/constants/runtime-config";
+import { firestoreDocumentUrl, devError } from "@/constants/runtime-config";
 import type { FavoriteRoute as FavoriteRouteFormData } from "@/components/favoriteForm";
 import { useUserProfile } from "@/context/UserProfileContext";
 import { geoSuggestion, type LocationResult } from "@/services/rideServices";
@@ -33,20 +33,32 @@ export function useProfileFavorites({ user, userData }: Params) {
   const [showHomeSuggestions, setShowHomeSuggestions] = useState(false);
   const suppressHomeSuggestionsRef = useRef(false);
   const debouncedHomeAddress = useDebouncedValue(homeAddress, 700);
+  // Primitives, so the effect below re-fires when the position actually moves
+  // rather than on every UserProfileContext re-render (which would re-issue the
+  // autocomplete query and eat the server's /maps/* rate limit).
+  const originLat = userData?.localisation?.latitude ?? null;
+  const originLon = userData?.localisation?.longitude ?? null;
 
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
       if (suppressHomeSuggestionsRef.current) { suppressHomeSuggestionsRef.current = false; return; }
       if (debouncedHomeAddress.length < 3) { setShowHomeSuggestions(false); return; }
-      const results = await geoSuggestion(debouncedHomeAddress.trim());
+      // Capped to MAX_SUGGESTION_DISTANCE_KM around the user's stored position.
+      const results = await geoSuggestion(
+        debouncedHomeAddress.trim(),
+        undefined,
+        originLat != null && originLon != null
+          ? { latitude: originLat, longitude: originLon }
+          : null,
+      );
       if (cancelled) return;
       setHomeSuggestions(results ?? []);
       setShowHomeSuggestions((results?.length ?? 0) > 0);
     };
     void run();
     return () => { cancelled = true; };
-  }, [debouncedHomeAddress]);
+  }, [debouncedHomeAddress, originLat, originLon]);
 
   const onHomeAddressChange = useCallback((text: string) => {
     suppressHomeSuggestionsRef.current = false;
@@ -209,7 +221,7 @@ export function useProfileFavorites({ user, userData }: Params) {
       setHomeAddress("");
       setHomeAddressCoords(null);
     } catch (error: unknown) {
-      console.error("Error uploading user data:", error);
+      devError("Error uploading user data:", error);
       setErrors({
         startAddress:
           error instanceof Error ? error.message : "Failed to update home address",

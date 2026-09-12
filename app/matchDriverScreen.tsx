@@ -26,25 +26,28 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useResponsive } from "@/hooks/use-responsive";
+import { FONT_CAP } from "@/constants/typography";
+import { P } from "@/constants/palette";
+import { devWarn } from "@/constants/runtime-config";
 
 const C = {
-  bg:          "#080810",
-  card:        "#0f0f1e",
-  purple:      "#8938D5",
-  purpleLight: "#e09af7",
-  pink:        "#FD165A",
-  text:        "#f3f4f6",
-  muted:       "#9ca3af",
-  dim:         "#4b5563",
-  gold:        "#fbbf24",
+  bg:          P.bg,
+  card:        P.surface,
+  purple:      P.accent,
+  purpleLight: P.accentLight,
+  pink:        P.hype,
+  text:        P.text,
+  muted:       P.textMuted,
+  dim:         P.textDim,
+  gold:        P.warning,
   match:       "#22c55e",
-  pass:        "#f87171",
+  pass:        P.danger,
   border:      "rgba(137, 56, 213, 0.30)",
 };
 
-const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get("window");
+const { width: SCREEN_W } = Dimensions.get("window");
 const CARD_W = Math.min(SCREEN_W - 40, 380);
-const CARD_H = Math.min(SCREEN_H * 0.56, 520);
 const SWIPE_THRESHOLD = CARD_W * 0.32;
 const CONFIRM_WINDOW_MS = 2 * 60 * 1000;
 
@@ -68,6 +71,7 @@ function fmt(ms: number): string {
 export default function MatchDriverScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { shouldStack, fontScale, height: winHeight } = useResponsive();
   const { t } = useLanguage();
   const { user } = useAuth();
   const { clearPendingRequest } = useActiveRide();
@@ -137,7 +141,7 @@ export default function MatchDriverScreen() {
             uid: driverId,
             name: (data?.driverName as string) || "Driver",
             avatar: (data?.driverAvatar as string) || null,
-            xp: 0, rating: 0, ridesCompleted: 0, certifications: [],
+            xp: 0, rating: 0, ratingCount: 0, ridesCompleted: 0, certifications: [],
           });
           fetchDriverProfile(driverId).then((p) => { if (p) setProfile(p); }).catch(() => {});
         }
@@ -156,7 +160,7 @@ export default function MatchDriverScreen() {
           goToRide();
         }
       },
-      (err) => console.warn("matchDriver listener error", err),
+      (err) => devWarn("matchDriver listener error", err),
     );
     return () => unsub();
   }, [params.rideId, uid, goToRide, goBackToSearch]);
@@ -253,6 +257,13 @@ export default function MatchDriverScreen() {
   const initials = (profile?.name ?? "?").trim().charAt(0).toUpperCase();
   const secondsWarning = msLeft <= 30000;
 
+  // The info scrim sits inside the card, so the card has to grow with its text
+  // or the stats row is clipped by the card's own overflow: hidden.
+  const cardH = Math.min(
+    Math.min(winHeight * 0.56, 520) * Math.min(fontScale, 1.2),
+    winHeight * 0.7,
+  );
+
   return (
     <View style={[styles.root, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 16 }]}>
       {/* Ambient brand glow */}
@@ -267,8 +278,8 @@ export default function MatchDriverScreen() {
           <View style={[styles.resultIcon, { borderColor: C.pass }]}>
             <Ionicons name="time-outline" size={40} color={C.pass} />
           </View>
-          <Text style={styles.resultTitle}>{t("matchDriver.expiredTitle")}</Text>
-          <Text style={styles.resultSub}>{t("matchDriver.expiredSub")}</Text>
+          <Text style={styles.resultTitle} maxFontSizeMultiplier={FONT_CAP.display}>{t("matchDriver.expiredTitle")}</Text>
+          <Text style={styles.resultSub} maxFontSizeMultiplier={FONT_CAP.body}>{t("matchDriver.expiredSub")}</Text>
         </View>
       ) : phase === "matched" ? (
         <View style={styles.centerFill}>
@@ -280,18 +291,18 @@ export default function MatchDriverScreen() {
               <Ionicons name="heart" size={40} color="#2d0015" />
             </View>
           </View>
-          <Text style={styles.resultTitle}>{t("matchDriver.matchedTitle")}</Text>
-          <Text style={styles.resultSub}>{t("matchDriver.matchedSub")}</Text>
+          <Text style={styles.resultTitle} maxFontSizeMultiplier={FONT_CAP.display}>{t("matchDriver.matchedTitle")}</Text>
+          <Text style={styles.resultSub} maxFontSizeMultiplier={FONT_CAP.body}>{t("matchDriver.matchedSub")}</Text>
         </View>
       ) : (
         <>
           {/* Header */}
           <View style={styles.header}>
-            <Text style={styles.eyebrow}>{t("matchDriver.eyebrow")}</Text>
-            <Text style={styles.title}>{t("matchDriver.title")}</Text>
+            <Text style={styles.eyebrow} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("matchDriver.eyebrow")}</Text>
+            <Text style={styles.title} maxFontSizeMultiplier={FONT_CAP.display}>{t("matchDriver.title")}</Text>
             <View style={[styles.timerPill, secondsWarning && styles.timerPillWarn]}>
               <Ionicons name="time-outline" size={13} color={secondsWarning ? C.pass : C.purpleLight} />
-              <Text style={[styles.timerText, secondsWarning && { color: C.pass }]}>
+              <Text style={[styles.timerText, secondsWarning && { color: C.pass }]} maxFontSizeMultiplier={FONT_CAP.chrome}>
                 {t("matchDriver.timeLeft", { time: fmt(msLeft) })}
               </Text>
             </View>
@@ -303,7 +314,7 @@ export default function MatchDriverScreen() {
               {...panResponder.panHandlers}
               style={[
                 styles.card,
-                { transform: [{ translateX: pan.x }, { translateY: pan.y }, { rotate }] },
+                { height: cardH, transform: [{ translateX: pan.x }, { translateY: pan.y }, { rotate }] },
               ]}
             >
               {profile?.avatar ? (
@@ -311,17 +322,17 @@ export default function MatchDriverScreen() {
               ) : (
                 <LinearGradient colors={["#1e1b4b", "#0d1224"]} style={StyleSheet.absoluteFill}>
                   <View style={styles.avatarFallback}>
-                    <Text style={styles.avatarInitial}>{initials}</Text>
+                    <Text style={styles.avatarInitial} allowFontScaling={false}>{initials}</Text>
                   </View>
                 </LinearGradient>
               )}
 
               {/* Directional stamps */}
               <Animated.View style={[styles.stamp, styles.stampMatch, { opacity: matchStampOpacity }]}>
-                <Text style={[styles.stampText, { color: C.match }]}>{t("matchDriver.stampMatch")}</Text>
+                <Text style={[styles.stampText, { color: C.match }]} allowFontScaling={false}>{t("matchDriver.stampMatch")}</Text>
               </Animated.View>
               <Animated.View style={[styles.stamp, styles.stampPass, { opacity: passStampOpacity }]}>
-                <Text style={[styles.stampText, { color: C.pass }]}>{t("matchDriver.stampPass")}</Text>
+                <Text style={[styles.stampText, { color: C.pass }]} allowFontScaling={false}>{t("matchDriver.stampPass")}</Text>
               </Animated.View>
 
               {/* Bottom info scrim */}
@@ -330,7 +341,7 @@ export default function MatchDriverScreen() {
                 style={styles.scrim}
               >
                 <View style={styles.nameRow}>
-                  <Text style={styles.name} numberOfLines={1}>
+                  <Text style={styles.name} numberOfLines={1} maxFontSizeMultiplier={FONT_CAP.display}>
                     {profile?.name ?? t("matchDriver.loading")}
                     {profile?.age ? <Text style={styles.age}>  {profile.age}</Text> : null}
                   </Text>
@@ -340,24 +351,24 @@ export default function MatchDriverScreen() {
                 {profile?.school ? (
                   <View style={styles.metaRow}>
                     <Ionicons name="school-outline" size={14} color={C.purpleLight} />
-                    <Text style={styles.metaText} numberOfLines={1}>{profile.school}</Text>
+                    <Text style={styles.metaText} numberOfLines={1} maxFontSizeMultiplier={FONT_CAP.body}>{profile.school}</Text>
                   </View>
                 ) : null}
 
-                <View style={styles.statsRow}>
+                <View style={[styles.statsRow, shouldStack && styles.statsRowStacked]}>
                   <View style={styles.stat}>
                     <Ionicons name="star" size={14} color={C.gold} />
-                    <Text style={styles.statValue}>{(profile?.rating ?? 0).toFixed(1)}</Text>
+                    <Text style={styles.statValue} maxFontSizeMultiplier={FONT_CAP.chrome}>{(profile?.rating ?? 0).toFixed(1)}</Text>
                   </View>
-                  <View style={styles.statDivider} />
+                  {shouldStack ? null : <View style={styles.statDivider} />}
                   <View style={styles.stat}>
                     <Ionicons name="flash" size={14} color={C.purpleLight} />
-                    <Text style={styles.statValue}>{profile?.xp ?? 0} {t("matchDriver.xpLabel")}</Text>
+                    <Text style={styles.statValue} maxFontSizeMultiplier={FONT_CAP.chrome}>{profile?.xp ?? 0} {t("matchDriver.xpLabel")}</Text>
                   </View>
-                  <View style={styles.statDivider} />
+                  {shouldStack ? null : <View style={styles.statDivider} />}
                   <View style={styles.stat}>
                     <Ionicons name="car-sport" size={14} color={C.muted} />
-                    <Text style={styles.statValue}>{profile?.ridesCompleted ?? 0} {t("matchDriver.ridesLabel")}</Text>
+                    <Text style={styles.statValue} maxFontSizeMultiplier={FONT_CAP.chrome}>{profile?.ridesCompleted ?? 0} {t("matchDriver.ridesLabel")}</Text>
                   </View>
                 </View>
               </LinearGradient>
@@ -365,7 +376,7 @@ export default function MatchDriverScreen() {
           </View>
 
           {/* Subtitle */}
-          <Text style={styles.subtitle}>{t("matchDriver.subtitle")}</Text>
+          <Text style={styles.subtitle} numberOfLines={3} maxFontSizeMultiplier={FONT_CAP.body}>{t("matchDriver.subtitle")}</Text>
 
           {/* Action buttons (accessible alternative to swiping) */}
           <View style={styles.actions}>
@@ -387,7 +398,7 @@ export default function MatchDriverScreen() {
             >
               <View style={styles.confirmGrad}>
                 <Ionicons name="heart" size={22} color="#2d0015" />
-                <Text style={styles.confirmText}>{t("matchDriver.confirm")}</Text>
+                <Text style={styles.confirmText} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.action}>{t("matchDriver.confirm")}</Text>
               </View>
             </TouchableOpacity>
           </View>
@@ -418,7 +429,7 @@ const styles = StyleSheet.create({
 
   cardArea: { flex: 1, alignItems: "center", justifyContent: "center" },
   card: {
-    width: CARD_W, height: CARD_H, borderRadius: 26, overflow: "hidden",
+    width: CARD_W, borderRadius: 26, overflow: "hidden",
     backgroundColor: C.card, borderWidth: 1, borderColor: C.border,
     shadowColor: C.purple, shadowOpacity: 0.4, shadowRadius: 28,
     shadowOffset: { width: 0, height: 10 }, elevation: 18,
@@ -440,6 +451,7 @@ const styles = StyleSheet.create({
   },
   nameRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
   name: { color: "#fff", fontSize: 24, fontWeight: "800", flexShrink: 1 },
+  statsRowStacked: { flexDirection: "column", alignItems: "flex-start", gap: 6 },
   age: { color: C.muted, fontSize: 20, fontWeight: "600" },
   metaRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   metaText: { color: "#e5e7eb", fontSize: 13, fontWeight: "500", flexShrink: 1 },
@@ -449,7 +461,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8, paddingHorizontal: 12, gap: 10,
   },
   stat: { flexDirection: "row", alignItems: "center", gap: 5, flex: 1, justifyContent: "center" },
-  statValue: { color: C.text, fontSize: 13, fontWeight: "700" },
+  statValue: { color: C.text, fontSize: 13, fontWeight: "700", flexShrink: 1 },
   statDivider: { width: 1, height: 16, backgroundColor: "rgba(255,255,255,0.12)" },
 
   subtitle: { color: C.muted, fontSize: 14, textAlign: "center", lineHeight: 20, marginTop: 14, paddingHorizontal: 8 },
@@ -461,8 +473,11 @@ const styles = StyleSheet.create({
   },
   passBtn: { backgroundColor: "rgba(248,113,113,0.10)", borderColor: "rgba(248,113,113,0.4)" },
   confirmBtn: { borderRadius: 32, overflow: "hidden", flex: 1, maxWidth: 240, shadowColor: C.pink, shadowOpacity: 0.4, shadowRadius: 16, shadowOffset: { width: 0, height: 6 }, elevation: 10 },
-  confirmGrad: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, height: 64, backgroundColor: "#e09af7" },
-  confirmText: { color: "#2d0015", fontSize: 17, fontWeight: "800" },
+  confirmGrad: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+    minHeight: 64, paddingVertical: 10, paddingHorizontal: 14, backgroundColor: "#e09af7",
+  },
+  confirmText: { color: "#2d0015", fontSize: 17, fontWeight: "800", flexShrink: 1, textAlign: "center" },
 
   celebrateWrap: { alignItems: "center", justifyContent: "center", marginBottom: 4 },
   celebrateGlow: {

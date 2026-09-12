@@ -1,260 +1,405 @@
-import { authColors } from "@/constants/auth-theme";
+import * as AppleAuthentication from "expo-apple-authentication";
+import * as Haptics from "expo-haptics";
+import { useRouter } from "expo-router";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Alert, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+
 import LegalTermsModal from "@/components/legal-terms-modal";
-import { firestoreDocumentUrl } from "@/constants/runtime-config";
+import DeviceLimitScreen from "@/components/signup/device-limit";
+import FlowShell, { type FlowShellHandle } from "@/components/flow/flow-shell";
+import { type StepPageProps } from "@/components/flow/step-frame";
+import PasswordStep from "@/components/signup/steps/password-step";
+import PhoneStep from "@/components/signup/steps/phone-step";
+import ReviewStep, { type ReviewRow } from "@/components/signup/steps/review-step";
+import SchoolStep from "@/components/signup/steps/school-step";
+import TermsStep from "@/components/signup/steps/terms-step";
+import TextStep from "@/components/signup/steps/text-step";
+import {
+  autoFormatDateInput,
+  calculateAgeFromBirthDate,
+  formatBirthDateForDisplay,
+  parseBirthDateInput,
+} from "@/components/userHelper";
+import { P } from "@/constants/palette";
+import { FONT_CAP } from "@/constants/typography";
 import { useAuth } from "@/context/AuthContext";
 import { useLanguage } from "@/context/LanguageContext";
 import {
-  normalizeAuthError,
   requestAppleCredential,
+  resolveAuthError,
   signInToFirebaseWithApple,
 } from "@/services/authService";
-import { autoFormatDateInput, parseBirthDateInput } from "@/components/userHelper";
-import { getPasswordRequirements, isPasswordValid, type PasswordRequirementKey } from "@/utils/passwordPolicy";
-import { CERT_META, CERT_ORDER } from "@/constants/certifications";
-import { Ionicons } from "@expo/vector-icons";
-import WizardModal, { type WizardStep } from "@/components/wizard/wizard-modal";
-import { useFirstRun } from "@/hooks/use-first-run";
-import LanguageToggle from "@/components/language-toggle";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
-import * as AppleAuthentication from "expo-apple-authentication";
-import { LinearGradient } from "expo-linear-gradient";
-import { useFocusEffect, useRouter } from "expo-router";
-import React, { useCallback, useState, useMemo } from "react";
-import {
-  ActivityIndicator,
-  Alert,
-  BackHandler,
-  Image,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { checkDevice, registerDevice } from "@/services/deviceService";
+import { createUserProfile } from "@/services/userService";
+import { isValidEmailFormat, normalizeEmail } from "@/utils/emailIdentity";
+import { isPasswordValid } from "@/utils/passwordPolicy";
+import { formatPhoneForDisplay, parsePhoneInput } from "@/utils/phoneNumber";
 
-const PASSWORD_REQ_LABEL_KEYS: Record<PasswordRequirementKey, string> = {
-  minLength: "auth.signup.passwordReqMinLength",
-  upper: "auth.signup.passwordReqUpper",
-  lower: "auth.signup.passwordReqLower",
-  number: "auth.signup.passwordReqNumber",
-  special: "auth.signup.passwordReqSpecial",
-};
+/**
+ * Account creation, one question per page.
+ *
+ * The pager, footer, keyboard handling and back button all live in
+ * `components/flow/flow-shell.tsx`, shared with onboarding. What stays here is
+ * what is actually about creating an account: the answers, what makes each one
+ * valid, and the two ways to submit.
+ *
+ * ## Why a pager and not eight routes
+ *
+ * `app/_layout.tsx` swaps the entire `(auth)` group out the instant Firebase
+ * auth fires. Apple Sign-In depends on that: it authenticates and writes the
+ * profile in one press because there is no second render to defer to. Keeping
+ * signup as a single route means `segments[0]` stays `"(auth)"`, so the
+ * countdown gate and the What's New suppression both keep working untouched.
+ *
+ * ## Forward movement is earned
+ *
+ * Only `unlocked + 1` pages are rendered, so the ScrollView's own content size
+ * is the wall — there is no scroll position to fight and no gesture to cancel.
+ * `unlocked` never decreases: shrinking it while the user sits on a later page
+ * would hard-snap them backwards. Correctness is re-checked at submit instead.
+ */
+
+const STEP = {
+  name: 0,
+  email: 1,
+  password: 2,
+  birthDate: 3,
+  school: 4,
+  phone: 5,
+  terms: 6,
+  review: 7,
+} as const;
+
+const TOTAL = 8;
+const LAST = TOTAL - 1;
+
+/** Youngest age that may hold an account. Mirrors the Adult certification. */
+const MIN_AGE = 18;
 
 export default function SignupScreen() {
   const router = useRouter();
   const { signUp, authActionLoading } = useAuth();
   const { t } = useLanguage();
-  const insets = useSafeAreaInsets();
+  const shell = useRef<FlowShellHandle>(null);
 
-  // TODO v2: preferences feature
-  // const PREFERENCE_OPTIONS = [
-  //   { key: "no_smoking", label: t("auth.signup.preferences.no_smoking") },
-  //   { key: "music_ok", label: t("auth.signup.preferences.music_ok") },
-  //   { key: "quiet_ride", label: t("auth.signup.preferences.quiet_ride") },
-  //   { key: "pets_ok", label: t("auth.signup.preferences.pets_ok") },
-  //   { key: "chatty", label: t("auth.signup.preferences.chatty") },
-  //   { key: "fast_driver", label: t("auth.signup.preferences.fast_driver") },
-  // ];
+  const [index, setIndex] = useState(0);
+  const [unlocked, setUnlocked] = useState(0);
 
-  const SCHOOLS = [
-    'Cégep St-Foy',
-    'Cégep Garneau',
-    'Cégep Champlain St-Lawrence',
-    'Cégep de Lévis',
-    'Université Laval',
-    'UQAR',
-  ];
-
-  // Navigation
-  const [step, setStep] = useState<1 | 2 | 3>(1);
-
-  // Step 1 fields
+  // Answers
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
-  const passwordRequirements = getPasswordRequirements(password);
-  const passwordValid = isPasswordValid(password);
-
-  // Step 2 fields
   const [birthDate, setBirthDate] = useState("");
   const [school, setSchool] = useState("");
+  const [phone, setPhone] = useState("");
+  const [phoneConsent, setPhoneConsent] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [showTermsModal, setShowTermsModal] = useState(false);
 
-  // TODO v2: const [preferences, setPreferences] = useState<string[]>([]);
-
-  // Focus states
-  const [nameFocused, setNameFocused] = useState(false);
-  const [emailFocused, setEmailFocused] = useState(false);
-  const [passwordFocused, setPasswordFocused] = useState(false);
-  const [birthDateFocused, setBirthDateFocused] = useState(false);
-  const [schoolFocused, setSchoolFocused] = useState(false);
-  const [showSchoolDropdown, setShowSchoolDropdown] = useState(false);
+  /** Inline messages, by page. Validation never uses an alert. */
+  const [errors, setErrors] = useState<Record<number, string | null>>({});
 
   const [submitting, setSubmitting] = useState(false);
   const isSubmitting = submitting || authActionLoading;
 
-  const filteredSchools = useMemo(() => {
-    if (!school.trim()) return SCHOOLS;
-    const lower = school.toLowerCase();
-    return SCHOOLS.filter(s => s.toLowerCase().includes(lower));
-  }, [school]);
+  // Advisory pre-check, so somebody at the cap is told now rather than after
+  // answering eight questions. It fails open — `registerDevice` below is the
+  // half with authority, and a network blip must not read as "you are banned".
+  const [deviceBlocked, setDeviceBlocked] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    checkDevice()
+      .then((r) => {
+        if (alive && !r.allowed) setDeviceBlocked(true);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
-  // First-run wizard: explains each part of the signup form.
-  const wizard = useFirstRun("signup");
-  const wizardSteps = useMemo<WizardStep[]>(() => [
-    { icon: "sparkles-outline",      title: t("wizard.signup.step1Title"), highlight: t("wizard.signup.step1Highlight"), body: t("wizard.signup.step1Body") },
-    { icon: "person-outline",        title: t("wizard.signup.step2Title"), body: t("wizard.signup.step2Body") },
-    { icon: "school-outline",        title: t("wizard.signup.step3Title"), body: t("wizard.signup.step3Body") },
-    { icon: "notifications-outline", title: t("wizard.signup.step4Title"), highlight: t("wizard.signup.step4Highlight"), body: t("wizard.signup.step4Body") },
-    { icon: "ribbon-outline",        title: t("wizard.signup.step5Title"), body: t("wizard.signup.step5Body") },
-  ], [t]);
+  const goTo = useCallback((next: number) => shell.current?.goTo(next), []);
 
-  // Android hardware back button: step back through the form instead of
-  // exiting the signup screen, mirroring the on-screen back arrows.
-  useFocusEffect(
-    useCallback(() => {
-      const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
-        if (isSubmitting) return true;
-        if (step === 1) return false;
-        setStep((s) => (s === 3 ? 2 : 1));
-        return true;
-      });
-      return () => subscription.remove();
-    }, [step, isSubmitting]),
+  /** Raise the wall to `next`, then move there once the page exists. */
+  const openAndGo = useCallback(
+    (next: number) => {
+      if (next > LAST) return;
+      // Monotonic: a later page stays reachable even if an earlier answer is
+      // edited, so nobody is yanked backwards mid-scroll. The shell parks the
+      // scroll until the page it targets has actually rendered.
+      setUnlocked((u) => Math.max(u, next));
+      goTo(next);
+    },
+    [goTo],
   );
 
-  // TODO v2: const togglePreference = (key: string) => { ... };
+  // ── Validation ───────────────────────────────────────────────────────────
+  const validate = useCallback(
+    (step: number): string | null => {
+      switch (step) {
+        case STEP.name:
+          return name.trim() ? null : t("auth.signup.errNameRequired");
+        case STEP.email:
+          return isValidEmailFormat(email.trim())
+            ? null
+            : t("auth.signup.errEmailInvalid");
+        case STEP.password:
+          return isPasswordValid(password) ? null : t("auth.signup.errPasswordWeak");
+        case STEP.birthDate: {
+          const iso = parseBirthDateInput(birthDate);
+          if (!iso) return t("auth.signup.errBirthDateInvalid");
+          // Must be fed the ISO string — `new Date("25/12/2000")` is invalid and
+          // would silently score 0, which reads as "too young" rather than as a
+          // parse failure.
+          return calculateAgeFromBirthDate(iso) >= MIN_AGE
+            ? null
+            : t("auth.signup.errBirthDateTooYoung");
+        }
+        case STEP.school:
+          return school.trim() ? null : t("auth.signup.errSchoolRequired");
+        case STEP.phone: {
+          if (!parsePhoneInput(phone.trim())) return t("auth.signup.errPhoneInvalid");
+          return phoneConsent ? null : t("auth.signup.errPhoneConsent");
+        }
+        case STEP.terms:
+          return termsAccepted ? null : t("auth.signup.errTermsRequired");
+        default:
+          return null;
+      }
+    },
+    [name, email, password, birthDate, school, phone, phoneConsent, termsAccepted, t],
+  );
 
-  const handleContinue = () => {
-    if (!name.trim() || !email.trim() || !password) {
-      Alert.alert(t("auth.signup.missingInfo"), t("auth.signup.missingInfoMsg"));
-      return;
-    }
-    if (!passwordValid) {
-      setPasswordFocused(true);
-      Alert.alert(t("auth.signup.weakPasswordTitle"), t("auth.signup.weakPasswordMsg"));
-      return;
-    }
-    setStep(2);
-  };
+  const setError = useCallback((step: number, message: string | null) => {
+    setErrors((prev) =>
+      prev[step] === message ? prev : { ...prev, [step]: message },
+    );
+  }, []);
 
+  /**
+   * Wrap a field setter so typing clears the message under it.
+   *
+   * Without this a correction sits next to the complaint about the thing it
+   * just corrected, which reads as the app not noticing. Errors come back on
+   * the next Continue, so nothing is lost by retracting one early.
+   */
+  const answering = useCallback(
+    <T,>(step: number, set: (next: T) => void) =>
+      (next: T) => {
+        set(next);
+        setError(step, null);
+      },
+    [setError],
+  );
+
+  const advance = useCallback(
+    (from: number) => {
+      const problem = validate(from);
+      setError(from, problem);
+      if (problem) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(
+          () => {},
+        );
+        return;
+      }
+      openAndGo(from + 1);
+    },
+    [validate, setError, openAndGo],
+  );
+
+  const skipPhone = useCallback(() => {
+    // Both halves or neither: a number typed without the tick must not survive.
+    setPhone("");
+    setPhoneConsent(false);
+    setError(STEP.phone, null);
+    openAndGo(STEP.phone + 1);
+  }, [setError, openAndGo]);
+
+  // ── The payload, and the recap that must agree with it ───────────────────
+  const storedPhone = useMemo(
+    () => (phoneConsent ? parsePhoneInput(phone.trim()) : ""),
+    [phone, phoneConsent],
+  );
+
+  // Drives the field's green rule. Deliberately the full test, not just "does
+  // it parse" — a well-formed date from someone who is 16 is not a good answer,
+  // and showing it green would say it was.
+  const birthDateOk = useMemo(() => {
+    const iso = parseBirthDateInput(birthDate);
+    return Boolean(iso) && calculateAgeFromBirthDate(iso) >= MIN_AGE;
+  }, [birthDate]);
+
+  const reviewRows = useMemo<ReviewRow[]>(
+    () => [
+      {
+        key: "name",
+        label: t("auth.signup.nameLabel"),
+        value: name.trim(),
+        step: STEP.name,
+      },
+      {
+        key: "email",
+        label: t("auth.signup.emailLabel"),
+        value: email.trim(),
+        step: STEP.email,
+      },
+      {
+        key: "password",
+        label: t("auth.signup.passwordLabel"),
+        value: "•".repeat(Math.min(password.length, 12)),
+        step: STEP.password,
+      },
+      {
+        key: "birth",
+        label: t("auth.signup.birthDateLabel"),
+        value: formatBirthDateForDisplay(parseBirthDateInput(birthDate)),
+        step: STEP.birthDate,
+      },
+      {
+        key: "school",
+        label: t("auth.signup.schoolLabel"),
+        value: school.trim(),
+        step: STEP.school,
+      },
+      {
+        key: "phone",
+        label: t("auth.signup.phoneLabel"),
+        // Built from `storedPhone`, not from the field: an unconsented number is
+        // dropped by the write, and the recap must not promise otherwise.
+        value: storedPhone
+          ? formatPhoneForDisplay(storedPhone)
+          : t("auth.signup.reviewPhoneNone"),
+        step: STEP.phone,
+      },
+    ],
+    [name, email, password, birthDate, school, storedPhone, t],
+  );
+
+  // ── Submit ───────────────────────────────────────────────────────────────
   const handleAppleSignup = async () => {
     if (isSubmitting) return;
     try {
       setSubmitting(true);
       const appleResult = await requestAppleCredential();
-      // Authenticate with Firebase immediately — Apple credentials are one-time-use
-      // and cannot be deferred to a later step without triggering invalid-credential errors.
-      const cred = await signInToFirebaseWithApple(appleResult.identityToken, appleResult.rawNonce);
+      // Apple credentials are one-time-use, so this cannot be deferred to a
+      // later page: authenticate now.
+      const cred = await signInToFirebaseWithApple(
+        appleResult.identityToken,
+        appleResult.rawNonce,
+      );
 
-      // Save the Firestore profile in the same click. The root layout will
-      // flip the auth stack to (tabs) as soon as Firebase auth fires, which
-      // unmounts the signup step-2 form before it can render — so we must
-      // create the profile here, not in a deferred step. Age / school are
-      // collected later via Profile Settings for Apple users.
+      // The profile has to be written in this same click. The root layout swaps
+      // to the authenticated stack the moment Firebase auth fires, which
+      // unmounts this screen — there is no later render to write from. Birth
+      // date and school are collected afterwards in Profile Settings.
       const displayName =
         [appleResult.fullName?.givenName, appleResult.fullName?.familyName]
           .filter(Boolean)
           .join(" ") || cred.user.displayName || "";
-      const userEmail = appleResult.email ?? cred.user.email ?? "";
       const token = await cred.user.getIdToken(true);
-      await saveUserProfile(cred.user.uid, token, {
-        name:      displayName,
-        email:     userEmail,
+      await createUserProfile(cred.user.uid, token, {
+        name: displayName,
+        // `cred.user.email` first, not Apple's copy. The rules now require this
+        // field to equal the address in the ID token, and Apple hands back
+        // whatever casing the user's account carries — which may not match. The
+        // token-backed value is the one the write is checked against, and on a
+        // Hide My Email account both are the same relay address anyway.
+        //
+        // Note this stores the address as authenticated, NOT canonicalised. The
+        // canonical form is the mailbox claim and lives in `emailIndex`, written
+        // server-side by the blocking function, which sees this path too.
+        email: cred.user.email ?? appleResult.email ?? "",
         birthDate: "",
-        school:    "",
+        school: "",
       });
 
-      // Apple sign-up from this screen is always a fresh account → onboarding.
+      // Claim a slot on this device. A refusal means the server has already
+      // deleted the account, so there is nothing to navigate into.
+      const claim = await registerDevice(token);
+      if (!claim.ok) {
+        setDeviceBlocked(true);
+        return;
+      }
+
       router.replace("/onboardingScreen");
     } catch (err) {
-      const authError = normalizeAuthError(err, t("auth.signup.appleSigninFailed"));
+      const authError = resolveAuthError(err, t, t("auth.signup.appleSigninFailed"));
       Alert.alert(authError.title, authError.message);
     } finally {
       setSubmitting(false);
     }
   };
 
-  const saveUserProfile = async (
-    uid: string,
-    token: string,
-    data: { name: string; email: string; birthDate: string; school: string },
-  ) => {
-    const res = await fetch(
-      firestoreDocumentUrl("users", uid) +
-        "?updateMask.fieldPaths=name&updateMask.fieldPaths=email&updateMask.fieldPaths=createdAt&updateMask.fieldPaths=birthDate&updateMask.fieldPaths=school&updateMask.fieldPaths=driverModeEnabled",
-      {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          fields: {
-            name:      { stringValue: data.name },
-            email:     { stringValue: data.email },
-            createdAt: { stringValue: new Date().toISOString() },
-            birthDate: { stringValue: data.birthDate },
-            school:    { stringValue: data.school },
-            // Driver mode is ON by default for new users; toggled from profile.
-            driverModeEnabled: { booleanValue: true },
-            // TODO v2: preferences: { arrayValue: { values: data.preferences.map((p) => ({ stringValue: p })) } },
-          },
-        }),
-      },
-    );
-
-    if (!res.ok) {
-      throw new Error(await res.text());
-    }
-  };
-
-  // Step 2 → 3: gate on accepted terms, then advance to the (optional)
-  // certification step. Account creation happens on step 3's "Get Started".
-  const handleContinueToCertification = () => {
-    if (!termsAccepted) {
-      Alert.alert(t("auth.signup.termsTitle"), t("auth.signup.termsError"));
-      return;
-    }
-    setStep(3);
-  };
-
-  const handleGetStarted = async () => {
+  const handleCreateAccount = async () => {
     if (isSubmitting) return;
-    if (!termsAccepted) {
-      Alert.alert(t("auth.signup.termsTitle"), t("auth.signup.termsError"));
-      return;
+
+    // Everything is re-checked here because `unlocked` is monotonic: an answer
+    // could have been edited after its page was cleared.
+    for (let step = 0; step <= STEP.terms; step++) {
+      const problem = validate(step);
+      if (problem) {
+        setError(step, problem);
+        goTo(step);
+        return;
+      }
     }
+
     try {
       setSubmitting(true);
 
-      const trimmedName  = name.trim();
+      const trimmedName = name.trim();
       const trimmedEmail = email.trim();
-      const cred  = await signUp(trimmedName, trimmedEmail, password);
+      const cred = await signUp(trimmedName, trimmedEmail, password);
       const token = await cred.user.getIdToken();
 
-      await saveUserProfile(cred.user.uid, token, {
-        name:      trimmedName,
-        email:     trimmedEmail,
+      await createUserProfile(cred.user.uid, token, {
+        name: trimmedName,
+        // The auth account is created under the canonical address (one account
+        // per mailbox — utils/emailIdentity), so the profile doc must record the
+        // same string or `users/{uid}.email` drifts from `auth.email`.
+        email: cred.user.email ?? normalizeEmail(trimmedEmail),
         birthDate: parseBirthDateInput(birthDate),
-        school:    school.trim(),
-        // TODO v2: preferences,
+        school: school.trim(),
+        ...(storedPhone ? { phone: storedPhone } : {}),
       });
 
-      // New account → collect home address, driver availability and favorite
-      // places so the app has useful data on first entry.
+      // The enforcement half of the per-device cap. Deliberately after the
+      // profile write and before navigation: on a refusal the server has
+      // already removed both the account and the document, and the only
+      // correct thing left to do is say so rather than walk the user into an
+      // app they no longer have an account for.
+      const claim = await registerDevice(token);
+      if (!claim.ok) {
+        setDeviceBlocked(true);
+        return;
+      }
+
       router.replace("/onboardingScreen");
     } catch (err) {
-      const authError = normalizeAuthError(err, t("auth.signup.signupFailed"));
+      const code = String((err as { code?: string })?.code ?? "");
+      if (
+        code === "auth/email-already-in-use" ||
+        code === "auth/account-exists-with-different-credential"
+      ) {
+        // One account per mailbox. Send them back to the email page with the
+        // message attached to the field, plus the two things they can do.
+        setError(STEP.email, t("auth.signup.errEmailTaken"));
+        goTo(STEP.email);
+        Alert.alert(t("auth.signup.emailTakenTitle"), t("auth.signup.emailTakenMsg"), [
+          { text: t("auth.signup.emailTakenChange"), style: "cancel" },
+          {
+            text: t("auth.signup.emailTakenLogin"),
+            onPress: () => router.replace("/(auth)/login"),
+          },
+        ]);
+        return;
+      }
+
+      const authError = resolveAuthError(err, t, t("auth.signup.signupFailed"));
       if (authError.retryable) {
         Alert.alert(authError.title, authError.message, [
           { text: t("common.cancel"), style: "cancel" },
-          { text: t("common.retry"), onPress: handleGetStarted },
+          { text: t("common.retry"), onPress: handleCreateAccount },
         ]);
         return;
       }
@@ -264,666 +409,191 @@ export default function SignupScreen() {
     }
   };
 
-  return (
-    <KeyboardAvoidingView
-      style={styles.root}
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
+  // ── Render ───────────────────────────────────────────────────────────────
+  const renderPages = (pageProps: StepPageProps) => [
+    <TextStep
+      key="name"
+      {...pageProps}
+      ask={t("auth.signup.nameAsk")}
+      aside={t("auth.signup.nameAside")}
+      label={t("auth.signup.nameLabel")}
+      value={name}
+      onChangeText={answering(STEP.name, setName)}
+      error={errors[STEP.name]}
+      valid={Boolean(name.trim())}
+      editable={!isSubmitting}
+      autoCapitalize="words"
+      autoComplete="given-name"
+      textContentType="givenName"
+      returnKeyType="next"
+      onSubmitEditing={() => advance(STEP.name)}
     >
-      {/* Language toggle (floats above the header) */}
-      <View style={[styles.languageToggleWrap, { top: insets.top + 8 }]} pointerEvents="box-none">
-        <LanguageToggle />
-      </View>
-
-      <ScrollView
-        contentContainerStyle={styles.scroll}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Branded header */}
-        <LinearGradient
-          colors={["#2d0015", "#1c0038"]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.header}
-        >
-          <Image
-            source={require("@/assets/images/icon.png")}
-            style={styles.logo}
-            resizeMode="contain"
+      {Platform.OS === "ios" ? (
+        <View style={styles.apple}>
+          <Text style={styles.or} maxFontSizeMultiplier={FONT_CAP.chrome}>
+            {t("common.or")}
+          </Text>
+          <AppleAuthentication.AppleAuthenticationButton
+            buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_UP}
+            buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
+            cornerRadius={14}
+            style={styles.appleBtn}
+            onPress={handleAppleSignup}
           />
-          <Text style={styles.wordmark}>UniLift</Text>
-
-          {/* Step dots */}
-          <View style={styles.dotsRow}>
-            <View style={[styles.dot, step === 1 && styles.dotActive]} />
-            <View style={[styles.dot, step === 2 && styles.dotActive]} />
-            <View style={[styles.dot, step === 3 && styles.dotActive]} />
-          </View>
-
-          {/* Replay the explainer wizard */}
-          <Pressable onPress={wizard.replay} hitSlop={8} style={styles.helpChip}>
-            <Ionicons name="help-circle-outline" size={16} color="rgba(255,255,255,0.85)" />
-            <Text style={styles.helpChipText}>{t("wizard.replay")}</Text>
-          </Pressable>
-        </LinearGradient>
-
-        {/* Form area */}
-        <View style={styles.body}>
-          {step === 1 ? (
-            <>
-              <Text style={styles.title}>{t("auth.signup.title")}</Text>
-
-              {/* Name */}
-              <View style={[styles.inputRow, nameFocused && styles.inputRowFocused]}>
-                <Ionicons name="person-outline" size={18} color={authColors.muted} style={styles.inputIcon} />
-                <TextInput
-                  placeholder={t("auth.signup.namePlaceholder")}
-                  placeholderTextColor={authColors.placeholder}
-                  style={styles.textInput}
-                  value={name}
-                  onChangeText={setName}
-                  editable={!isSubmitting}
-                  onFocus={() => setNameFocused(true)}
-                  onBlur={() => setNameFocused(false)}
-                />
-              </View>
-
-              {/* Email */}
-              <View style={[styles.inputRow, emailFocused && styles.inputRowFocused]}>
-                <Ionicons name="mail-outline" size={18} color={authColors.muted} style={styles.inputIcon} />
-                <TextInput
-                  placeholder={t("auth.signup.emailPlaceholder")}
-                  placeholderTextColor={authColors.placeholder}
-                  style={styles.textInput}
-                  value={email}
-                  onChangeText={setEmail}
-                  editable={!isSubmitting}
-                  autoCapitalize="none"
-                  keyboardType="email-address"
-                  onFocus={() => setEmailFocused(true)}
-                  onBlur={() => setEmailFocused(false)}
-                />
-              </View>
-
-              {/* Password */}
-              <View style={[styles.inputRow, passwordFocused && styles.inputRowFocused]}>
-                <Ionicons name="lock-closed-outline" size={18} color={authColors.muted} style={styles.inputIcon} />
-                <TextInput
-                  placeholder={t("auth.signup.passwordPlaceholder")}
-                  placeholderTextColor={authColors.placeholder}
-                  secureTextEntry={!showPassword}
-                  style={[styles.textInput, { flex: 1 }]}
-                  value={password}
-                  onChangeText={setPassword}
-                  editable={!isSubmitting}
-                  onFocus={() => setPasswordFocused(true)}
-                  onBlur={() => setPasswordFocused(false)}
-                />
-                <Pressable onPress={() => setShowPassword((v) => !v)} hitSlop={8}>
-                  <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={20} color={authColors.muted} />
-                </Pressable>
-              </View>
-
-              {/* Password requirements — visible while typing, and stays up if
-                  the password is still invalid after the field loses focus. */}
-              {(passwordFocused || (password.length > 0 && !passwordValid)) && (
-                <View style={styles.passwordReqBox}>
-                  <Text style={styles.passwordReqTitle}>{t("auth.signup.passwordReqTitle")}</Text>
-                  {passwordRequirements.map((req) => (
-                    <View key={req.key} style={styles.passwordReqRow}>
-                      <Ionicons
-                        name={req.met ? "checkmark-circle" : "ellipse-outline"}
-                        size={14}
-                        color={req.met ? "#34d399" : authColors.dim}
-                      />
-                      <Text style={[styles.passwordReqText, req.met && styles.passwordReqTextMet]}>
-                        {t(PASSWORD_REQ_LABEL_KEYS[req.key])}
-                      </Text>
-                    </View>
-                  ))}
-                </View>
-              )}
-
-              {/* Continue */}
-              <Pressable
-                onPress={handleContinue}
-                disabled={isSubmitting}
-                style={[styles.button, styles.buttonPrimary, { marginTop: 8 }]}
-              >
-                <Text style={[styles.buttonText, styles.buttonTextOnLight]}>{t("auth.signup.continueBtn")}</Text>
-              </Pressable>
-
-              {/* Divider */}
-              <View style={styles.divider}>
-                <View style={styles.dividerLine} />
-                <Text style={styles.dividerText}>{t("common.or")}</Text>
-                <View style={styles.dividerLine} />
-              </View>
-
-              {/* Apple Sign-Up */}
-              {Platform.OS === "ios" && (
-                <AppleAuthentication.AppleAuthenticationButton
-                  buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_UP}
-                  buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
-                  cornerRadius={13}
-                  style={styles.appleButton}
-                  onPress={handleAppleSignup}
-                />
-              )}
-
-              <Text
-                onPress={() => !isSubmitting && router.replace("/login")}
-                style={styles.link}
-              >
-                {t("auth.signup.alreadyAccount")} <Text style={{ fontWeight: "700" }}>{t("auth.signup.loginLink")}</Text>
-              </Text>
-            </>
-          ) : step === 2 ? (
-            <>
-              {/* Step 2 header */}
-              <View style={styles.step2Header}>
-                <Pressable onPress={() => setStep(1)} hitSlop={8} style={styles.backButton}>
-                  <Ionicons name="arrow-back" size={20} color={authColors.title} />
-                </Pressable>
-                <Text style={styles.stepIndicator}>{t("auth.signup.stepIndicator")}</Text>
-              </View>
-
-              <Text style={styles.title}>{t("auth.signup.step2Title")}</Text>
-
-              {/* Birth Date */}
-              <Text style={styles.fieldLabel}>{t("auth.signup.birthDateLabel")}</Text>
-              <View style={[styles.inputRow, birthDateFocused && styles.inputRowFocused]}>
-                <Ionicons name="calendar-outline" size={18} color={authColors.muted} style={styles.inputIcon} />
-                <TextInput
-                  placeholder={t("auth.signup.birthDatePlaceholder")}
-                  placeholderTextColor={authColors.placeholder}
-                  style={styles.textInput}
-                  value={birthDate}
-                  onChangeText={(v) => setBirthDate(autoFormatDateInput(v))}
-                  editable={!isSubmitting}
-                  keyboardType="number-pad"
-                  maxLength={10}
-                  onFocus={() => setBirthDateFocused(true)}
-                  onBlur={() => setBirthDateFocused(false)}
-                />
-              </View>
-              <Text style={styles.fieldHint}>{t("auth.signup.birthDateHint")}</Text>
-
-              {/* School */}
-              <Text style={styles.fieldLabel}>{t("auth.signup.schoolLabel")}</Text>
-              <View style={[styles.inputRow, schoolFocused && styles.inputRowFocused]}>
-                <Ionicons name="school-outline" size={18} color={authColors.muted} style={styles.inputIcon} />
-                <TextInput
-                  placeholder={t("auth.signup.schoolPlaceholder")}
-                  placeholderTextColor={authColors.placeholder}
-                  style={styles.textInput}
-                  value={school}
-                  onChangeText={setSchool}
-                  editable={!isSubmitting}
-                  onFocus={() => {
-                    setSchoolFocused(true);
-                    setShowSchoolDropdown(true);
-                  }}
-                  onBlur={() => {
-                    setSchoolFocused(false);
-                    setShowSchoolDropdown(false);
-                  }}
-                />
-              </View>
-              {showSchoolDropdown && filteredSchools.length > 0 && (
-                <View style={styles.dropdown}>
-                  {filteredSchools.map((s, idx) => (
-                    <Pressable
-                      key={idx}
-                      onPress={() => {
-                        setSchool(s);
-                        setShowSchoolDropdown(false);
-                      }}
-                      style={({ pressed }) => [styles.dropdownItem, pressed && styles.dropdownItemPressed]}
-                    >
-                      <Text style={styles.dropdownItemText}>{s}</Text>
-                    </Pressable>
-                  ))}
-                </View>
-              )}
-
-              {/* TODO v2: Ride preferences */}
-              {/* <Text style={styles.prefsLabel}>{t("auth.signup.prefsLabel")}</Text>
-              <View style={styles.chipsRow}>
-                {PREFERENCE_OPTIONS.map((opt) => {
-                  const selected = preferences.includes(opt.key);
-                  return (
-                    <Pressable
-                      key={opt.key}
-                      onPress={() => togglePreference(opt.key)}
-                      style={[styles.chip, selected && styles.chipSelected]}
-                    >
-                      <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
-                        {opt.label}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View> */}
-
-              {/* Terms & Conditions — acceptance itself happens inside the
-                  modal, gated on scrolling to the end (see LegalTermsModal). */}
-              <Text style={styles.termsLabel}>{t("auth.signup.termsTitle")}</Text>
-              <Pressable
-                style={[styles.termsLinkRow, termsAccepted && styles.termsLinkRowAccepted]}
-                onPress={() => setShowTermsModal(true)}
-              >
-                <Ionicons
-                  name={termsAccepted ? "checkmark-circle" : "document-text-outline"}
-                  size={17}
-                  color={termsAccepted ? "#34d399" : authColors.purpleLight}
-                />
-                <Text style={[styles.termsLinkText, termsAccepted && styles.termsLinkTextAccepted]}>
-                  {termsAccepted ? t("auth.signup.termsAccepted") : t("auth.signup.viewTerms")}
-                </Text>
-                <Ionicons name="chevron-forward" size={16} color={termsAccepted ? "#34d399" : authColors.purpleLight} />
-              </Pressable>
-
-              {/* Continue to certification */}
-              <Pressable
-                onPress={handleContinueToCertification}
-                disabled={isSubmitting}
-                style={[styles.button, styles.buttonPrimary, { marginTop: 24 }]}
-              >
-                <Text style={[styles.buttonText, styles.buttonTextOnLight]}>{t("auth.signup.continueBtn")}</Text>
-              </Pressable>
-            </>
-          ) : (
-            <>
-              {/* Step 3 header */}
-              <View style={styles.step2Header}>
-                <Pressable onPress={() => setStep(2)} hitSlop={8} style={styles.backButton}>
-                  <Ionicons name="arrow-back" size={20} color={authColors.title} />
-                </Pressable>
-                <Text style={styles.stepIndicator}>{t("auth.signup.certStepIndicator")}</Text>
-              </View>
-
-              <Text style={styles.title}>{t("cert.signup.title")}</Text>
-
-              {/* Ranked preview: the trust levels, Adult → Student */}
-              <View style={{ gap: 4, marginTop: 12, marginBottom: 20 }}>
-                {CERT_ORDER.map((tier, i) => {
-                  const meta = CERT_META[tier];
-                  const reqKey =
-                    tier === "adult" ? "cert.screen.adultReq" : "cert.screen.studentReq";
-                  const last = i === CERT_ORDER.length - 1;
-                  return (
-                    <View key={tier}>
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-                        <View
-                          style={{
-                            width: 34, height: 34, borderRadius: 17, borderWidth: 1.5,
-                            borderColor: meta.color, backgroundColor: meta.color + "1f",
-                            alignItems: "center", justifyContent: "center",
-                          }}
-                        >
-                          <Text style={{ color: meta.color, fontWeight: "900", fontSize: 15 }}>{i + 1}</Text>
-                        </View>
-                        <Ionicons name={meta.icon as keyof typeof Ionicons.glyphMap} size={18} color={meta.color} />
-                        <View style={{ flex: 1 }}>
-                          <Text style={{ color: authColors.title, fontWeight: "700", fontSize: 14.5 }}>
-                            {t(meta.labelKey)}
-                          </Text>
-                          <Text style={{ color: authColors.muted, fontSize: 12 }}>{t(reqKey)}</Text>
-                        </View>
-                      </View>
-                      {!last && (
-                        <View
-                          style={{
-                            width: 2, height: 12, marginLeft: 16, marginVertical: 2,
-                            backgroundColor: "rgba(255,255,255,0.12)", borderRadius: 1,
-                          }}
-                        />
-                      )}
-                    </View>
-                  );
-                })}
-              </View>
-
-              <Text style={[styles.subtitle, { marginTop: 4, marginBottom: 24 }]}>
-                {t("cert.signup.laterNote")}
-              </Text>
-
-              {/* Get Started */}
-              <Pressable
-                onPress={handleGetStarted}
-                disabled={isSubmitting}
-                style={[styles.button, styles.buttonPrimary, isSubmitting && styles.buttonDisabled]}
-              >
-                {isSubmitting ? (
-                  <View style={styles.buttonContent}>
-                    <ActivityIndicator color="#2d0015" />
-                    <Text style={[styles.buttonText, styles.buttonTextOnLight, { marginLeft: 8 }]}>{t("auth.signup.creatingAccount")}</Text>
-                  </View>
-                ) : (
-                  <Text style={[styles.buttonText, styles.buttonTextOnLight]}>{t("auth.signup.getStartedBtn")}</Text>
-                )}
-              </Pressable>
-            </>
-          )}
         </View>
-      </ScrollView>
+      ) : null}
+    </TextStep>,
 
-      <WizardModal
-        visible={wizard.shouldShow}
-        steps={wizardSteps}
-        onDone={wizard.markSeen}
-        finalLabel={t("wizard.signup.finalCta")}
+    <TextStep
+      key="email"
+      {...pageProps}
+      ask={t("auth.signup.emailAsk")}
+      aside={t("auth.signup.emailAside")}
+      label={t("auth.signup.emailLabel")}
+      value={email}
+      onChangeText={answering(STEP.email, setEmail)}
+      error={errors[STEP.email]}
+      valid={isValidEmailFormat(email.trim())}
+      editable={!isSubmitting}
+      autoCapitalize="none"
+      autoCorrect={false}
+      keyboardType="email-address"
+      autoComplete="email"
+      textContentType="emailAddress"
+      returnKeyType="next"
+      onSubmitEditing={() => advance(STEP.email)}
+    />,
+
+    <PasswordStep
+      key="password"
+      {...pageProps}
+      value={password}
+      onChangeText={answering(STEP.password, setPassword)}
+      error={errors[STEP.password]}
+      valid={isPasswordValid(password)}
+      editable={!isSubmitting}
+    />,
+
+    <TextStep
+      key="birth"
+      {...pageProps}
+      ask={t("auth.signup.birthDateAsk")}
+      aside={t("auth.signup.birthDateAside")}
+      label={t("auth.signup.birthDateLabel")}
+      value={birthDate}
+      onChangeText={answering(STEP.birthDate, (next: string) =>
+        setBirthDate(autoFormatDateInput(next)),
+      )}
+      placeholder={t("auth.signup.birthDatePlaceholder")}
+      error={errors[STEP.birthDate]}
+      valid={birthDateOk}
+      editable={!isSubmitting}
+      keyboardType="number-pad"
+      maxLength={10}
+      returnKeyType="next"
+      onSubmitEditing={() => advance(STEP.birthDate)}
+    />,
+
+    <SchoolStep
+      key="school"
+      {...pageProps}
+      value={school}
+      onChange={answering(STEP.school, setSchool)}
+      error={errors[STEP.school]}
+      editable={!isSubmitting}
+    />,
+
+    <PhoneStep
+      key="phone"
+      {...pageProps}
+      value={phone}
+      onChangeText={answering(STEP.phone, setPhone)}
+      consent={phoneConsent}
+      onConsentChange={answering(STEP.phone, setPhoneConsent)}
+      error={errors[STEP.phone]}
+      valid={Boolean(storedPhone)}
+      editable={!isSubmitting}
+    />,
+
+    <TermsStep
+      key="terms"
+      {...pageProps}
+      accepted={termsAccepted}
+      onOpen={() => setShowTermsModal(true)}
+      error={errors[STEP.terms]}
+    />,
+
+    <ReviewStep key="review" {...pageProps} rows={reviewRows} onEdit={goTo} />,
+  ];
+
+  if (deviceBlocked) {
+    return <DeviceLimitScreen onBack={() => router.replace("/(auth)/login")} />;
+  }
+
+  return (
+    <>
+      <FlowShell
+        ref={shell}
+        count={TOTAL}
+        renderPages={renderPages}
+        index={index}
+        onIndexChange={setIndex}
+        unlocked={unlocked}
+        busy={isSubmitting}
+        busyLabel={t("auth.signup.creatingAccount")}
+        primaryLabel={
+          index === STEP.review
+            ? t("auth.signup.createAccountBtn")
+            : t("auth.signup.continueBtn")
+        }
+        onPrimary={() =>
+          index === STEP.review ? handleCreateAccount() : advance(index)
+        }
+        sub={
+          index === STEP.phone ? (
+            <Pressable onPress={skipPhone} hitSlop={8} accessibilityRole="button">
+              <Text style={styles.subText} maxFontSizeMultiplier={FONT_CAP.chrome}>
+                {t("auth.signup.phoneSkip")}
+              </Text>
+            </Pressable>
+          ) : index === STEP.name ? (
+            <Pressable
+              onPress={() => router.replace("/(auth)/login")}
+              hitSlop={8}
+              accessibilityRole="button"
+            >
+              <Text style={styles.subText} maxFontSizeMultiplier={FONT_CAP.chrome}>
+                {t("auth.signup.alreadyAccount")} {t("auth.signup.loginLink")}
+              </Text>
+            </Pressable>
+          ) : (
+            <Text style={styles.stepCount} maxFontSizeMultiplier={FONT_CAP.chrome}>
+              {t("auth.signup.stepOf", { n: index + 1, total: TOTAL })}
+            </Text>
+          )
+        }
       />
 
+      {/* A sibling of the shell, never a child of a page: mounting it with the
+          terms page would reset the scrolled-to-the-end flag that unlocks its
+          accept box. */}
       <LegalTermsModal
         visible={showTermsModal}
         accepted={termsAccepted}
-        onAcceptedChange={setTermsAccepted}
+        onAcceptedChange={(next) => {
+          setTermsAccepted(next);
+          if (next) setError(STEP.terms, null);
+        }}
         onClose={() => setShowTermsModal(false)}
       />
-    </KeyboardAvoidingView>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: authColors.screenBackground,
-  },
-  scroll: {
-    flexGrow: 1,
-  },
-  header: {
-    alignItems: "center",
-    paddingTop: 70,
-    paddingBottom: 32,
-  },
-  logo: {
-    width: 80,
-    height: 80,
-    marginBottom: 10,
-    borderRadius: 18,
-    overflow: "hidden",
-  },
-  wordmark: {
-    color: "#fff",
-    fontSize: 36,
-    fontWeight: "800",
-    letterSpacing: 1,
-    textAlign: "center",
-    marginBottom: 16,
-  },
-  dotsRow: {
-    flexDirection: "row",
-    gap: 8,
-  },
-  helpChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    marginTop: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 14,
-    backgroundColor: "rgba(255,255,255,0.10)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.16)",
-  },
-  helpChipText: {
-    color: "rgba(255,255,255,0.85)",
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  dot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: "rgba(255,255,255,0.3)",
-  },
-  dotActive: {
-    backgroundColor: "#fff",
-    width: 20,
-  },
-  body: {
-    flex: 1,
-    padding: 24,
-    paddingTop: 32,
-  },
-  title: {
-    fontSize: 26,
-    fontWeight: "700",
-    color: authColors.title,
-    marginBottom: 6,
-  },
-  subtitle: {
-    color: authColors.muted,
-    fontSize: 14,
-    marginBottom: 28,
-  },
-  step2Header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 20,
-  },
-  backButton: {
-    padding: 4,
-  },
-  stepIndicator: {
-    color: authColors.muted,
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  inputRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: authColors.inputBackground,
-    borderWidth: 1,
-    borderColor: authColors.inputBorder,
-    borderRadius: 12,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    marginBottom: 14,
-  },
-  inputRowFocused: {
-    borderColor: "rgba(137, 56, 213, 0.7)",
-  },
-  inputIcon: {
-    marginRight: 10,
-  },
-  fieldLabel: {
-    color: authColors.muted,
-    fontSize: 12.5,
-    fontWeight: "600",
-    marginBottom: 6,
-  },
-  fieldHint: {
-    color: authColors.dim,
-    fontSize: 11.5,
-    marginTop: -8,
-    marginBottom: 14,
-    marginLeft: 2,
-  },
-  passwordReqBox: {
-    marginTop: -6,
-    marginBottom: 14,
-    paddingHorizontal: 2,
-    gap: 5,
-  },
-  passwordReqTitle: {
-    color: authColors.muted,
-    fontSize: 11.5,
-    fontWeight: "700",
-    marginBottom: 2,
-    textTransform: "uppercase",
-    letterSpacing: 0.4,
-  },
-  passwordReqRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 7,
-  },
-  passwordReqText: {
-    color: authColors.dim,
-    fontSize: 12.5,
-  },
-  passwordReqTextMet: {
-    color: authColors.muted,
-  },
-  textInput: {
-    flex: 1,
-    color: authColors.inputText,
-    fontSize: 15,
-  },
-  button: {
-    height: 52,
-    borderRadius: 13,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  buttonPrimary: {
-    backgroundColor: authColors.purpleLight,
-  },
-  buttonDisabled: {
-    opacity: 0.7,
-  },
-  buttonContent: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  buttonText: {
-    color: "#fff",
-    fontWeight: "700",
-    fontSize: 16,
-  },
-  buttonTextOnLight: {
-    color: "#2d0015",
-  },
-  divider: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginVertical: 20,
-  },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: "rgba(255,255,255,0.1)",
-  },
-  dividerText: {
-    color: authColors.muted,
-    marginHorizontal: 12,
-    fontSize: 13,
-  },
-  appleButton: {
-    width: "100%",
-    height: 52,
-    marginBottom: 4,
-  },
-  link: {
-    textAlign: "center",
-    color: authColors.purpleLight,
-    marginTop: 16,
-    fontSize: 14,
-  },
-  termsLabel: {
-    color: authColors.muted,
-    fontSize: 13,
-    fontWeight: "600",
-    marginTop: 20,
-    marginBottom: 8,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  termsLinkRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 9,
-    backgroundColor: "rgba(255,255,255,0.04)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.1)",
-    borderRadius: 12,
-    paddingVertical: 13,
-    paddingHorizontal: 14,
-  },
-  termsLinkText: {
-    flex: 1,
-    color: authColors.purpleLight,
-    fontSize: 13.5,
-    fontWeight: "600",
-  },
-  termsLinkRowAccepted: {
-    borderColor: "rgba(52,211,153,0.35)",
-    backgroundColor: "rgba(52,211,153,0.06)",
-  },
-  termsLinkTextAccepted: {
-    color: "#34d399",
-  },
-  prefsLabel: {
-    color: authColors.muted,
-    fontSize: 13,
-    fontWeight: "600",
-    marginBottom: 12,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  chipsRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-  },
-  chip: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: "rgba(137, 56, 213, 0.3)",
-    backgroundColor: "rgba(137, 56, 213, 0.05)",
-  },
-  chipSelected: {
-    backgroundColor: "#8938D5",
-    borderColor: "#8938D5",
-  },
-  chipText: {
-    color: authColors.muted,
-    fontSize: 13,
-    fontWeight: "500",
-  },
-  chipTextSelected: {
-    color: "#fff",
-  },
-
-  // ── Language toggle ──────────────────────────────────────────────────────────
-  languageToggleWrap: {
-    position: "absolute",
-    right: 16,
-    zIndex: 20,
-  },
-
-  // ── School dropdown ───────────────────────────────────────────────────────
-  dropdown: {
-    backgroundColor: authColors.inputBackground,
-    borderWidth: 1,
-    borderColor: "rgba(137, 56, 213, 0.7)",
-    borderTopWidth: 0,
-    borderBottomLeftRadius: 12,
-    borderBottomRightRadius: 12,
-    marginBottom: 14,
-    marginTop: -14,
-    paddingVertical: 8,
-    overflow: "hidden",
-  },
-  dropdownItem: {
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.08)",
-  },
-  dropdownItemPressed: {
-    backgroundColor: "rgba(137, 56, 213, 0.1)",
-  },
-  dropdownItemText: {
-    color: authColors.inputText,
-    fontSize: 15,
-  },
+  subText: { color: P.textMuted, fontSize: 13, fontWeight: "600" },
+  stepCount: { color: P.textDim, fontSize: 12.5, fontWeight: "600" },
+  apple: { marginTop: 26, gap: 14 },
+  or: { color: P.textDim, fontSize: 12.5, fontWeight: "600" },
+  appleBtn: { height: 50, width: "100%" },
 });

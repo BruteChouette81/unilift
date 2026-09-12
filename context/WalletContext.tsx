@@ -1,5 +1,11 @@
 import { useAuth } from "@/context/AuthContext";
 import { getTransactions, setupWallet } from "@/services/walletService";
+import {
+  getPayoutSummary,
+  refreshConnectStatus,
+  type ConnectState,
+  type PayoutSummary,
+} from "@/services/connectService";
 import type { WalletTransaction } from "@/types/models";
 import React, {
   createContext,
@@ -10,14 +16,31 @@ import React, {
   useState,
 } from "react";
 import { AppState } from "react-native";
+import { devError } from "@/constants/runtime-config";
 
 type PaymentMethod = { id: string; last4: string; brand: string };
 
-export interface WalletContextValue {
+interface WalletContextValue {
   pendingChargeCents: number;
   pendingEarningsCents: number;
+  /**
+   * Earnings minus charges — the single number the wallet card and the header
+   * pill both render. Positive = UniLift owes the user, negative = the user
+   * owes UniLift. Month-end settlement moves only this difference.
+   */
+  netBalanceCents: number;
   paymentMethod: PaymentMethod | null;
   hasPaymentMethod: boolean;
+  /** Driver payout state (Stripe Connect). Independent of `paymentMethod` —
+   *  that is how this user PAYS, this is how they GET PAID. */
+  connect: ConnectState;
+  /** Re-read Connect status from Stripe. Call after returning from onboarding. */
+  refreshConnect: () => Promise<void>;
+  /** Settled balance + when the next automatic monthly payout will send it.
+   *  Decided server-side so the wallet and the payout job always agree. */
+  payouts: PayoutSummary;
+  /** Re-read the payout summary. */
+  refreshPayouts: () => Promise<void>;
   transactions: WalletTransaction[];
   stripeCustomerId: string | null;
   loading: boolean;
@@ -31,6 +54,29 @@ export interface WalletContextValue {
   refreshTransactions: () => Promise<void>;
 }
 
+const DEFAULT_PAYOUTS: PayoutSummary = {
+  availableCents: 0,
+  balanceCents: 0,
+  outstandingChargeCents: 0,
+  pendingCents: 0,
+  pendingNetCents: 0,
+  minPayoutCents: 2500,
+  payoutFeeCents: 0,
+  netPayoutCents: 0,
+  nextPayoutDate: "",
+  testCashoutEnabled: false,   // TEST-ONLY — delete with the test payout surface
+  canCashout: false,
+  reason: null,
+  pendingRequest: null,
+};
+
+const DEFAULT_CONNECT: ConnectState = {
+  status: "none",
+  payoutsEnabled: false,
+  requirementsDue: [],
+  bankLast4: null,
+};
+
 const WalletContext = createContext<WalletContextValue | undefined>(undefined);
 
 export function WalletProvider({ children }: { children: React.ReactNode }) {
@@ -40,6 +86,8 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [paymentMethod, setPaymentMethod]          = useState<PaymentMethod | null>(null);
   const [transactions, setTransactions]            = useState<WalletTransaction[]>([]);
   const [stripeCustomerId, setCustomerId]          = useState<string | null>(null);
+  const [connect, setConnect]                      = useState<ConnectState>(DEFAULT_CONNECT);
+  const [payouts, setPayouts]                      = useState<PayoutSummary>(DEFAULT_PAYOUTS);
   const [loading, setLoading]                      = useState(true);
   const [refreshing, setRefreshing]                = useState(false);
   const [error, setError]                          = useState<string | null>(null);
@@ -77,6 +125,20 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       setPendingEarnings(setupData.pendingEarningsCents ?? 0);
       setPaymentMethod(setupData.paymentMethod ?? null);
       setCustomerId(setupData.customerId ?? null);
+      setConnect({ ...DEFAULT_CONNECT, ...(setupData.connect ?? {}) });
+
+      // Payout summary is best-effort — a failure here must not blank the card
+      // or the balance, which are the parts the passenger flow depends on.
+      try {
+        const summaryRes = await getPayoutSummary(await user.getIdToken());
+        if (isStale()) return;
+        if (summaryRes.ok) {
+          const { ok: _ok, ...summary } = summaryRes;
+          setPayouts({ ...DEFAULT_PAYOUTS, ...summary });
+        }
+      } catch {
+        if (isStale()) return;
+      }
 
       // Transactions are best-effort
       try {
@@ -89,7 +151,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       }
     } catch (err: any) {
       if (isStale()) return;
-      console.error("useWallet load error:", err);
+      devError("useWallet load error:", err);
       setError(err.message ?? "Failed to load wallet");
     }
   }, [user]);
@@ -114,7 +176,36 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       const txData = await getTransactions(token);
       setTransactions(txData.transactions ?? []);
     } catch (err) {
-      console.error("refreshTransactions error:", err);
+      devError("refreshTransactions error:", err);
+    }
+  }, [user]);
+
+  const refreshPayouts = useCallback(async () => {
+    if (!user) return;
+    try {
+      const res = await getPayoutSummary(await user.getIdToken());
+      if (res.ok) {
+        const { ok: _ok, ...summary } = res;
+        setPayouts({ ...DEFAULT_PAYOUTS, ...summary });
+      }
+    } catch (err) {
+      devError("refreshPayouts error:", err);
+    }
+  }, [user]);
+
+  // Ask the server to re-read Stripe. Separate from `load()` because returning
+  // from the hosted onboarding flow needs the fresh Connect state immediately,
+  // without re-fetching the card and the whole transaction list.
+  const refreshConnect = useCallback(async () => {
+    if (!user) return;
+    try {
+      const res = await refreshConnectStatus(await user.getIdToken());
+      if (res.ok) {
+        const { ok: _ok, ...state } = res;
+        setConnect({ ...DEFAULT_CONNECT, ...state });
+      }
+    } catch (err) {
+      devError("refreshConnect error:", err);
     }
   }, [user]);
 
@@ -127,6 +218,8 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       setPaymentMethod(null);
       setTransactions([]);
       setCustomerId(null);
+      setConnect(DEFAULT_CONNECT);
+      setPayouts(DEFAULT_PAYOUTS);
       setError(null);
       setLoading(false);
       return;
@@ -152,14 +245,20 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   }, [user, load]);
 
   const hasPaymentMethod = !!paymentMethod?.id;
+  const netBalanceCents = pendingEarningsCents - pendingChargeCents;
 
   return (
     <WalletContext.Provider
       value={{
         pendingChargeCents,
         pendingEarningsCents,
+        netBalanceCents,
         paymentMethod,
         hasPaymentMethod,
+        connect,
+        refreshConnect,
+        payouts,
+        refreshPayouts,
         transactions,
         stripeCustomerId,
         loading,

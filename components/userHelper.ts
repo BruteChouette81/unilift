@@ -1,4 +1,4 @@
-import { firestoreDocumentUrl } from "@/constants/runtime-config";
+import { firestoreDocumentUrl, devWarn, devError } from "@/constants/runtime-config";
 import { type Language, SUPPORTED_LANGUAGES } from "@/constants/translations";
 import { extractFavoriteRoutes, fetchUserDocument } from "@/services/userService";
 import type { DriverAvailabilityWindow, LocationPoint, UserProfile, WeekdayKey } from "@/types/models";
@@ -158,6 +158,12 @@ export const normalizeUserData = (
   const certifications = fieldStringArray(fields, "certifications");
   const langRaw = fieldString(fields, "language", "");
   const language = SUPPORTED_LANGUAGES.includes(langRaw as Language) ? (langRaw as Language) : undefined;
+  const phone = fieldString(fields, "phone", "") || undefined;
+  // Numbers predating the consent field were entered through the share sheet,
+  // which discloses purpose, audience and duration before its Share button —
+  // so an existing number defaults to consented rather than nagging the user
+  // for a tick they already gave.
+  const phoneConsent = fieldBool(fields, "phoneConsent", !!phone);
   const facebookId = fieldString(fields, "facebookId", "") || undefined;
   const facebookName = fieldString(fields, "facebookName", "") || undefined;
   const instagramId = fieldString(fields, "instagramId", "") || undefined;
@@ -219,6 +225,8 @@ export const normalizeUserData = (
     ...(preferences.length ? { preferences } : {}),
     ...(certifications.length ? { certifications } : {}),
     ...(language ? { language } : {}),
+    ...(phone ? { phone } : {}),
+    phoneConsent,
     ...(facebookId ? { facebookId } : {}),
     ...(facebookName ? { facebookName } : {}),
     ...(instagramId ? { instagramId } : {}),
@@ -237,7 +245,7 @@ export const normalizeUserData = (
   };
 };
 
-export const shouldUpdateLocation = (
+const shouldUpdateLocation = (
   live: Location,
   stored?: { latitude?: number; longitude?: number }
 ) => {
@@ -271,7 +279,7 @@ export const fetchAndSyncUserData = async ({
     try {
       loc = await getUserLocation();
     } catch (locationErr) {
-      console.warn("Location unavailable, continuing without live location:", locationErr);
+      devWarn("Location unavailable, continuing without live location:", locationErr);
     }
 
     const normalized = normalizeUserData(firestoreData, loc);
@@ -290,7 +298,7 @@ export const fetchAndSyncUserData = async ({
         await updateLoc(await user.getIdToken(), user.uid, loc);
         normalized.localisation = loc;
       } catch (updateErr) {
-        console.warn("Failed to sync location to Firestore:", updateErr);
+        devWarn("Failed to sync location to Firestore:", updateErr);
       }
     }
 
@@ -300,7 +308,7 @@ export const fetchAndSyncUserData = async ({
 
     setUserData(normalized);
   } catch (err) {
-    console.error("fetchAndSyncUserData error:", err);
+    devError("fetchAndSyncUserData error:", err);
     setUserData({
       email: user?.email ?? "",
       xp: 0,

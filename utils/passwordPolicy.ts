@@ -1,8 +1,8 @@
-export const PASSWORD_MIN_LENGTH = 8;
+const PASSWORD_MIN_LENGTH = 8;
 
 export type PasswordRequirementKey = "minLength" | "upper" | "lower" | "number" | "special";
 
-export type PasswordRequirement = {
+type PasswordRequirement = {
   key: PasswordRequirementKey;
   met: boolean;
 };

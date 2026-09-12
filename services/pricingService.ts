@@ -1,9 +1,7 @@
 import { firestoreDocumentUrl, withFirebaseApiKey } from "@/constants/runtime-config";
-import { DEFAULT_RIDE_PRICING, type RidePricing } from "@/constants/pricing";
+import { DEFAULT_RIDE_PRICING, isValidPricingValue, type RidePricing } from "@/constants/pricing";
 import { getAuth } from "firebase/auth";
-
-const isRecord = (v: unknown): v is Record<string, unknown> =>
-  typeof v === "object" && v !== null;
+import { isRecord } from "@/services/firestore-rest";
 
 /** Read a Firestore REST numeric field ({ integerValue } | { doubleValue }). */
 const readNumberField = (v: unknown): number => {
@@ -33,7 +31,12 @@ export async function fetchRidePricing(): Promise<RidePricing> {
     const fields = isRecord(doc) && isRecord(doc.fields) ? doc.fields : {};
     for (const key of Object.keys(DEFAULT_RIDE_PRICING) as (keyof RidePricing)[]) {
       const n = readNumberField(fields[key]);
-      if (Number.isFinite(n) && n > 0) pricing[key] = n;
+      // isValidPricingValue, not `n > 0`: the fee fields (stripePercentBps,
+      // stripeFixedCents, payoutReserveBps) may legitimately be 0, and a bare
+      // `> 0` guard would silently discard a deliberate 0 and fall back to the
+      // default — i.e. the config field would stop working exactly when someone
+      // tried to switch it off.
+      if (isValidPricingValue(key, n)) pricing[key] = n;
     }
   } catch {
     // fall through to defaults

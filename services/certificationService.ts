@@ -4,7 +4,7 @@
 // (admin SDK) verifies + writes it. All calls are dev/sandbox-only.
 import { apiBaseUrl, apiFetch, devLog, devWarn, isDev } from "@/constants/runtime-config";
 
-export type CertResult =
+type CertResult =
   | { ok: true }
   | { ok: false; error: string };
 
@@ -39,7 +39,7 @@ async function postCert(
  *  its hosted URL. The badge is granted server-side by the Stripe webhook once
  *  the check passes (never here). `returnUrl` is the app deep link Stripe
  *  redirects to on completion. */
-export type AdultSessionResult =
+type AdultSessionResult =
   | { ok: true; url: string }
   | { ok: false; error: string };
 
@@ -87,7 +87,7 @@ export async function createAdultVerificationSession(
  *  grants on a verified 18+ outcome, so the badge lands even if the webhook is
  *  delayed/unconfigured. `status` mirrors the Stripe session status; `granted`
  *  is true once the tier is written. */
-export type AdultReconcileResult =
+type AdultReconcileResult =
   | { ok: true; status: string; granted: boolean }
   | { ok: false; error: string };
 

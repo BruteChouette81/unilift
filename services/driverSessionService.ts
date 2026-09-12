@@ -11,28 +11,14 @@ import type { DriverSession, LocationPoint } from "@/types/models";
 import { getMultiWaypointRoute } from "@/services/routeService";
 import { rideLog } from "@/utils/ride-logger";
 import { getAuth } from "firebase/auth";
+import { isRecord, readGeoPoint as readGeo, readNumber, readString } from "@/services/firestore-rest";
+import { USERS_BASE_URL } from "@/services/firestore-urls";
 
 const COLLECTION = "driverSessions";
-const USERS_BASE_URL = firestoreCollectionUrl("users");
 
 // Throttle session-origin writes to at most once every 15 seconds.
 let lastSessionLocationWriteAt = 0;
 const SESSION_LOCATION_THROTTLE_MS = 15000;
-
-const isRecord = (v: unknown): v is Record<string, unknown> =>
-  typeof v === "object" && v !== null;
-const readString = (v: unknown, f = ""): string => (typeof v === "string" ? v : f);
-const readNumber = (v: unknown, f = 0): number => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : f;
-};
-const readGeo = (v: unknown): LocationPoint | null => {
-  if (!isRecord(v)) return null;
-  const latitude = readNumber(v.latitude, NaN);
-  const longitude = readNumber(v.longitude, NaN);
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
-  return { latitude, longitude };
-};
 
 async function authHeaders(json = false): Promise<Record<string, string>> {
   const headers: Record<string, string> = {};
@@ -44,10 +30,23 @@ async function authHeaders(json = false): Promise<Record<string, string>> {
 
 async function throwFetchError(res: Response, msg: string): Promise<never> {
   const details = await res.text().catch(() => "");
-  throw new Error(`${msg} (status ${res.status})${details ? `: ${details.slice(0, 200)}` : ""}`);
+  // Surface the server's machine-readable `error` as `code` so rideErrorMessage
+  // can turn it into something a person can act on. Without this a billing
+  // refusal — "your balance is too high" — reached the user as a raw status line.
+  let code: string | undefined;
+  try {
+    const parsed = JSON.parse(details) as { error?: string };
+    if (typeof parsed?.error === "string") code = parsed.error;
+  } catch { /* not JSON; fall back to the text below */ }
+  const err = new Error(
+    `${msg} (status ${res.status})${details ? `: ${details.slice(0, 200)}` : ""}`,
+  ) as Error & { code?: string; status?: number };
+  if (code) err.code = code;
+  err.status = res.status;
+  throw err;
 }
 
-export function parseDriverSession(doc: unknown): DriverSession | null {
+function parseDriverSession(doc: unknown): DriverSession | null {
   if (!isRecord(doc) || !isRecord(doc.fields)) return null;
   const f = doc.fields;
   const driverId = readString(isRecord(f.driverId) ? f.driverId.stringValue : "");
@@ -187,7 +186,7 @@ export async function updateDriverSessionLocation(loc: LocationPoint): Promise<v
       },
     }),
   });
-  if (!res.ok) console.warn("Failed to refresh driver session location");
+  if (!res.ok) devWarn("Failed to refresh driver session location");
 }
 
 /** Fetch the current user's driver session (null if none / offline). */
@@ -254,36 +253,13 @@ export async function dispatchRideRequest(requestId: string): Promise<{ notified
   if (!res.ok) await throwFetchError(res, "Failed to dispatch request");
   const data = await res.json().catch(() => ({}));
   const notified = Number(data?.notified) || 0;
+  // The broadcast guard refused to fan out (default-deny until config/devNotify
+  // or config/broadcast is set). That is a config state, not an error, so it must
+  // be logged loudly — otherwise it is indistinguishable from "no drivers online".
+  const blocked = typeof data?.blocked === "string" ? data.blocked : null;
+  if (blocked) rideLog.warn("dispatch", `broadcast blocked: ${blocked}`, { requestId });
   rideLog.info("dispatch", `dispatched request ${requestId}`, { notified });
   return { notified };
-}
-
-/** Count drivers currently online (status == "online") via Firestore aggregation. */
-export async function countOnlineDrivers(): Promise<number> {
-  const url = withFirebaseApiKey(`${firestoreBaseUrl}:runAggregationQuery`);
-  const res = await fetch(url, {
-    method: "POST",
-    headers: await authHeaders(true),
-    body: JSON.stringify({
-      structuredAggregationQuery: {
-        structuredQuery: {
-          from: [{ collectionId: COLLECTION }],
-          where: {
-            fieldFilter: {
-              field: { fieldPath: "status" },
-              op: "EQUAL",
-              value: { stringValue: "online" },
-            },
-          },
-        },
-        aggregations: [{ count: {}, alias: "count" }],
-      },
-    }),
-  });
-  if (!res.ok) return 0;
-  const data: unknown = await res.json().catch(() => null);
-  const countVal = (data as any)?.[0]?.result?.aggregateFields?.count?.integerValue;
-  return Number(countVal) || 0;
 }
 
 /** Driver claims a passenger request (first-wins, atomic on the server).
@@ -310,6 +286,14 @@ export async function acceptRideRequest(
   destinationLat: number;
   destinationLng: number;
   maxSeat: number;
+  /** The passenger and their own pickup/dropoff. The server has always returned
+   *  these; surfacing them lets the driver's ride screen plot the passenger
+   *  immediately instead of waiting for the first ride-doc snapshot. */
+  passengerId?: string;
+  passengerOriginLat?: number | null;
+  passengerOriginLng?: number | null;
+  passengerDestLat?: number | null;
+  passengerDestLng?: number | null;
 }> {
   const user = getAuth().currentUser;
   if (!user) throw new Error("Not authenticated");

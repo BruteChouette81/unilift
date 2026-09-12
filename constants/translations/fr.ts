@@ -20,6 +20,14 @@ export const fr = {
     noPaymentMethodTitle: "Carte requise",
     noPaymentMethodBody: "Ajoute une carte à ton portefeuille avant de rejoindre un trajet.",
     noPaymentMethodCta: "Aller au portefeuille",
+    balanceTooHigh: "Ton solde de trajets impayés est trop élevé pour réserver. Il est réglé le 1er du mois, ou tu peux le payer depuis ton portefeuille.",
+    settlementFailed: "Ton dernier paiement a été refusé. Mets ta carte à jour dans le portefeuille pour réserver de nouveau.",
+    disputeOpen: "Une contestation est ouverte sur ton compte. Les trajets sont suspendus jusqu'à sa résolution — contacte le soutien si c'est une erreur.",
+    passengerCannotBeCharged: "Ce passager ne peut pas être facturé pour l'instant, le trajet n'a donc pas pu être créé. Rien de ton côté.",
+    dispatchThrottled: "Tu viens d'envoyer cette demande. Attends une minute avant de réessayer.",
+    contactWindowClosed: "Le trajet est terminé : le numéro du passager n'est plus accessible.",
+    contactRideNotActive: "Ce trajet n'est pas actif, les coordonnées ne sont pas accessibles.",
+    contactNotPassenger: "Cette personne n'est pas passagère de ce trajet.",
     rideAlreadyStarted: "Ce trajet a déjà commencé.",
     rideAlreadyCompleted: "Ce trajet est terminé.",
     notRideDriver: "Seul le conducteur peut démarrer le trajet.",
@@ -57,45 +65,93 @@ export const fr = {
       lockedButton: "Verrouillé — {{seconds}}s",
     },
     signup: {
-      title: "Créer un compte",
-      subtitle: "Inscrivez-vous pour utiliser UniLift",
-      namePlaceholder: "Nom",
-      emailPlaceholder: "Courriel",
-      passwordPlaceholder: "Mot de passe",
       passwordReqTitle: "Le mot de passe doit contenir :",
       passwordReqMinLength: "Au moins 8 caractères",
       passwordReqUpper: "Une lettre majuscule",
       passwordReqLower: "Une lettre minuscule",
       passwordReqNumber: "Un chiffre",
       passwordReqSpecial: "Un caractère spécial (!@#$…)",
-      weakPasswordTitle: "Mot de passe trop faible",
-      weakPasswordMsg: "Ton mot de passe ne respecte pas encore toutes les conditions affichées sous le champ.",
       continueBtn: "Continuer",
       alreadyAccount: "Déjà un compte ?",
       loginLink: "Se connecter",
-      step2Title: "Votre profil",
-      step2Subtitle: "Aidez les autres à vous connaître",
-      stepIndicator: "2 / 3",
-      certStepIndicator: "3 / 3",
+      phoneLabel: "Numéro de téléphone",
+      phonePlaceholder: "(514) 555-0142",
+      phoneSkip: "Je l'ajouterai plus tard",
       birthDateLabel: "Date de naissance",
       birthDatePlaceholder: "JJ/MM/AAAA",
-      birthDateHint: "Format : JJ/MM/AAAA — tu dois avoir 18 ans ou plus pour utiliser UniLift.",
       schoolLabel: "Établissement scolaire",
-      schoolPlaceholder: "Université ou collège",
-      prefsLabel: "Préférences de trajet",
-      getStartedBtn: "Commencer",
       creatingAccount: "Création du compte…",
-      missingInfo: "Informations manquantes",
-      missingInfoMsg: "Veuillez remplir votre nom, courriel et mot de passe.",
+      emailTakenTitle: "Courriel déjà inscrit",
+      emailTakenMsg: "Un compte existe déjà pour cette adresse courriel. Connectez-vous, ou utilisez une autre adresse.",
+      emailTakenLogin: "Se connecter",
+      emailTakenChange: "Changer de courriel",
       termsTitle: "Conditions d'utilisation",
       viewTerms: "Voir les conditions d'utilisation",
       termsAccepted: "Conditions d'utilisation acceptées",
       termsScrollHint: "Défile jusqu'au bas pour accepter",
       termsCheckbox: "J'ai lu et j'accepte les conditions d'utilisation",
-      termsError: "Vous devez accepter les conditions pour continuer.",
       signupFailed: "Inscription échouée",
       appleSigninFailed: "Connexion Apple échouée",
       appleNoToken: "Aucun jeton d'identité reçu. Veuillez réessayer.",
+
+      // ── Le parcours en huit pages ───────────────────────────────────────
+      // Une question par page. `ask` est la question elle-même, `aside` la
+      // seule ligne qui explique pourquoi on la pose. Tutoiement partout : le
+      // public, ce sont des étudiants, et c'est déjà le ton des clés récentes.
+      stepOf: "{{n}} / {{total}}",
+
+      nameAsk: "On t'appelle comment ?",
+      nameAside: "Ton prénom s'affiche auprès des personnes avec qui tu embarques.",
+      nameLabel: "Prénom",
+
+      emailAsk: "Quel est ton courriel ?",
+      emailAside: "C'est ton identifiant, et c'est là qu'arrivent tes reçus. Une adresse scolaire débloque le badge Étudiant plus tard.",
+      emailLabel: "Courriel",
+
+      passwordAsk: "Choisis un mot de passe",
+      passwordAside: "Il te servira à chaque connexion.",
+      passwordLabel: "Mot de passe",
+      passwordShow: "Afficher le mot de passe",
+      passwordHide: "Masquer le mot de passe",
+
+      birthDateAsk: "Quelle est ta date de naissance ?",
+      birthDateAside: "UniLift, c'est 18 ans et plus. Ta date de naissance débloque le badge Adulte et te permet de conduire.",
+
+      schoolAsk: "Où étudies-tu ?",
+      schoolAside: "On te jumelle avec des gens qui vont sur le même campus.",
+      schoolChoose: "Choisir mon établissement",
+      schoolSearchPlaceholder: "Chercher un cégep ou une université",
+      schoolSearchEmpty: "Aucun établissement ne correspond à « {{query}} ».",
+
+      phoneAsk: "Quel est ton numéro ?",
+      phoneAside: "Il sert au moment du ramassage — pour se retrouver au bon coin de rue.",
+
+      termsAsk: "Une dernière chose",
+      termsAside: "Lis les conditions d'utilisation, puis accepte pour continuer.",
+
+      reviewAsk: "Tout est prêt",
+      reviewAside: "Vérifie le tout, puis crée ton compte.",
+      reviewPhoneNone: "Ajouté plus tard",
+      createAccountBtn: "Créer mon compte",
+
+      // ── Erreurs affichées sous le champ, jamais en alerte ────────────────
+      errNameRequired: "Entre ton prénom pour continuer.",
+      errEmailInvalid: "Cette adresse ne semble pas valide. Exemple : toi@ecole.ca",
+      errEmailTaken: "Un compte existe déjà pour cette adresse.",
+
+      // ── Pare-feu de création de compte ───────────────────────────────────
+      deviceLimitTitle: "Trop de comptes sur cet appareil",
+      deviceLimitBody: "Cet appareil a atteint la limite de {{max}} comptes. Si tu penses que c'est une erreur, écris-nous et on va regarder ça.",
+      deviceLimitContact: "Contacter le soutien",
+      deviceLimitBackToLogin: "Retour à la connexion",
+      errPasswordWeak: "Il manque encore une des conditions ci-dessous.",
+      errBirthDateInvalid: "Entre une date au format JJ/MM/AAAA.",
+      errBirthDateTooYoung: "Tu dois avoir 18 ans ou plus pour utiliser UniLift.",
+      errSchoolRequired: "Choisis ton établissement pour continuer.",
+      errPhoneInvalid: "Entre un numéro à 10 chiffres, ou choisis « Je l'ajouterai plus tard ».",
+      errPhoneConsent: "Coche la case pour qu'on puisse enregistrer ton numéro.",
+      errTermsRequired: "Accepte les conditions pour continuer.",
+
       preferences: {
         no_smoking: "Sans fumée",
         music_ok: "Musique OK",
@@ -104,6 +160,27 @@ export const fr = {
         chatty: "Bavard",
         fast_driver: "Conducteur rapide",
       },
+    },
+    // Messages d'erreur Firebase Auth — clés alignées 1:1 sur `normalizeAuthError`.
+    errors: {
+      timeout: "Délai dépassé. Vérifiez votre connexion Internet et réessayez.",
+      expoGoTitle: "Version native requise",
+      expoGo: "La connexion Apple ne fonctionne pas dans Expo Go, car l'identifiant du bundle ne correspond pas. Lancez l'app avec expo run:ios.",
+      appleCancelled: "La connexion Apple a été annulée.",
+      inProgressTitle: "Veuillez patienter",
+      inProgress: "Une demande d'authentification est déjà en cours.",
+      missingInput: "Veuillez remplir tous les champs requis.",
+      invalidCredentials: "Courriel ou mot de passe invalide.",
+      invalidEmail: "Veuillez saisir une adresse courriel valide.",
+      emailInUse: "Cette adresse courriel est déjà utilisée.",
+      accountExistsOtherMethod: "Un compte existe déjà pour cette adresse courriel. Connectez-vous avec la méthode utilisée à l'origine.",
+      weakPassword: "Le mot de passe est trop faible.",
+      networkTitle: "Erreur réseau",
+      network: "Vérifiez votre connexion Internet et réessayez.",
+      tooManyRequests: "Trop de tentatives. Veuillez patienter un moment et réessayer.",
+      userDisabled: "Ce compte a été désactivé.",
+      operationNotAllowed: "Cette méthode de connexion n'est pas activée.",
+      generic: "Une erreur est survenue. Veuillez réessayer.",
     },
   },
   home: {
@@ -259,6 +336,8 @@ export const fr = {
     namePlaceholder: "Votre nom",
     birthDateLabel: "Date de naissance",
     birthDatePlaceholder: "JJ/MM/AAAA",
+    phoneLabel: "Numéro de téléphone",
+    phoneInvalid: "Ce numéro de téléphone ne semble pas valide.",
     schoolLabel: "École",
     schoolPlaceholder: "Université ou collège",
     prefsLabel: "Préférences de trajet",
@@ -280,15 +359,18 @@ export const fr = {
   },
   wallet: {
     loading: "Chargement du portefeuille…",
-    pendingThisMonth: "En attente ce mois",
-    billedEndOfMonth: "Prélevé le 1er du mois prochain",
+    yourBalance: "Votre solde",
+    earningsRow: "Gains",
+    chargesRow: "Frais de trajets",
+    settledOnFirst: "Votre solde est réglé automatiquement le 1er de chaque mois.",
+    tipPositive: "Vous pouvez utiliser vos gains pour payer vos trajets. Conduisez pour accumuler un solde positif et recevoir un virement vers votre banque.",
+    tipNegative: "Conduisez pour effacer ce montant — chaque trajet que vous offrez est déduit de ce que vous devez.",
+    tipNeutral: "Tout est réglé. Conduisez pour accumuler un solde, ou embarquez et réglez le 1er.",
     paymentMethod: "Moyen de paiement",
     addCard: "Ajouter un moyen de paiement",
     defaultCard: "Carte par défaut",
     removeCard: "Retirer la carte",
     removeCardMsg: "Êtes-vous sûr de vouloir retirer votre moyen de paiement ?",
-    pendingEarnings: "Gains en attente",
-    paidEndOfMonth: "Versé le 1er du mois prochain",
     transactions: "Transactions",
     noTransactions: "Aucune transaction",
     noTransactionsSub: "Vos frais de trajets apparaîtront ici",
@@ -300,22 +382,87 @@ export const fr = {
     statusCompleted: "Complété",
     statusPending: "En attente",
     statusFailed: "Échoué",
+    statusAwaitingSetup: "Config. requise",
+    statusCancelled: "Annulé",
+    statusOutstanding: "À rembourser",
+    statusOpen: "En examen",
     txRideCharge: "Frais de trajet",
     txRideEarning: "Gains de trajet",
     txMonthlyCharge: "Recharge mensuelle",
+    txFeeBreakdown: "Trajets {{rides}} + traitement {{fee}}",
+    txCashout: "Retrait",
     txMonthlyPayout: "Retrait mensuel",
+    txEarningsAvailable: "Gains disponibles",
+    txRefund: "Remboursement",
+    txClawback: "Ajustement de remboursement",
+    txDispute: "Frais contestés",
+    txPayoutFee: "Frais de virement",
+    payouts: {
+      disconnect: "D\u00e9connecter",
+      disconnectTitle: "D\u00e9connecter votre banque ?",
+      disconnectBody: "Vos informations bancaires seront supprim\u00e9es de Stripe.\n\nVotre solde de {{amount}} reste dans votre portefeuille UniLift et continue de payer vos propres trajets \u2014 vous ne serez simplement plus pay\u00e9 avant de reconnecter un compte.",
+      disconnectConfirm: "D\u00e9connecter",
+      disconnectDone: "Votre compte bancaire a \u00e9t\u00e9 d\u00e9connect\u00e9.",
+      errCashoutPending: "Un virement est en route. Vous pourrez d\u00e9connecter une fois qu'il sera arriv\u00e9.",
+      errBalanceNotZero: "Stripe d\u00e9tient encore un versement pour vous. Une fois qu'il aura atteint votre banque, vous pourrez d\u00e9connecter.",
+      errStripeRefused: "Stripe n'a pas pu d\u00e9connecter ce compte pour l'instant. R\u00e9essayez plus tard.",
+      available: "Pr\u00eat \u00e0 \u00eatre vers\u00e9",
+      pendingLabel: "Gagn\u00e9 ce cycle",
+      pendingHint: "Disponible apr\u00e8s le 1er",
+      needMore: "Encore {{amount}} pour atteindre {{min}}",
+      needSetup: "Terminez la configuration pour \u00eatre pay\u00e9",
+      nextPayout: "{{amount}} arrive le {{date}}",
+      nextPayoutSub: "Les virements sont envoy\u00e9s automatiquement chaque mois",
+      // Annonc\u00e9 d'avance : le conducteur gagne le plein tarif \u00e0 chaque trajet,
+      // donc la seule d\u00e9duction qui existe ne doit jamais surprendre dans le relev\u00e9.
+      feeBreakdown: "{{earned}} gagn\u00e9s \u2212 {{fee}} de frais de virement",
+      sending: "Virement en route \u00b7 {{amount}}",
+      sendingSub: "Arrive bient\u00f4t dans votre compte",
+      confirmTitle: "Configurer les virements ?",
+      confirmBody: "Vous n'en avez pas besoin pour utiliser vos gains \u2014 ils paient d\u00e9j\u00e0 automatiquement vos propres trajets.\n\nConfigurez ceci seulement si vous voulez que vos gains soient vers\u00e9s dans votre banque chaque mois. Stripe demandera vos pi\u00e8ces d'identit\u00e9 et vos infos bancaires.",
+      confirmCancel: "Plus tard",
+      confirmContinue: "Continuer",
+      bannerTitle: "{{amount}} gagn\u00e9s \u2014 d\u00e9j\u00e0 appliqu\u00e9s \u00e0 vos trajets",
+      bannerSub: "Configurez les virements pour recevoir vos gains dans votre banque",
+      section: "Virements",
+      noneTitle: "Configurer les virements",
+      noneSub: "Inscrivez-vous avec Stripe pour recevoir vos gains de conducteur. ",
+      startCta: "Configurer les virements",
+      pendingTitle: "Terminez votre configuration",
+      pendingSub: "Stripe a encore besoin de quelques informations avant de pouvoir vous payer.",
+      finishCta: "Continuer",
+      restrictedTitle: "Virements suspendus",
+      restrictedSub: "Stripe a suspendu les virements vers votre compte. Ouvrez votre tableau de bord Stripe pour r\u00e9gler la situation.",
+      fixCta: "R\u00e9gler avec Stripe",
+      active: "Virements activ\u00e9s",
+      activeWithBank: "Virements activ\u00e9s \u00b7 \u2022\u2022\u2022\u2022 {{last4}}",
+      activeSub: "Vos gains sont vers\u00e9s automatiquement apr\u00e8s chaque r\u00e8glement mensuel.",
+      manage: "G\u00e9rer",
+      moreRequirements: "+{{count}} autre(s)",
+      errorTitle: "Configuration des virements",
+      errorBody: "Impossible d'ouvrir Stripe pour le moment. Veuillez r\u00e9essayer.",
+      // Configuration c\u00f4t\u00e9 plateforme. Inutile de dire \u00ab r\u00e9essayez \u00bb, et le chauffeur
+      // doit savoir que son compte n'est pas en cause.
+      errNotAvailableYet:
+        "Les virements ne sont pas encore disponibles \u2014 nous terminons la configuration avec notre fournisseur de paiement. Il n'y a aucun probl\u00e8me avec votre compte.",
+      errStripeUnavailable:
+        "Stripe ne r\u00e9pond pas pour le moment. Veuillez r\u00e9essayer dans quelques minutes.",
+      // Le code n'est volontairement PAS traduit : un identifiant de diagnostic
+      // localis\u00e9 est introuvable en recherche et impossible \u00e0 rapporter.
+      errorCode: "Code\u00a0: {{code}}",
+    },
     info: {
-      pendingCharge: {
-        title: "Frais en attente",
-        body: "Le total de vos trajets du mois s'accumule ici. Vous êtes facturé une seule fois à la fin du mois — aucun débit immédiat à chaque trajet.",
+      balance: {
+        title: "Votre solde",
+        body: "Vos gains de conducteur et vos frais de passager s'accumulent ensemble tout le mois. Le 1er de chaque mois, on soustrait l'un de l'autre et seule la différence bouge : si votre solde est négatif, on prélève ce montant sur votre carte ; s'il est positif, on vous le verse. Conduire réduit donc directement ce que vous devez. UniLift ne prend aucune commission! Un conducteur gagne exactement le tarif payé par ses passagers. Le seul supplément sur votre facture mensuelle est les frais de traitement de carte, affichés séparément.",
       },
       paymentMethod: {
         title: "Moyen de paiement",
         body: "Ajoutez une carte pour payer vos trajets en tant que passager. Votre carte n'est débitée qu'une fois par mois, pour l'ensemble de vos trajets.",
       },
-      earnings: {
-        title: "Gains en attente",
-        body: "Vos gains en tant que conducteur s'accumulent ici. Ils vous sont versés à la fin du mois, directement sur votre compte.",
+      payouts: {
+        title: "Virements",
+        body: "Pour recevoir de l'argent, vous devez connecter une carte de débit : c'est elle qui permet de recevoir votre virement dans votre compte de banque le 5 du mois, une fois les frais de trajet du mois encaissés. Vous devez avoir un solde positif d'au moins 25 $ pour qu'un virement soit envoyé. Certaines conditions s'appliquent.",
       },
       transactions: {
         title: "Transactions",
@@ -736,6 +883,27 @@ export const fr = {
     profileLoadError: "Impossible de charger le profil.",
     profileRides: "Trajets",
     profileAge: "{{age}} ans",
+
+    // ── Suivi du passager (carte + carte passager) ──────────────────────────
+    navigate: "Y aller",
+    callPassenger: "Appeler",
+    textPassenger: "Texter",
+    noPhoneShared: "Aucun numéro partagé — il viendra à toi",
+    contactLinkFailed: "Impossible d'ouvrir ton application téléphone.",
+    pickupAddress: "Point de ramassage",
+    dropoffAddress: "Point de dépôt",
+    // Le point de ramassage est figé au moment de la demande : on ne reçoit
+    // jamais la position en direct du passager. Il faut le dire clairement,
+    // sinon le conducteur croit suivre quelqu'un qui bouge.
+    pickupStaticNote: "Point fixe choisi lors de la demande — pas en temps réel",
+    etaAway: "{{dist}} · {{time}} de route",
+    etaUnavailable: "Distance indisponible",
+    addressUnavailable: "Adresse indisponible",
+    nextStop: "Prochain arrêt",
+    legendYou: "Toi (en direct)",
+    legendPickup: "Ramassage (fixe)",
+    legendDropoff: "Dépôt",
+    minutesShort: "min",
   },
   events: {
     hotTonight: "Ce soir",
@@ -861,27 +1029,26 @@ export const fr = {
     keepRide: "Conserver",
   },
   onboarding: {
-    title: "Bienvenue sur UniLift 🎉",
-    subtitle: "Quelques infos pour personnaliser ton expérience. Tu peux tout modifier plus tard.",
     homeLabel: "Adresse du domicile",
-    homePlaceholder: "Où habites-tu ?",
-    homeHint: "On l'utilise pour te proposer des trajets près de chez toi.",
-    driverLabel: "Disponibilité conducteur",
-    driverToggle: "Je suis prêt à conduire parfois",
-    driverHint: "Indique quand tu peux conduire — les passagers sur ta route te joindront par notification.",
-    driverDaysLabel: "Jours",
-    driverTimeLabel: "Plage horaire",
-    driverFrom: "De",
-    driverTo: "À",
-    driverDestLabel: "Destination habituelle",
-    driverDestPlaceholder: "ex. Université Laval",
+
+    // ── Le parcours en trois pages ────────────────────────────────────────
+    // Même forme que l'inscription : une question par page. La page 1 porte
+    // aussi l'accueil, pour ne pas dépenser une page entière à dire bonjour.
+    homeAsk: "Où habites-tu ?",
+    homeAside: "Bienvenue sur UniLift. Ton adresse sert à te proposer des trajets proches de chez toi — tu peux tout changer plus tard.",
+    favoritesAsk: "Où vas-tu souvent ?",
+    favoritesAside: "Ajoute les endroits où tu vas souvent — l'école, le gym, un bar.",
+    favoritesEmpty: "Aucun endroit pour l'instant.",
+    favoritesAdd: "Ajouter cet endroit",
+    favoritesRemove: "Retirer {{place}}",
+    cardAsk: "Ajoute un moyen de paiement",
+    cardAside: "Il faut une carte pour embarquer ou payer un trajet. Tu peux l'ajouter plus tard depuis le portefeuille.",
+    cardConnected: "{{brand}} •••• {{last4}}",
+    continueBtn: "Continuer",
+    homePlaceholder: "Rue et ville",
     favoritesLabel: "Endroits favoris",
-    favoritesHint: "Ajoute les endroits où tu vas souvent (école, gym, bar…).",
-    favoritesPlaceholder: "Ajouter un endroit favori",
-    addFavorite: "Ajouter",
-    cardLabel: "Carte de paiement",
+    favoritesPlaceholder: "Chercher un endroit",
     addCard: "Connecter une carte",
-    cardHint: "Nécessaire pour rejoindre ou payer des trajets. Tu peux l'ajouter plus tard depuis le Portefeuille.",
     finish: "Terminer",
     skip: "Passer pour l'instant",
     saving: "Enregistrement…",
@@ -909,6 +1076,71 @@ export const fr = {
     openSettingsBtn: "Ouvrir les réglages",
     deniedHint: "Tu as déjà refusé la permission. Va dans Réglages → UniLift → Notifications et active-les pour continuer.",
   },
+  // ── Partage du numéro de téléphone avec le conducteur ──────────────────────
+  // Ce texte EST le consentement : il doit dire à quoi sert le numéro, qui le
+  // voit et quand ça s'arrête. En retirer un morceau, c'est retransformer une
+  // divulgation en simple formulaire.
+  phoneShare: {
+    title: "Laisse ton conducteur te joindre",
+    highlight: "Ton conducteur seulement, pour ce trajet seulement",
+    bodyWithName: "{{name}} est en route. Un numéro lui permet de te dire où il est stationné — ou de te trouver si le point est imprécis.",
+    body: "Ton conducteur est en route. Un numéro lui permet de te dire où il est stationné — ou de te trouver si le point est imprécis.",
+    inputLabel: "Ton numéro de téléphone",
+    placeholder: "(514) 555-0142",
+    point1: "Partagé uniquement avec le conducteur de ce trajet",
+    point2: "Cesse de fonctionner une fois que tu es déposé",
+    // Pas « jamais sur ton profil » — tu peux maintenant l'y voir et le
+    // modifier. Ce qui reste vrai : personne d'autre dans l'app n'y a accès.
+    point3: "Jamais montré à personne d'autre dans l'app",
+    invalid: "Ce numéro de téléphone ne semble pas valide.",
+    share: "Partager mon numéro",
+    update: "Modifier mon numéro",
+    skip: "Pas maintenant",
+    saveFailed: "Impossible d'enregistrer ton numéro",
+    saveFailedMsg: "Une erreur est survenue. Tu pourras l'ajouter plus tard depuis ton profil.",
+    sharedWithDriver: "Ton conducteur peut te joindre au {{phone}}",
+    addPrompt: "Ajoute un numéro pour que ton conducteur puisse te joindre",
+  },
+
+  // La carte du numéro de téléphone : onglet profil, réglages du profil et la
+  // carte d'attente du passager. `boundary*` est la variante conducteur, où le
+  // numéro affiché appartient à quelqu'un d'autre.
+  phoneCard: {
+    label: "Numéro de téléphone",
+    ghostMask: "(___) ___-____",
+    addCta: "Ajouter",
+    editCta: "Modifier",
+    save: "Enregistrer",
+    cancel: "Annuler",
+    invalid: "Ce numéro ne semble pas valide.",
+
+    eyeLabel: "Qui le voit",
+    // La pastille et le panneau qu'elle ouvre : la politique du numéro.
+    policyLabel: "Politique",
+    policyTitle: "À quoi sert ton numéro",
+    disclosureBody:
+      "Ton numéro sert à une seule chose : permettre à ton conducteur et à toi de vous joindre au moment du ramassage — quel coin de rue, quelle porte, combien de temps il attend.",
+    disclosurePoint1: "Partagé uniquement avec le conducteur du trajet en cours.",
+    disclosurePoint2: "Jamais affiché sur ton profil public, jamais vendu, jamais utilisé pour de la publicité.",
+    disclosurePoint3: "L'accès prend fin dès que tu es déposé.",
+
+    // Le consentement, coché avant tout enregistrement.
+    consentLabel:
+      "J'autorise UniLift à enregistrer mon numéro de téléphone et à le partager avec les autres utilisateurs de mes trajets.",
+    consentRequired: "Coche la case pour enregistrer ton numéro.",
+    revokeTitle: "Retirer ton numéro ?",
+    revokeBody:
+      "Retirer ton autorisation supprime ton numéro d'UniLift. Tes conducteurs ne pourront plus te joindre au ramassage tant que tu ne l'auras pas rajouté.",
+    revokeConfirm: "Retirer",
+    revokeFailed: "Impossible de retirer ton numéro",
+
+    boundaryLabel: "Jusqu'au dépôt",
+    boundaryBody:
+      "{{name}} a partagé ce numéro pour que tu puisses organiser le ramassage. Il disparaît de ton écran dès que tu l'as déposé.",
+    boundaryBodyGeneric:
+      "Ce numéro a été partagé pour que tu puisses organiser le ramassage. Il disparaît de ton écran dès que tu l'as déposé.",
+  },
+
   profileCompletion: {
     // Carte du profil
     cardTitle: "Complète ton profil",
@@ -937,32 +1169,18 @@ export const fr = {
       homeAddressDone:  "Adresse domicile",
       payment:          "Connecter une carte de paiement",
       paymentDone:      "Carte de paiement",
+      phone:            "Ajouter ton numéro de téléphone",
+      phoneDone:        "Numéro de téléphone",
     },
   },
   wizard: {
     // Boutons partagés du carrousel
     next: "Suivant",
     back: "Retour",
+    stepBack: "Revenir à l'étape {{n}}",
     skip: "Passer",
     gotIt: "J'ai compris",
     replay: "Revoir le guide",
-
-    // ── Inscription ──────────────────────────────────────────────────────────
-    signup: {
-      finalCta: "Commencer",
-      step1Title: "Bienvenue sur UniLift",
-      step1Highlight: "Le covoiturage étudiant, en moins cher",
-      step1Body: "On crée ton compte en 3 étapes rapides.",
-      step2Title: "Tes infos de connexion",
-      step2Body: "Ton nom est visible par les gens avec qui tu matches. Mets ton vrai prénom pour la confiance. Ton courriel sert à te connecter et à recevoir tes reçus : utilise ton courriel scolaire pour débloquer la certification Étudiant plus tard.",
-      step3Title: "Ton profil",
-      step3Body: "Ta date de naissance débloque la certification Adulte (18+) et l'éligibilité à conduire. Ton école te permet d'avoir le badge Étudiant.",
-      step4Title: "Notifications requises",
-      step4Highlight: "Obligatoire pour utiliser l'app",
-      step4Body: "UniLift a besoin des notifications pour te prévenir dès qu'un conducteur accepte ta demande ou qu'un passager cherche un lift sur ta route. On te le demandera juste après l'inscription.",
-      step5Title: "Certification",
-      step5Body: "Trois niveaux de confiance : Non certifié, Adulte, Étudiant. Tu pourras compléter les vérifications plus tard depuis ton profil.",
-    },
 
     // ── Portefeuille : connecter une carte ──────────────────────────────────
     wallet: {
@@ -972,8 +1190,8 @@ export const fr = {
       step1Body: "Une méthode de paiement est nécessaire pour demander un trajet. Sans elle, impossible d'envoyer une demande à un conducteur.",
       step2Title: "100 % sécurisé",
       step2Body: "Stripe gère l'enregistrement de ta carte. UniLift ne voit jamais ton numéro de carte.",
-      step3Title: "Facturation mensuelle",
-      step3Body: "Tes trajets ne sont pas facturés un par un : les montants sont regroupés et prélevés en fin de mois. Si tu conduis, tes gains sont versés en fin de mois aussi.",
+      step3Title: "Un seul règlement par mois",
+      step3Body: "Tes trajets ne sont pas facturés un par un. Le 1er du mois, on soustrait tes gains de conducteur de tes frais de passager et seule la différence bouge : on prélève si tu dois, on te verse si tu es en avance.",
     },
 
     // ── Accueil : recherche de trajet ───────────────────────────────────────
@@ -984,6 +1202,8 @@ export const fr = {
       step1Body: "Écris où tu vas dans la barre de recherche. UniLift trouve un conducteur qui match avec ton profile.",
       step2Title: "Des suggestions intelligentes",
       step2Body: "Les icônes t'aident à choisir vite : 🏠 domicile · ⭐ favori · 🔥 événement Hype · 🕐 récent · 📍 lieu. Touche une suggestion pour lancer ta demande.",
+      // Utilisé quand la carte Hype est désactivée — même ligne sans l'entrée 🔥.
+      step2BodyNoHype: "Les icônes t'aident à choisir vite : 🏠 domicile · ⭐ favori · 🕐 récent · 📍 lieu. Touche une suggestion pour lancer ta demande.",
       step3Title: "Le mode Hype 🔥",
       step3Body: "Appuie sur le bouton flamme pour passer en mode nuit et révéler les événements, partys et bars sur la carte.",
       step4Title: "Utilise la carte",
@@ -997,7 +1217,7 @@ export const fr = {
       step1Highlight: "Partys, bars et événements près de toi",
       step1Body: "La carte passe en mode nuit et s'allume avec tous les événements qui se passent autour de toi en ce moment.",
       step2Title: "Touche une flamme",
-      step2Body: "Chaque flamme est un événement — plus elle est grosse et pulse, plus c'est hype. Touche-la pour voir le lieu, l'heure, le prix et le nombre de personnes intéressées.",
+      step2Body: "Chaque flamme est un événement. Plus elle est grosse, plus c'est hype. Touche-la pour voir le lieu, l'heure, le prix et le nombre de personnes intéressées.",
       step3Title: "Rends-toi sur place",
       step3Body: "Depuis la fiche d'un événement, obtiens l'itinéraire ou demande un lift directement vers le lieu.",
     },
@@ -1017,6 +1237,12 @@ export const fr = {
     },
   },
   cert: {
+    comingSoon: "Bientôt disponible",
+    comingSoonSub: "Vérifie ton identité pour obtenir des badges de confiance visibles par les autres étudiants. La certification est en développement.",
+    featureAdult: "Vérification d'identité 18+",
+    featureStudent: "Vérification du courriel étudiant",
+    featureTrust: "Badges de confiance sur ton profil",
+    featurePriority: "Priorité dans le jumelage",
     tier: {
       uncertified: "Non certifié",
       adult: "Adulte",
@@ -1024,8 +1250,11 @@ export const fr = {
     },
     signup: {
       title: "Fais-toi certifier",
-      subtitle: "La certification renforce la confiance dans la communauté. C'est optionnel — tu pourras la compléter plus tard depuis ton profil.",
-      laterNote: "Les vérifications Adulte et Étudiant se complètent depuis ton profil après l'inscription.",
+      subtitle: "La certification renforce la confiance dans la communauté. Tu peux la compléter plus tard depuis ton profil.",
+      nextNote: "Dès que ton compte est créé, tu passes à l'étape de vérification. Tu peux la faire tout de suite ou plus tard.",
+      stepIndicator: "4 / 4",
+      continueBtn: "Continuer",
+      skipBtn: "Passer pour l'instant",
     },
     screen: {
       title: "Certification",
@@ -1035,7 +1264,7 @@ export const fr = {
       statusVerified: "Vérifié",
       ladderEyebrow: "Échelle de confiance",
       levelLabel: "Niveau {{n}}",
-      trustNote: "Chaque niveau ajoute de la confiance. Cumule les deux — ils montent d'Adulte à Étudiant.",
+      trustNote: "Chaque niveau ajoute de la confiance.",
       statusNoneTitle: "Pas encore certifié",
       statusNoneSub: "Commence par Adulte et grimpe l'échelle.",
       statusSomeSub: "Continue de grimper pour tout débloquer.",
@@ -1055,6 +1284,41 @@ export const fr = {
       studentInvalidEmail: "Utilise un courriel d'une école partenaire.",
       genericError: "Une erreur est survenue. Réessaie.",
       unavailable: "La certification n'est disponible qu'en mode développement.",
+    },
+  },
+
+  // ── Nouveautés de la version (composants/whats-new) ─────────────────────────
+  // Une diapo par entrée de WHATS_NEW_SLIDES. Les boutons Suivant / Passer
+  // réutilisent le namespace `wizard`.
+  whatsNew: {
+    intro: {
+      eyebrow: "Version {{version}}",
+      title: "Découvre les nouveautés d'UniLift",
+      body: "Trois changements, plus une chose qu'on veut mettre au clair. Glisse pour commencer — environ 20 secondes.",
+    },
+    rides: {
+      eyebrow: "Simplifié",
+      title: "Un lift, en un geste",
+      body: "Choisis ta destination. C'est tout. Plus de formulaire à remplir ni d'annonces à parcourir : tu écris où tu vas, et on avertit les conducteurs qui roulent déjà par là.",
+    },
+    matching: {
+      eyebrow: "Jumelage",
+      title: "Vous choisissez tous les deux",
+      body: "Un conducteur qui accepte ne t'engage à rien. Tu vois qui c'est — sa note, ses trajets, ses badges — et tu glisses pour confirmer. Si tu passes, ta demande repart aussitôt. Le trajet commence quand vous avez dit oui tous les deux.",
+    },
+    certification: {
+      eyebrow: "À venir",
+      title: "Certification",
+      body: "Deux badges à gagner : Adulte, vérifié par pièce d'identité, et Étudiant, vérifié par ton courriel scolaire. Ils s'affichent sur ton profil pour que chacun sache avec qui il embarque. On finit de brancher la vérification.",
+      badgeAdult: "Adulte 18+",
+      badgeStudent: "Étudiant",
+    },
+    fee: {
+      eyebrow: "Le prix, c'est le prix",
+      title: "UniLift ne prend aucune commission.",
+      body: "Le montant payé par le passager est le montant gagné par le conducteur — même tarif des deux côtés. On est une communauté avant d'être une plateforme.",
+      footnote: "Le seul extra sur ta facture mensuelle est les frais de carte, affichés séparément.",
+      cta: "C'est parti",
     },
   },
 };

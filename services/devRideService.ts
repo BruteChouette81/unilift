@@ -35,7 +35,7 @@ async function devPost<T = Record<string, unknown>>(
   return json;
 }
 
-export interface DevSeedRequestParams {
+interface DevSeedRequestParams {
   originLat?: number;
   originLng?: number;
   destinationLat?: number;
@@ -96,7 +96,7 @@ export function devFinishRide(rideId: string): Promise<{
   return devPost("/dev/finish", { rideId });
 }
 
-export interface DevForceStatusParams {
+interface DevForceStatusParams {
   rideId?: string;
   status?: string;
   paymentStatus?: string;
@@ -116,11 +116,15 @@ export function devReset(): Promise<{ success: boolean; requests: number; rides:
   return devPost("/dev/reset", {});
 }
 
-export interface DevDispatchDriverRow {
+interface DevDispatchDriverRow {
   uid: string;
   name: string;
   driverModeEnabled: boolean;
   hasPushToken: boolean;
+  /** Which environment registered this push token, or null for legacy tokens. */
+  tokenEnv: string | null;
+  /** Days since the token was last registered, or null when never recorded. */
+  tokenAgeDays: number | null;
   wouldNotify: boolean;
   skipReason: string | null;
 }
@@ -128,9 +132,16 @@ export interface DevDispatchDriverRow {
 export interface DevDispatchReport {
   matching: "broadcast" | "proximity";
   database: string;
+  /** Dev tokens older than this are not notified. */
+  devTokenMaxAgeDays: number;
   totalUsers: number;
   wouldNotify: number;
   me: DevDispatchDriverRow | null;
+  /** Would THIS device be pushed when a different account requests a ride? The
+   *  `me` row always reads "self", so this is the useful signal. */
+  meWouldReceive: boolean;
+  /** Why not, when `meWouldReceive` is false. */
+  meBlockedBy: string | null;
   drivers: DevDispatchDriverRow[];
 }
 

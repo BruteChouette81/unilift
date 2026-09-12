@@ -2,24 +2,35 @@ import { Redirect, Tabs } from "expo-router";
 import React, { useRef, useEffect, useState } from "react";
 import { Animated, StyleSheet, TouchableOpacity, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { TAB_BAR_GAP, TAB_BAR_HEIGHT } from "@/constants/layout";
 import { BlurView } from "expo-blur";
-import { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 
 import { useAuth } from "@/context/AuthContext";
 import { useLanguage } from "@/context/LanguageContext";
 import { Ionicons } from "@expo/vector-icons";
+import { P } from "@/constants/palette";
 
 const C = {
-  bg:          "#080810",
+  bg:          P.bg,
   border:      "rgba(137, 56, 213, 0.22)",
-  purple:      "#8938D5",
-  purpleLight: "#e09af7",
-  pink:        "#FD165A",
-  dim:         "#4b5563",
+  purple:      P.accent,
+  purpleLight: P.accentLight,
+  pink:        P.hype,
+  dim:         P.textDim,
 };
 
-const TAB_BAR_HEIGHT = 68;
+// expo-router v6 vendors its own copy of the bottom-tabs navigator, so the
+// `BottomTabBarProps` exported by `@react-navigation/bottom-tabs` is a
+// structurally different (and incompatible) type. Deriving the props from the
+// `Tabs` component keeps this in step with whatever expo-router ships.
+type BottomTabBarProps = Parameters<
+  NonNullable<React.ComponentProps<typeof Tabs>["tabBar"]>
+>[0];
+
 const SLIDER_W = 36;
+// Mirrors MIN_BOTTOM_INSET in constants/layout.ts — kept equal so the bar and
+// the padding screens apply around it agree.
+const MIN_INSET = 8;
 
 const VISIBLE_TABS = ["index", "wallet", "profile"] as const;
 type VisibleTabName = (typeof VISIBLE_TABS)[number];
@@ -32,7 +43,7 @@ const TAB_ICONS: Record<VisibleTabName, { focused: string; idle: string }> = {
 
 function CustomTabBar({ state, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
-  const tabBarBottom = Math.max(insets.bottom, 8) + 10;
+  const tabBarBottom = Math.max(insets.bottom, MIN_INSET) + TAB_BAR_GAP;
   const [barWidth, setBarWidth] = useState(0);
 
   const visibleRoutes = state.routes.filter(r =>

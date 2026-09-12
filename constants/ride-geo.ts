@@ -17,3 +17,22 @@
  * driver earns nothing for that leg.
  */
 export const DROPOFF_CONFIRM_RADIUS_KM = 3;
+
+/**
+ * Max straight-line distance from the user for a place to be offered as a
+ * suggestion (search box, home address, favourite places).
+ *
+ * Google Place Autocomplete's `location`/`radius` pair is only a *bias*, not a
+ * restriction — without `strictbounds` it still happily returns Vancouver for a
+ * user in Montréal. So the cap is applied here, on the client, after each
+ * prediction's coordinates are resolved.
+ *
+ * NOT a server-side rule: it shapes what the app *offers*, and nothing more. A
+ * ride is still priced and gated by the server (`legDistanceKm`, the fare clamp
+ * and DROPOFF_CONFIRM_RADIUS_KM above), so raising or lowering this cannot
+ * affect what anyone is charged.
+ *
+ * 400 km ≈ Montréal→Toronto, which is about the longest trip that is plausibly
+ * a rideshare rather than a flight.
+ */
+export const MAX_SUGGESTION_DISTANCE_KM = 400;

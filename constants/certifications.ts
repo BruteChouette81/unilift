@@ -11,13 +11,46 @@
 // is what makes this a real verification layer.
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+/**
+ * Master switch for the whole certification / identity-verification layer.
+ *
+ * Hidden in production because the `/cert/*` endpoints live ONLY in the SANDBOX
+ * Cloud Functions codebase (`functions-sandbox/index.js` has nine of them;
+ * `functions/index.js` has none). A production build talks to the LIVE function,
+ * so every verification action would 404 — the feature is unreachable there, not
+ * merely unfinished.
+ *
+ * While this is false the app hides every certification surface behind a Coming
+ * Soon screen: the cert screen body, all badge render sites, the profile entry
+ * point, the profile-completion task, and the signup verification step.
+ *
+ * Certification gates no capability anywhere (verified across both servers and
+ * all client code), so flipping this changes what users *see*, never what they
+ * can *do*.
+ *
+ * To re-enable, in this order:
+ *   1. Port the `/cert/*` routes and the Stripe Identity webhook from
+ *      functions-sandbox/index.js to functions/index.js — they are sandbox-only,
+ *      so on a production build the flag alone would leave every button 404ing.
+ *   2. Set STRIPE_IDENTITY_WEBHOOK_SECRET in functions/.env and register the
+ *      live-mode webhook.
+ *   3. Change this to `true`.
+ *
+ * This used to be `= isDev`, which conflated two unrelated questions: "is this a
+ * dev build?" and "is this feature finished?". That meant certification could
+ * never be demoed on a production build, and would switch itself on for everyone
+ * the day someone pointed a dev build at live data.
+ */
+export const CERTIFICATION_ENABLED = false;
+
 export type CertTier = "adult" | "student";
 
 /** Rank order, weakest → strongest. Used for stable badge ordering and to pick a
  *  single "highest" tier in compact / single-color contexts. */
 export const CERT_ORDER: CertTier[] = ["adult", "student"];
 
-export type CertMeta = {
+type CertMeta = {
   /** Badge / accent color for this tier. */
   color: string;
   /** Ionicons glyph name. */
@@ -54,7 +87,7 @@ export function highestTier(certifications?: string[] | null): CertTier | null {
 }
 
 // School email domains accepted for student verification. Mirrors the SCHOOLS
-// list in app/(auth)/signup.tsx and is validated again server-side. Keep the two
+// list in constants/schools.ts and is validated again server-side. Keep the two
 // in sync when adding a partner school.
 export const SCHOOL_EMAIL_DOMAINS: string[] = [
   "ulaval.ca", // Université Laval
@@ -66,7 +99,7 @@ export const SCHOOL_EMAIL_DOMAINS: string[] = [
 ];
 
 /** Extract the lowercased domain of an email, or "" if malformed. */
-export function emailDomain(email: string): string {
+function emailDomain(email: string): string {
   const at = email.lastIndexOf("@");
   if (at < 0) return "";
   return email.slice(at + 1).trim().toLowerCase();

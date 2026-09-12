@@ -8,22 +8,6 @@ function parseMs(iso: string | undefined | null): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
-export function isRideLive(ride: Ride, now: Date = new Date()): boolean {
-  if (ride.status === "started") return true;
-  if (ride.status !== "planned") return false;
-  const dateMs = parseMs(ride.date);
-  if (dateMs == null) return true;
-  const nowMs = now.getTime();
-  return dateMs <= nowMs && nowMs - dateMs < RIDE_LIVE_WINDOW_MS;
-}
-
-export function isRideScheduled(ride: Ride, now: Date = new Date()): boolean {
-  if (ride.status !== "planned") return false;
-  const dateMs = parseMs(ride.date);
-  if (dateMs == null) return false;
-  return dateMs > now.getTime();
-}
-
 export function isRideExpired(ride: Ride, now: Date = new Date()): boolean {
   const nowMs = now.getTime();
   if (ride.status === "expired" || ride.status === "completed") return true;
@@ -40,6 +24,3 @@ export function isRideExpired(ride: Ride, now: Date = new Date()): boolean {
   return false;
 }
 
-export function isRideJoinable(ride: Ride): boolean {
-  return ride.status === "planned";
-}

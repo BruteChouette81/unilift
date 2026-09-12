@@ -4,15 +4,16 @@ import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import React, { useState } from "react";
 import { Image, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { P } from "@/constants/palette";
 
 const C = {
-  purple: "#8938D5",
-  purpleLight: "#e09af7",
-  gold: "#fbbf24",
-  text: "#f3f4f6",
+  purple: P.accent,
+  purpleLight: P.accentLight,
+  gold: P.warning,
+  text: P.text,
   muted: "#cbd5e1",
-  dim: "#9ca3af",
-  success: "#34d399",
+  dim: P.textMuted,
+  success: P.success,
   border: "rgba(255,255,255,0.09)",
 };
 

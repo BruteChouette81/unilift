@@ -4,7 +4,7 @@ import { getProfileCompletion, type ProfileCompletion } from "@/utils/profile-co
 import type { UserProfile } from "@/types/models";
 import { useMemo } from "react";
 
-export type UseProfileCompletion = {
+type UseProfileCompletion = {
   completion: ProfileCompletion;
   userData: UserProfile | null;
   /**

@@ -5,12 +5,13 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import { Alert, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { P } from "@/constants/palette";
 
 const C = {
-  bg: "#080810", surface: "#0f0f1e",
-  purple: "#7C3AED", purpleLight: "#a78bfa",
-  text: "#f3f4f6", muted: "#9ca3af",
-  gold: "#fbbf24",
+  bg: P.bg, surface: P.surface,
+  purple: P.accentDeep, purpleLight: P.accentSoft,
+  text: P.text, muted: P.textMuted,
+  gold: P.warning,
   borderFaint: "rgba(255, 255, 255, 0.06)",
 };
 const BUTTON_GRADIENT = ["#7C3AED", "#2563eb"] as const;

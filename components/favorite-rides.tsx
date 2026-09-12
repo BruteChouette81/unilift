@@ -2,16 +2,17 @@ import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import React from "react";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { P } from "@/constants/palette";
 
 const C = {
-  surface:     "#0f0f1e",
+  surface:     P.surface,
   border:      "rgba(124, 58, 237, 0.22)",
   borderFaint: "rgba(255, 255, 255, 0.06)",
-  purpleLight: "#a78bfa",
-  gold:        "#fbbf24",
-  text:        "#f3f4f6",
-  muted:       "#9ca3af",
-  dim:         "#4b5563",
+  purpleLight: P.accentSoft,
+  gold:        P.warning,
+  text:        P.text,
+  muted:       P.textMuted,
+  dim:         P.textDim,
 };
 
 const CARD_GRADIENT = ["#1e1b4b", "#0d1224"] as const;

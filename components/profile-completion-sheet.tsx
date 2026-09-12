@@ -5,14 +5,15 @@ import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
 import React from "react";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { P } from "@/constants/palette";
 
 const C = {
-  surface:     "#0f0f1e",
+  surface:     P.surface,
   border:      "rgba(137, 56, 213, 0.30)",
-  gold:        "#fbbf24",
-  text:        "#f3f4f6",
-  muted:       "#9ca3af",
-  purpleLight: "#e09af7",
+  gold:        P.warning,
+  text:        P.text,
+  muted:       P.textMuted,
+  purpleLight: P.accentLight,
 };
 
 type Props = {

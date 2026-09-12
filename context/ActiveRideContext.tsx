@@ -4,9 +4,9 @@ import React, { createContext, useCallback, useContext, useEffect, useState } fr
 const STORAGE_KEY = "unilift_active_ride";
 const PENDING_REQUEST_KEY = "unilift_pending_request";
 
-export type ActiveRideRole = "driver" | "passenger";
+type ActiveRideRole = "driver" | "passenger";
 
-export type ActiveRideInfo = {
+type ActiveRideInfo = {
   rideId: string;
   role: ActiveRideRole;
   /** Route params needed to re-open the ride screen */
@@ -18,7 +18,7 @@ export type ActiveRideInfo = {
  * Persisted so the search can auto-resume if the app is closed/reopened
  * before a driver accepts. Mirrors ActiveRideInfo but for the pre-match phase.
  */
-export type PendingRideRequest = {
+type PendingRideRequest = {
   requestId: string;
   /** Route params needed to re-open findingDriverScreen */
   params: Record<string, string>;

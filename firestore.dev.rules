@@ -25,7 +25,12 @@ service cloud.firestore {
       return request.resource.data.keys().hasAny([
         'pendingChargeCents', 'pendingEarningsCents',
         'stripeCustomerId', 'stripePaymentMethodId',
-        'stripePaymentMethodLast4', 'stripePaymentMethodBrand'
+        'stripePaymentMethodLast4', 'stripePaymentMethodBrand',
+        'stripeConnectAccountId', 'stripeConnectStatus',
+        'stripeConnectPayoutsEnabled', 'stripeConnectRequirementsDue',
+        'stripeConnectBankLast4', 'stripeConnectUpdatedAt',
+        'availableEarningsCents', 'cashoutEligibleSince',
+        'lastCashoutAt'
       ]);
     }
 
@@ -35,8 +40,32 @@ service cloud.firestore {
         .hasAny([
           'pendingChargeCents', 'pendingEarningsCents',
           'stripeCustomerId', 'stripePaymentMethodId',
-          'stripePaymentMethodLast4', 'stripePaymentMethodBrand'
+          'stripePaymentMethodLast4', 'stripePaymentMethodBrand',
+          'stripeConnectAccountId', 'stripeConnectStatus',
+          'stripeConnectPayoutsEnabled', 'stripeConnectRequirementsDue',
+          'stripeConnectBankLast4', 'stripeConnectUpdatedAt',
+          'availableEarningsCents', 'cashoutEligibleSince',
+          'lastCashoutAt'
         ]);
+    }
+
+    // Reputation is server-authoritative. `/rides/rate` is the only writer, and it
+    // only accepts a rating from someone who was actually on the ride. Without
+    // this a user could PATCH their own document to a 5-star, 500-ride profile —
+    // and rating is the single trust signal the whole app is built on.
+    function isReputationKey() {
+      return ['ratings', 'ratingWeigth', 'ratingSum', 'ratingCount',
+              'xp', 'ridesCompleted'];
+    }
+
+    function newDocHasReputationFields() {
+      return request.resource.data.keys().hasAny(isReputationKey());
+    }
+
+    function touchesReputationFields() {
+      return request.resource.data.diff(resource.data)
+        .affectedKeys()
+        .hasAny(isReputationKey());
     }
 
     // The `certifications` array is server-authoritative: it is granted only by
@@ -53,6 +82,40 @@ service cloud.firestore {
         .hasAny(['certifications']);
     }
 
+    // ── Email is identity ──────────────────────────────────────────────────────
+    //
+    // `users/{uid}.email` used to be unconstrained free text: the owner rules
+    // below block money, certifications and reputation, but nothing stopped a
+    // user PATCHing their own document to hold somebody else's address. That
+    // made two profiles carrying one email trivially producible, and it made the
+    // field useless as an identity key — which the account-creation firewall
+    // now depends on it being.
+    //
+    // So a client may only write the address it actually authenticated as.
+    // Compared case-insensitively because Firebase tokens carry the address
+    // lowercased while the client has historically written whatever Apple or the
+    // signup form supplied.
+    //
+    // Gated on `touchesEmail()` rather than applied to every write: accounts
+    // created before canonicalisation shipped can hold an address that no longer
+    // equals their token's, and enforcing this unconditionally would lock those
+    // users out of editing their own name or school forever.
+    function touchesEmail() {
+      return request.resource.data.diff(resource.data)
+        .affectedKeys()
+        .hasAny(['email']);
+    }
+
+    function emailMatchesToken() {
+      return !request.resource.data.keys().hasAny(['email'])
+        || (request.auth.token.email != null
+            && request.resource.data.email.lower() == request.auth.token.email.lower())
+        // An Apple account created without the email scope has no address in its
+        // token. It may write the empty string the client already sends, and
+        // nothing else — otherwise "no email" would be a licence to claim any.
+        || (request.auth.token.email == null && request.resource.data.email == '');
+    }
+
     function isSignedIn() {
       return request.auth != null;
     }
@@ -66,28 +129,46 @@ service cloud.firestore {
     }
 
     // ── Users ──────────────────────────────────────────────────────────────────
+    //
+    // OWNER-ONLY. This document holds email, birthDate, homeAddress, localisation,
+    // the Expo push token, Stripe ids and every money counter. It used to be
+    // `allow read: if isSignedIn()`, which also governs `list` — so a single
+    // throwaway signup could enumerate the collection and walk off with the entire
+    // user base. That was the app's largest privacy hole and a Loi 25 breach.
+    //
+    // What other people legitimately need to see — name, avatar, rating, xp,
+    // rides, badges — is projected into users/{uid}/public/profile by the
+    // mirrorPublicProfile trigger. Read that instead.
     match /users/{uid} {
 
-      // Any signed-in user can read public profile fields (ride cards, profile
-      // modals, driver/passenger info).
-      allow read: if isSignedIn();
+      allow read: if isSignedIn() && isOwner(uid);
 
       // A user can create their own document (sign-up flow).
       allow create: if isSignedIn() && isOwner(uid)
+        && emailMatchesToken()
         && !newDocHasFinancialFields()
-        && !newDocHasCertField();
+        && !newDocHasCertField()
+        && !newDocHasReputationFields();
 
-      // A user can update ONLY their own document, never financial fields, and
-      // never their own certifications (server-authoritative — see above).
+      // A user can update ONLY their own document, and never the fields the
+      // server owns: money, certifications, reputation — and never an email
+      // other than the one they authenticated as.
       allow update: if isSignedIn() && isOwner(uid)
+        && (!touchesEmail() || emailMatchesToken())
         && !touchesFinancialFields()
-        && !touchesCertField();
-
-      // NOTE: the cross-user ratings/xp/ridesCompleted write rule is intentionally
-      // absent. Those fields are now written only by the /rides/rate Cloud
-      // Function after verifying the caller shared the ride.
+        && !touchesCertField()
+        && !touchesReputationFields();
 
       allow delete: if false;
+    }
+
+    // The public projection — the ONLY cross-user readable view of a person.
+    // Written exclusively by the mirrorPublicProfile trigger and /rides/rate via
+    // the admin SDK, which bypasses these rules. `write: false` here is what makes
+    // reputation unforgeable: the fields live on a document nobody owns.
+    match /users/{uid}/public/{docId} {
+      allow read: if isSignedIn();
+      allow write: if false;
     }
 
     // Transactions subcollection — owner may read; all writes are Cloud Function–only.
@@ -100,6 +181,34 @@ service cloud.firestore {
     // the apiSandbox Cloud Function (admin SDK). Never accessible to clients: the
     // token value is a bearer credential and must not be enumerable/forgeable.
     match /certEmailTokens/{token} {
+      allow read, write: if false;
+    }
+
+    // ── Account-creation firewall ──────────────────────────────────────────────
+    //
+    // Both written only by the Admin SDK, which bypasses these rules entirely.
+    //
+    // `emailIndex/{canonicalAddress}` is the one-mailbox-one-account claim,
+    // written by the beforeUserCreated blocking function inside a transaction.
+    // Denied to clients because a client that could read it could enumerate
+    // every address that has ever signed up, and one that could write it could
+    // squat a mailbox it does not own.
+    //
+    // `deviceAccounts/{deviceHash}` counts accounts created per device. Denied
+    // for the same reasons plus the obvious one: a client that could write its
+    // own tally is not capped by it.
+    match /emailIndex/{canonicalAddress} {
+      allow read, write: if false;
+    }
+
+    match /deviceAccounts/{deviceHash} {
+      allow read, write: if false;
+    }
+
+    // Per-IP signup counters, written by the beforeUserCreated blocking
+    // function. Only populated when config/security.maxSignupsPerIpPerHour is
+    // set — the cap is opt-in, because students share campus NAT addresses.
+    match /signupThrottle/{ipHash} {
       allow read, write: if false;
     }
 
@@ -118,6 +227,14 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['driverLocation']);
     }
 
+    // Boarding nonce. `rides/{id}` above is readable by every signed-in user, so a
+    // QR nonce stored on it was never a secret — a passenger could read it and
+    // board without ever scanning the driver's screen, defeating the one check
+    // that proves they physically got in the car. Server-only.
+    match /rides/{rideId}/private/{docId} {
+      allow read, write: if false;
+    }
+
     // ── Ride Requests ───────────────────────────────────────────────────────────
     match /rideRequests/{requestId} {
 
@@ -133,10 +250,19 @@ service cloud.firestore {
       allow create: if isSignedIn()
         && request.resource.data.passengerId == request.auth.uid;
 
-      // Only the owner can update their request, and they cannot reassign it.
+      // Only the owner can update their request, they cannot reassign it, and
+      // they cannot drive its match state. `status`, `matchedDriverId`,
+      // `matchedRideId`, `matchedAt`, `rejectedDrivers`, `quotedFareCents` and
+      // `lastDispatchAt` are written only by the Cloud Functions — otherwise a
+      // passenger could flip a matched request back to "open" and be re-dispatched
+      // while their ride still exists, or edit the fare they agreed to.
       allow update: if isSignedIn()
         && isOwner(resource.data.passengerId)
-        && request.resource.data.passengerId == resource.data.passengerId;
+        && request.resource.data.passengerId == resource.data.passengerId
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+             'status', 'matchedDriverId', 'matchedRideId', 'matchedAt',
+             'rejectedDrivers', 'quotedFareCents', 'lastDispatchAt', 'dispatchCount'
+           ]);
 
       // The owner may delete (cancel) their own request.
       allow delete: if isSignedIn() && isOwner(resource.data.passengerId);
@@ -168,5 +294,24 @@ service cloud.firestore {
         && request.resource.data.driverId == request.auth.uid;
       allow delete: if isSignedIn() && isOwner(uid);
     }
+
+    // ── Settlements ────────────────────────────────────────────────────────────
+    // One claim doc per user per month, written only by settleAllUsers. It is
+    // what stops a charge that succeeded at Stripe but failed to record locally
+    // from being charged again next month, so a client must never be able to
+    // touch it.
+    match /settlements/{settlementId} {
+      allow read, write: if false;
+    }
+
+    // ── Payouts queue ──────────────────────────────────────────────────────────
+    // Server-only. The monthly settlement enqueues one doc per driver owed money
+    // and the payout sweeper drains it; clients never read or write this. The
+    // user-visible copy of each row lives in users/{uid}/transactions, which is
+    // already readable by its owner above.
+    match /payouts/{payoutId} {
+      allow read, write: if false;
+    }
+
   }
 }

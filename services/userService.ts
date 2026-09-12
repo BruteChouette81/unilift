@@ -4,35 +4,23 @@ import {
 } from "@/constants/runtime-config";
 import type { FavoriteRoute } from "@/types/models";
 import type { Language } from "@/constants/translations";
-import { getAuth } from "firebase/auth";
+import { isRecord, readNumber, readString } from "@/services/firestore-rest";
+import {
+  extractPublicProfile,
+  fetchPublicProfile,
+  type PublicProfile,
+} from "@/services/publicProfileService";
 
-// Inlined (not imported from components/userHelper) to avoid a module cycle:
-// userHelper already imports from this file. Pure age-from-birthdate calc.
-const ageFromBirthDate = (birthDateStr: string): number => {
-  const birth = new Date(birthDateStr);
-  if (isNaN(birth.getTime())) return 0;
-  const today = new Date();
-  let age = today.getFullYear() - birth.getFullYear();
-  const m = today.getMonth() - birth.getMonth();
-  if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) age--;
-  return age;
-};
-
-export type FirestoreDocument = {
+type FirestoreDocument = {
   fields?: Record<string, unknown>;
 };
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null;
-
-const readString = (value: unknown, fallback = ""): string =>
-  typeof value === "string" ? value : fallback;
-
-const readNumber = (value: unknown, fallback = 0): number => {
-  const num = Number(value);
-  return Number.isFinite(num) ? num : fallback;
-};
-
+/** Read a `users/{uid}` document.
+ *
+ *  OWNER ONLY. The rules deny reading anybody else's — that document holds email,
+ *  birth date, home address, push token, Stripe ids and money counters. To show
+ *  another person on a ride card or a profile modal, use
+ *  fetchPublicProfile(uid) from services/publicProfileService.ts. */
 export const fetchUserDocument = async (
   uid: string,
   token?: string,
@@ -89,105 +77,103 @@ export const extractFavoriteRoutes = (data: FirestoreDocument | null) => {
     .filter((route): route is FavoriteRoute => route !== null);
 };
 
-export const updateUserLanguage = async (
+/** A driver's public-facing profile, shown on the passenger's ride screen and
+ *  the swipe-to-confirm match card.
+ *
+ *  Now an alias of PublicProfile: it is read from `users/{uid}/public/profile`,
+ *  never from `users/{uid}`, which is owner-only. See services/publicProfileService.ts. */
+export type DriverProfile = PublicProfile;
+
+/** Decode a public-profile REST document into a DriverProfile.
+ *
+ *  Kept as a named export because several screens decode a document they already
+ *  hold. It now expects a `users/{uid}/public/profile` document — passing a raw
+ *  `users/{uid}` document would yield an empty profile, and reading one for
+ *  somebody else is denied by the rules anyway. */
+export const extractDriverProfile = extractPublicProfile;
+
+/** Fetch a driver's public profile by uid (authenticated). */
+export function fetchDriverProfile(uid: string): Promise<DriverProfile | null> {
+  return fetchPublicProfile(uid);
+}
+
+
+/**
+ * The `users/{uid}` document a brand-new account starts life with.
+ *
+ * Both signup paths land here — the email one after `signUp()`, the Apple one
+ * immediately after `signInToFirebaseWithApple()`. Apple gives us no birth date
+ * or school, so those arrive empty and are collected later from Profile
+ * Settings; the field still has to be *written*, so the document has a
+ * consistent shape either way.
+ */
+export type NewUserProfile = {
+  name: string;
+  email: string;
+  birthDate: string;
+  school: string;
+  /** E.164, or omitted. Present only when the consent box was ticked. */
+  phone?: string;
+};
+
+/**
+ * Create the Firestore profile for a freshly created account.
+ *
+ * ## The mask is the part that bites
+ *
+ * A `PATCH` with `updateMask.fieldPaths` writes *only* the listed paths — a
+ * field present in the body but missing from the mask is silently dropped, with
+ * a 200 back. So the phone pair has to be added to both, which is why they are
+ * built from one conditional rather than two.
+ *
+ * Lives here rather than in the signup screen because the Apple path and the
+ * email path were each carrying their own copy of it, and a mask fixed in one
+ * would not have reached the other.
+ */
+export const createUserProfile = async (
   uid: string,
   token: string,
-  language: Language,
+  data: NewUserProfile,
 ): Promise<void> => {
-  const url = withFirebaseApiKey(
-    firestoreDocumentUrl("users", uid) + "?updateMask.fieldPaths=language",
-  );
-  await fetch(url, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
+  const hasPhone = Boolean(data.phone);
+
+  const maskPaths = [
+    "name", "email", "createdAt", "birthDate", "school", "driverModeEnabled",
+    ...(hasPhone ? ["phone", "phoneConsent"] : []),
+  ];
+
+  const res = await fetch(
+    firestoreDocumentUrl("users", uid) +
+      "?" + maskPaths.map((f) => `updateMask.fieldPaths=${f}`).join("&"),
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        fields: {
+          name:      { stringValue: data.name },
+          email:     { stringValue: data.email },
+          createdAt: { stringValue: new Date().toISOString() },
+          birthDate: { stringValue: data.birthDate },
+          school:    { stringValue: data.school },
+          // Only written when the tick box was ticked, so an account never
+          // starts life holding a number it has no permission to hold.
+          ...(hasPhone
+            ? {
+                phone:        { stringValue: data.phone },
+                phoneConsent: { booleanValue: true },
+              }
+            : {}),
+          // Driver mode is ON by default for new users; toggled from profile.
+          driverModeEnabled: { booleanValue: true },
+        },
+      }),
     },
-    body: JSON.stringify({
-      fields: { language: { stringValue: language } },
-    }),
-  });
-};
+  );
 
-/** A driver's public-facing profile, shown on the passenger's ride screen and
- *  the swipe-to-confirm match card. Decoded from the users/{uid} Firestore doc. */
-export type DriverProfile = {
-  uid: string;
-  name: string;
-  xp: number;
-  rating: number;
-  avatar: string | null;
-  ridesCompleted: number;
-  school?: string;
-  age?: number;
-  instagramHandle?: string;
-  certifications: string[];
-};
-
-/** Decode a raw users/{uid} Firestore REST document into a DriverProfile. */
-export function extractDriverProfile(
-  uid: string,
-  doc: { fields?: Record<string, unknown> },
-): DriverProfile {
-  const fields = doc?.fields ?? {};
-  const str = (key: string): string => {
-    const v = fields[key] as Record<string, unknown> | undefined;
-    return typeof v?.stringValue === "string" ? v.stringValue : "";
-  };
-  const num = (key: string): number => {
-    const v = fields[key] as Record<string, unknown> | undefined;
-    return Number(v?.integerValue ?? v?.doubleValue ?? 0);
-  };
-  const strArr = (key: string): string[] => {
-    const v = fields[key] as Record<string, unknown> | undefined;
-    const values = (v?.arrayValue as Record<string, unknown> | undefined)?.values;
-    if (!Array.isArray(values)) return [];
-    return values
-      .map((e) => (e as Record<string, unknown>)?.stringValue)
-      .filter((s): s is string => typeof s === "string");
-  };
-  const email = str("email");
-  const name = str("name") || email.split("@")[0] || "Driver";
-  const birthDate = str("birthDate");
-  const storedAge = num("age");
-  const age = birthDate ? ageFromBirthDate(birthDate) : (storedAge > 0 ? storedAge : undefined);
-  return {
-    uid,
-    name,
-    xp: num("xp"),
-    rating: num("rating"),
-    avatar: str("avatar") || null,
-    ridesCompleted: num("ridesCompleted"),
-    school: str("school") || undefined,
-    age: typeof age === "number" && age > 0 ? age : undefined,
-    instagramHandle: str("instagramHandle") || undefined,
-    certifications: strArr("certifications"),
-  };
-}
-
-/** Fetch and decode a driver's profile by uid (authenticated). */
-export async function fetchDriverProfile(uid: string): Promise<DriverProfile | null> {
-  if (!uid) return null;
-  const token = await getAuth().currentUser?.getIdToken();
-  const doc = await fetchUserDocument(uid, token);
-  if (!doc) return null;
-  return extractDriverProfile(uid, doc);
-}
-
-export const extractDriverSummary = (data: FirestoreDocument | null) => {
-  const fields = data?.fields ?? {};
-  const emailField = isRecord(fields.email) ? fields.email : {};
-  const nameField = isRecord(fields.name) ? fields.name : {};
-  const xpField = isRecord(fields.xp) ? fields.xp : {};
-  const avatarField = isRecord(fields.avatar) ? fields.avatar : {};
-  const email = readString(emailField.stringValue, "");
-  // Prefer an explicit name field; fall back to the part before "@" in the email
-  const displayName =
-    readString(nameField.stringValue, "") ||
-    (email ? email.split("@")[0] : "Unknown Driver");
-  return {
-    name: displayName,
-    level: readNumber(xpField.integerValue, 0),
-    avatar: readString(avatarField.stringValue, "") || null,
-  };
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
 };

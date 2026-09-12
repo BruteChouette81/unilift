@@ -1,3 +1,4 @@
+import { P } from "@/constants/palette";
 /**
  * Passenger Ride Screen
  * - State A: Pending approval (waiting for driver to accept join request)
@@ -17,6 +18,8 @@ import { useLanguage } from '@/context/LanguageContext';
 import { BlurView } from 'expo-blur';
 import { Image as ExpoImage } from 'expo-image';
 import { useAdaptivePolling } from '@/hooks/use-adaptive-polling';
+import { useResponsive } from '@/hooks/use-responsive';
+import { FONT_CAP } from '@/constants/typography';
 import { validateAndBoardPassenger } from '@/services/paymentService';
 import {
   cancelJoinRequest,
@@ -24,21 +27,25 @@ import {
   leaveRide,
   submitRideRating,
 } from '@/services/rideServices';
-import { fetchUserDocument, extractDriverProfile, type DriverProfile } from '@/services/userService';
+import { fetchDriverProfile, type DriverProfile } from '@/services/userService';
+import PhoneShareSheet from '@/components/phone-share-sheet';
+import PhoneNumberCard from '@/components/phone/phone-number-card';
+import { useRevokePhone, useSavePhone } from '@/hooks/use-save-phone';
+import { useUserProfile } from '@/context/UserProfileContext';
 import { rideLog } from '@/utils/ride-logger';
 import { useKeepAwake } from 'expo-keep-awake';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { getAuth } from 'firebase/auth';
 import { StatusBar } from 'expo-status-bar';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { devError } from "@/constants/runtime-config";
 
 const C = {
-  bg: "#080810", surface: "#0f0f1e", surfaceAlt: "#13132a",
-  purple: "#8938D5", purpleLight: "#e09af7", blue: "#FD165A",
-  text: "#f3f4f6", muted: "#9ca3af", dim: "#4b5563",
-  danger: "#f87171", gold: "#fbbf24", success: "#34d399",
+  bg: P.bg, surface: P.surface, surfaceAlt: P.surfaceRaised,
+  purple: P.accent, purpleLight: P.accentLight, blue: P.hype,
+  text: P.text, muted: P.textMuted, dim: P.textDim,
+  danger: P.danger, gold: P.warning, success: P.success,
   border: "rgba(137, 56, 213, 0.22)", borderFaint: "rgba(255, 255, 255, 0.06)",
 };
 
@@ -88,14 +95,15 @@ type RideHeaderProps = {
 const RideHeader = React.memo(function RideHeader({
   passengerState, boarded, rideIdShort, topInset, t,
 }: RideHeaderProps) {
+  const { isNarrow } = useResponsive();
   const statusInfo = getStatusInfo(passengerState, t);
   return (
-    <View style={[styles.header, { paddingTop: topInset + 12 }]}>
+    <View style={[styles.header, { paddingTop: topInset + 12, paddingHorizontal: isNarrow ? 12 : 16 }]}>
       <BlurView intensity={40} tint="dark" experimentalBlurMethod="dimezisBlurView" style={StyleSheet.absoluteFill} pointerEvents="none" />
       <View style={styles.headerScrim} pointerEvents="none" />
       <View style={styles.headerLeft}>
         <View style={[styles.liveDot, { backgroundColor: statusInfo.color }]} />
-        <Text style={styles.headerTitle}>
+        <Text style={styles.headerTitle} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.body}>
           {passengerState === "pending"
             ? t("passengerRide.joinRequestHeader")
             : passengerState === "accepted"
@@ -103,7 +111,7 @@ const RideHeader = React.memo(function RideHeader({
               : t("passengerRide.rideInProgressHeader")}
         </Text>
       </View>
-      <Text style={styles.rideIdBadge}>#{rideIdShort}</Text>
+      <Text style={styles.rideIdBadge} maxFontSizeMultiplier={FONT_CAP.chrome}>#{rideIdShort}</Text>
     </View>
   );
 }, (prev, next) => (
@@ -124,111 +132,167 @@ type BottomPanelProps = {
   driverName?: string;
   driverAvatar?: string | null;
   driverCerts?: string[];
+  /** The passenger's own number, E.164, or null when they haven't shared one. */
+  sharedPhone: string | null;
+  /** Whether the passenger has ticked the consent line covering that number. */
+  phoneConsent: boolean;
   onScan: () => void;
   onQuit: () => void;
   onLeave: () => void;
   onViewDriver: () => void;
+  /** Writes the number the passenger typed into the card. Resolves false on
+   *  failure so the card can keep its editor open. */
+  onSavePhone: (e164: string) => Promise<boolean>;
+  /** Withdraws consent, deleting the number. Resolves false on failure. */
+  onRevokePhone: () => Promise<boolean>;
   t: TFn;
 };
 
 const BottomPanel = React.memo(function BottomPanel({
   passengerState, boarded, loading, hasDriverLocation, bottomInset,
-  driverName, driverAvatar, driverCerts, onScan, onQuit, onLeave, onViewDriver, t,
+  driverName, driverAvatar, driverCerts, sharedPhone, phoneConsent,
+  onScan, onQuit, onLeave, onViewDriver, onSavePhone, onRevokePhone, t,
 }: BottomPanelProps) {
+  const { isNarrow, shouldStack, scaleBox, panelMaxHeight } = useResponsive();
   const statusInfo = getStatusInfo(passengerState, t);
+  const iconBox = scaleBox(26);
+  // At large text sizes a label and its badge cannot share a line honestly —
+  // the badge ends up one word per line. Stack them instead.
+  const rowStyle = [styles.cardRow, shouldStack && styles.cardRowStacked];
+  const badgeStyle = shouldStack ? null : styles.badgeInline;
   return (
-    <View style={[styles.panel, { paddingBottom: bottomInset + 12 }]}>
+    <View
+      style={[
+        styles.panel,
+        {
+          paddingBottom: bottomInset + 12,
+          paddingHorizontal: isNarrow ? 12 : 16,
+          // Without a cap this absolutely-positioned panel grows upward until it
+          // covers the map and runs off the top of the screen.
+          maxHeight: panelMaxHeight(0.62),
+        },
+      ]}
+    >
       <BlurView intensity={55} tint="dark" experimentalBlurMethod="dimezisBlurView" style={styles.panelGlass} pointerEvents="none" />
       <View style={styles.panelScrim} pointerEvents="none" />
 
-      {/* Driver card — read-only, tappable to view full profile */}
-      {driverName != null && (
-        <TouchableOpacity style={styles.driverCard} onPress={onViewDriver} activeOpacity={0.75}>
-          {driverAvatar ? (
-            <ExpoImage source={{ uri: driverAvatar }} style={styles.driverAvatar} contentFit="cover" cachePolicy="memory-disk" />
-          ) : (
-            <View style={[styles.driverAvatar, styles.driverAvatarFallback]}>
-              <Text style={{ fontSize: 18 }}>🚗</Text>
-            </View>
-          )}
-          <View style={{ flex: 1 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-              <Text style={styles.driverName} numberOfLines={1}>{driverName}</Text>
-              <CertBadges certifications={driverCerts} size="compact" hideWhenEmpty />
-            </View>
-            <Text style={styles.driverSub}>{t("passengerRide.viewDriverProfile")}</Text>
-          </View>
-          <Text style={{ fontSize: 16, color: "#9ca3af" }}>›</Text>
-        </TouchableOpacity>
-      )}
-
-      <View style={styles.card}>
-        <View style={styles.cardRow}>
-          <View style={styles.sectionIconBox}>
-            <Text style={{ fontSize: 14 }}>{statusInfo.icon}</Text>
-          </View>
-          <Text style={styles.cardLabel}>{t("passengerRide.statusLabel")}</Text>
-          <View style={[styles.statusBadge, { backgroundColor: `${statusInfo.color}22` }]}>
-            <Text style={[styles.statusBadgeText, { color: statusInfo.color }]}>
-              {statusInfo.label}
-            </Text>
-          </View>
-        </View>
-
-        {passengerState !== "pending" && (
-          <View style={[styles.cardRow, { marginTop: 12 }]}>
-            <View style={styles.sectionIconBox}>
-              <Text style={{ fontSize: 14 }}>📱</Text>
-            </View>
-            <Text style={styles.cardLabel}>{t("passengerRide.boardingLabel")}</Text>
-            {boarded ? (
-              <View style={styles.boardedBadge}>
-                <Text style={styles.boardedBadgeText}>{t("passengerRide.boarded")}</Text>
-              </View>
+      {/* Info section scrolls; the actions below stay pinned so they are always
+          reachable no matter how tall the text gets. */}
+      <ScrollView
+        style={styles.panelScroll}
+        contentContainerStyle={styles.panelScrollContent}
+        bounces={false}
+        showsVerticalScrollIndicator={false}
+        // The passenger's phone card lives in here; the default "never" would
+        // dismiss the keyboard on the very tap that opened the editor.
+        keyboardShouldPersistTaps="handled"
+        automaticallyAdjustKeyboardInsets
+      >
+        {/* Driver card — read-only, tappable to view full profile */}
+        {driverName != null && (
+          <TouchableOpacity style={styles.driverCard} onPress={onViewDriver} activeOpacity={0.75}>
+            {driverAvatar ? (
+              <ExpoImage source={{ uri: driverAvatar }} style={styles.driverAvatar} contentFit="cover" cachePolicy="memory-disk" />
             ) : (
-              <View style={styles.notBoardedBadge}>
-                <Text style={styles.notBoardedBadgeText}>{t("passengerRide.scanDriverQr")}</Text>
+              <View style={[styles.driverAvatar, styles.driverAvatarFallback]}>
+                <Text style={{ fontSize: 18 }} allowFontScaling={false}>🚗</Text>
               </View>
             )}
-          </View>
-        )}
-
-        {hasDriverLocation && boarded && (
-          <View style={[styles.cardRow, { marginTop: 12 }]}>
-            <View style={styles.sectionIconBox}>
-              <Text style={{ fontSize: 14 }}>🚗</Text>
+            <View style={{ flex: 1 }}>
+              <View style={styles.driverNameRow}>
+                <Text style={styles.driverName} numberOfLines={1} maxFontSizeMultiplier={FONT_CAP.body}>{driverName}</Text>
+                <CertBadges certifications={driverCerts} size="compact" hideWhenEmpty />
+              </View>
+              <Text style={styles.driverSub} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.chrome}>
+                {t("passengerRide.viewDriverProfile")}
+              </Text>
             </View>
-            <Text style={styles.cardLabel}>{t("passengerRide.driverLabel")}</Text>
-            <View style={styles.trackingBadge}>
-              <Text style={styles.trackingBadgeText}>{t("passengerRide.liveTracking")}</Text>
-            </View>
-          </View>
-        )}
-      </View>
-
-      {/* Accepted but the driver hasn't started yet — show a reassuring waiting
-          card instead of the (premature) scan button, plus a leave option. */}
-      {passengerState === "accepted" && !boarded && (
-        <>
-          <View style={styles.waitingCard}>
-            <Text style={styles.waitingTitle}>{t("passengerRide.driverConfirmedTitle")}</Text>
-            <Text style={styles.waitingMsg}>{t("passengerRide.waitingForStartMsg")}</Text>
-          </View>
-          <TouchableOpacity
-            style={[styles.dangerBtn, loading && styles.btnDisabled]}
-            onPress={onLeave}
-            disabled={loading}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.btnText}>{t("passengerRide.leave")}</Text>
+            <Text style={{ fontSize: 16, color: "#9ca3af" }} allowFontScaling={false}>›</Text>
           </TouchableOpacity>
-        </>
+        )}
+
+        <View style={[styles.card, isNarrow && styles.cardNarrow]}>
+          <View style={rowStyle}>
+            <View style={[styles.sectionIconBox, { width: iconBox, height: iconBox }]}>
+              <Text style={{ fontSize: 14 }} allowFontScaling={false}>{statusInfo.icon}</Text>
+            </View>
+            <Text style={styles.cardLabel} maxFontSizeMultiplier={FONT_CAP.body}>{t("passengerRide.statusLabel")}</Text>
+            <View style={[styles.statusBadge, badgeStyle, { backgroundColor: `${statusInfo.color}22` }]}>
+              <Text style={[styles.statusBadgeText, { color: statusInfo.color }]} maxFontSizeMultiplier={FONT_CAP.chrome}>
+                {statusInfo.label}
+              </Text>
+            </View>
+          </View>
+
+          {passengerState !== "pending" && (
+            <View style={[rowStyle, { marginTop: 12 }]}>
+              <View style={[styles.sectionIconBox, { width: iconBox, height: iconBox }]}>
+                <Text style={{ fontSize: 14 }} allowFontScaling={false}>📱</Text>
+              </View>
+              <Text style={styles.cardLabel} maxFontSizeMultiplier={FONT_CAP.body}>{t("passengerRide.boardingLabel")}</Text>
+              {boarded ? (
+                <View style={[styles.boardedBadge, badgeStyle]}>
+                  <Text style={styles.boardedBadgeText} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("passengerRide.boarded")}</Text>
+                </View>
+              ) : (
+                <View style={[styles.notBoardedBadge, badgeStyle]}>
+                  <Text style={styles.notBoardedBadgeText} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("passengerRide.scanDriverQr")}</Text>
+                </View>
+              )}
+            </View>
+          )}
+
+          {hasDriverLocation && boarded && (
+            <View style={[rowStyle, { marginTop: 12 }]}>
+              <View style={[styles.sectionIconBox, { width: iconBox, height: iconBox }]}>
+                <Text style={{ fontSize: 14 }} allowFontScaling={false}>🚗</Text>
+              </View>
+              <Text style={styles.cardLabel} maxFontSizeMultiplier={FONT_CAP.body}>{t("passengerRide.driverLabel")}</Text>
+              <View style={[styles.trackingBadge, badgeStyle]}>
+                <Text style={styles.trackingBadgeText} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("passengerRide.liveTracking")}</Text>
+              </View>
+            </View>
+          )}
+        </View>
+
+        {/* Accepted but the driver hasn't started yet — show a reassuring waiting
+            card instead of the (premature) scan button. */}
+        {passengerState === "accepted" && !boarded && (
+          <View style={styles.waitingCard}>
+            <Text style={styles.waitingTitle} maxFontSizeMultiplier={FONT_CAP.body}>{t("passengerRide.driverConfirmedTitle")}</Text>
+            <Text style={styles.waitingMsg} maxFontSizeMultiplier={FONT_CAP.body}>{t("passengerRide.waitingForStartMsg")}</Text>
+
+            {/* The permanent home for the number. The consent sheet auto-opens
+                once; this card is how someone who waved it away still gets
+                there, and how anyone sees exactly what their driver was given —
+                the same card the profile tab shows, so it is recognisably the
+                same thing in both places. */}
+            <PhoneNumberCard
+              compact
+              phone={sharedPhone}
+              consent={phoneConsent}
+              onCommit={onSavePhone}
+              onRevoke={onRevokePhone}
+            />
+          </View>
+        )}
+      </ScrollView>
+
+      {passengerState === "accepted" && !boarded && (
+        <TouchableOpacity
+          style={[styles.dangerBtn, loading && styles.btnDisabled]}
+          onPress={onLeave}
+          disabled={loading}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.btnText} maxFontSizeMultiplier={FONT_CAP.action}>{t("passengerRide.leave")}</Text>
+        </TouchableOpacity>
       )}
 
       {passengerState === "started" && !boarded && (
         <TouchableOpacity onPress={onScan} style={styles.primaryBtn} activeOpacity={0.8}>
-          <Text style={[{ fontSize: 16 }, { marginRight: 6 }]}>📱</Text>
-          <Text style={styles.btnText}>{t("passengerRide.scanQrBtn")}</Text>
+          <Text style={[{ fontSize: 16 }, { marginRight: 6 }]} allowFontScaling={false}>📱</Text>
+          <Text style={styles.btnText} maxFontSizeMultiplier={FONT_CAP.action}>{t("passengerRide.scanQrBtn")}</Text>
         </TouchableOpacity>
       )}
 
@@ -239,7 +303,7 @@ const BottomPanel = React.memo(function BottomPanel({
           disabled={loading}
           activeOpacity={0.8}
         >
-          <Text style={styles.btnText}>{t("passengerRide.cancelRequest")}</Text>
+          <Text style={styles.btnText} maxFontSizeMultiplier={FONT_CAP.action}>{t("passengerRide.cancelRequest")}</Text>
         </TouchableOpacity>
       )}
     </View>
@@ -253,6 +317,10 @@ const BottomPanel = React.memo(function BottomPanel({
   prev.driverName === next.driverName &&
   prev.driverAvatar === next.driverAvatar &&
   (prev.driverCerts ?? []).join(",") === (next.driverCerts ?? []).join(",") &&
+  prev.sharedPhone === next.sharedPhone &&
+  prev.phoneConsent === next.phoneConsent &&
+  prev.onSavePhone === next.onSavePhone &&
+  prev.onRevokePhone === next.onRevokePhone &&
   prev.onScan === next.onScan &&
   prev.onQuit === next.onQuit &&
   prev.onLeave === next.onLeave &&
@@ -262,6 +330,7 @@ const BottomPanel = React.memo(function BottomPanel({
 
 export default function RideScreen() {
   const insets = useSafeAreaInsets();
+  const { panelMaxHeight } = useResponsive();
   const { rideId, Originlat, OriginLng, DestinationLat, DestinationLng, pending } = useLocalSearchParams<RideParams>();
   const [originCoords, setOriginCoords] = useState<{ latitude: number; longitude: number }>({ latitude: 0, longitude: 0 });
   const [destinationCoords, setDestinationCoords] = useState<{ latitude: number; longitude: number }>({ latitude: 0, longitude: 0 });
@@ -273,6 +342,17 @@ export default function RideScreen() {
   const [driverProfile, setDriverProfile] = useState<DriverProfile | null>(null);
   const [driverLocation, setDriverLocation] = useState<{ latitude: number; longitude: number } | undefined>(undefined);
   const [showDriverModal, setShowDriverModal] = useState(false);
+  // Sharing a phone number so the driver can reach you at pickup.
+  //
+  // Visibility is DERIVED rather than driven by an effect: the sheet is open
+  // when the passenger needs to be asked and has not waved it away. Once a
+  // number is saved, `needsPhone` goes false on its own and the sheet closes
+  // with no cleanup. There is no manual re-open — PhoneNumberCard in the
+  // waiting card is the way back, so the modal only ever fires once.
+  const { userData } = useUserProfile();
+  const savePhone = useSavePhone();
+  const revokePhone = useRevokePhone();
+  const [phoneSheetDismissed, setPhoneSheetDismissed] = useState(false);
   const driverFetchedRef = useRef(false);
 
   useKeepAwake();
@@ -332,15 +412,14 @@ export default function RideScreen() {
             uid: ride.driverId,
             name: ride.driverName ?? "Driver",
             avatar: ride.driverAvatar ?? null,
-            xp: 0, rating: 0, ridesCompleted: 0,
+            xp: 0, rating: 0, ratingCount: 0, ridesCompleted: 0,
             certifications: [],
           });
-          // Then fetch the full profile in the background.
-          getAuth().currentUser?.getIdToken().then((token) =>
-            fetchUserDocument(ride.driverId, token)
-          ).then((doc) => {
-            if (doc) setDriverProfile(extractDriverProfile(ride.driverId, doc));
-          }).catch(() => {});
+          // Then fetch the public profile in the background. Reading the driver's
+          // users/{uid} document is denied — it is owner-only.
+          fetchDriverProfile(ride.driverId)
+            .then((p) => { if (p) setDriverProfile(p); })
+            .catch(() => {});
         }
 
         // Seed map coords from the ride doc when params were absent/zero (e.g. a
@@ -478,7 +557,7 @@ export default function RideScreen() {
 
         return true;
       } catch (error) {
-        console.error("Error checking ride status:", error);
+        devError("Error checking ride status:", error);
         return true;
       }
     },
@@ -557,6 +636,18 @@ export default function RideScreen() {
 
   const openScanner = useCallback(() => setShowScanner(true), []);
 
+  // Asked once per ride screen. Someone who declines is not re-prompted every
+  // time the panel re-renders — the waiting card is how they come back.
+  const closePhoneSheet = useCallback(() => setPhoneSheetDismissed(true), []);
+
+  // Ask at the moment it makes sense: a driver has accepted and is on their way,
+  // but there is no number for them to call. Gated on `userData` being loaded so
+  // a slow profile read never flashes the sheet at someone who already has a
+  // number on file.
+  const needsPhone =
+    passengerState === "accepted" && !boarded && !!userData && !userData.phone;
+  const showPhoneSheet = needsPhone && !phoneSheetDismissed;
+
   const handleQrScan = useCallback(async (payload: string) => {
     setShowScanner(false);
     try {
@@ -631,11 +722,23 @@ export default function RideScreen() {
         driverName={driverProfile?.name}
         driverAvatar={driverProfile?.avatar}
         driverCerts={driverProfile?.certifications}
+        sharedPhone={userData?.phone ?? null}
+        phoneConsent={userData?.phoneConsent ?? false}
         onScan={openScanner}
         onQuit={quitRide}
         onLeave={leaveRideHandler}
         onViewDriver={() => setShowDriverModal(true)}
+        onSavePhone={savePhone}
+        onRevokePhone={revokePhone}
         t={t}
+      />
+
+      <PhoneShareSheet
+        visible={showPhoneSheet}
+        driverName={driverProfile?.name}
+        currentPhone={userData?.phone ?? null}
+        onSave={savePhone}
+        onSkip={closePhoneSheet}
       />
 
       {/* QR Scanner Modal */}
@@ -662,13 +765,17 @@ export default function RideScreen() {
           activeOpacity={1}
           onPress={() => setShowDriverModal(false)}
         >
-          <TouchableOpacity activeOpacity={1} style={styles.profileSheet}>
+          <TouchableOpacity activeOpacity={1} style={[styles.profileSheet, { maxHeight: panelMaxHeight(0.85) }]}>
             {driverProfile ? (
-              <>
+              <ScrollView
+                contentContainerStyle={styles.profileScrollContent}
+                bounces={false}
+                showsVerticalScrollIndicator={false}
+              >
                 {/* Read-only badge */}
                 <View style={styles.profileReadOnlyBadge}>
-                  <Text style={{ fontSize: 12 }}>🔒</Text>
-                  <Text style={styles.profileReadOnlyText}>{t("passengerRide.readOnly")}</Text>
+                  <Text style={{ fontSize: 12 }} allowFontScaling={false}>🔒</Text>
+                  <Text style={styles.profileReadOnlyText} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("passengerRide.readOnly")}</Text>
                 </View>
 
                 <View style={styles.profileAvatarWrap}>
@@ -676,56 +783,56 @@ export default function RideScreen() {
                     <ExpoImage source={{ uri: driverProfile.avatar }} style={styles.profileAvatar} contentFit="cover" cachePolicy="memory-disk" />
                   ) : (
                     <View style={[styles.profileAvatar, styles.profileAvatarFallback]}>
-                      <Text style={{ fontSize: 32 }}>🚗</Text>
+                      <Text style={{ fontSize: 32 }} allowFontScaling={false}>🚗</Text>
                     </View>
                   )}
                 </View>
 
-                <Text style={styles.profileDriverName}>{driverProfile.name}</Text>
+                <Text style={styles.profileDriverName} maxFontSizeMultiplier={FONT_CAP.display}>{driverProfile.name}</Text>
 
                 <View style={{ alignItems: "center", marginTop: 8 }}>
                   <CertBadges certifications={driverProfile.certifications} size="full" />
                 </View>
 
                 <View style={styles.profileXpRow}>
-                  <Text style={styles.profileXpText}>⚡ {driverProfile.xp} XP</Text>
+                  <Text style={styles.profileXpText} maxFontSizeMultiplier={FONT_CAP.chrome}>⚡ {driverProfile.xp} XP</Text>
                   {driverProfile.rating > 0 && (
-                    <Text style={styles.profileRatingText}>⭐ {driverProfile.rating.toFixed(1)}</Text>
+                    <Text style={styles.profileRatingText} maxFontSizeMultiplier={FONT_CAP.chrome}>⭐ {driverProfile.rating.toFixed(1)}</Text>
                   )}
                 </View>
 
                 <View style={styles.profileStatsRow}>
                   <View style={styles.profileStat}>
-                    <Text style={styles.profileStatVal}>{driverProfile.ridesCompleted}</Text>
-                    <Text style={styles.profileStatLabel}>{t("driverRide.profileRides")}</Text>
+                    <Text style={styles.profileStatVal} maxFontSizeMultiplier={FONT_CAP.display}>{driverProfile.ridesCompleted}</Text>
+                    <Text style={styles.profileStatLabel} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("driverRide.profileRides")}</Text>
                   </View>
                 </View>
 
                 <View style={styles.profileInfoList}>
                   {driverProfile.school ? (
                     <View style={styles.profileInfoRow}>
-                      <Text style={styles.profileInfoIcon}>🎓</Text>
-                      <Text style={styles.profileInfoText}>{driverProfile.school}</Text>
+                      <Text style={styles.profileInfoIcon} allowFontScaling={false}>🎓</Text>
+                      <Text style={styles.profileInfoText} maxFontSizeMultiplier={FONT_CAP.body}>{driverProfile.school}</Text>
                     </View>
                   ) : null}
                   {driverProfile.age ? (
                     <View style={styles.profileInfoRow}>
-                      <Text style={styles.profileInfoIcon}>🎂</Text>
-                      <Text style={styles.profileInfoText}>{t("driverRide.profileAge", { age: driverProfile.age })}</Text>
+                      <Text style={styles.profileInfoIcon} allowFontScaling={false}>🎂</Text>
+                      <Text style={styles.profileInfoText} maxFontSizeMultiplier={FONT_CAP.body}>{t("driverRide.profileAge", { age: driverProfile.age })}</Text>
                     </View>
                   ) : null}
                   {driverProfile.instagramHandle ? (
                     <View style={styles.profileInfoRow}>
-                      <Text style={styles.profileInfoIcon}>📷</Text>
-                      <Text style={styles.profileInfoText}>@{driverProfile.instagramHandle}</Text>
+                      <Text style={styles.profileInfoIcon} allowFontScaling={false}>📷</Text>
+                      <Text style={styles.profileInfoText} maxFontSizeMultiplier={FONT_CAP.body}>@{driverProfile.instagramHandle}</Text>
                     </View>
                   ) : null}
                 </View>
 
                 <TouchableOpacity style={styles.profileCloseBtn} onPress={() => setShowDriverModal(false)}>
-                  <Text style={styles.profileCloseBtnText}>{t("common.close")}</Text>
+                  <Text style={styles.profileCloseBtnText} maxFontSizeMultiplier={FONT_CAP.action}>{t("common.close")}</Text>
                 </TouchableOpacity>
-              </>
+              </ScrollView>
             ) : null}
           </TouchableOpacity>
         </TouchableOpacity>
@@ -751,8 +858,9 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "rgba(255,255,255,0.10)",
   },
-  headerScrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(10,8,18,0.86)" },
+  headerScrim: { ...StyleSheet.absoluteFill, backgroundColor: "rgba(10,8,18,0.86)" },
   headerLeft: {
+    flex: 1,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
@@ -761,14 +869,19 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
+    flexShrink: 0,
     backgroundColor: C.success,
   },
   headerTitle: {
+    flexShrink: 1,
     fontSize: 16,
     fontWeight: "bold",
     color: C.text,
   },
   rideIdBadge: {
+    flexShrink: 0,
+    marginLeft: 8,
+    overflow: "hidden",
     fontSize: 12,
     color: C.purpleLight,
     backgroundColor: "rgba(137,56,213,0.15)",
@@ -776,7 +889,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 20,
   },
-  mapContainer: { ...StyleSheet.absoluteFillObject },
+  mapContainer: { ...StyleSheet.absoluteFill },
   panel: {
     position: "absolute",
     left: 0,
@@ -789,7 +902,16 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: "rgba(255,255,255,0.14)",
     overflow: "hidden",
-    padding: 16,
+    paddingTop: 16,
+    gap: 10,
+  },
+  // Holds the info cards. flexShrink lets it yield height to the pinned actions
+  // below it once the panel hits its maxHeight.
+  panelScroll: {
+    flexGrow: 0,
+    flexShrink: 1,
+  },
+  panelScrollContent: {
     gap: 10,
   },
   waitingCard: {
@@ -812,8 +934,8 @@ const styles = StyleSheet.create({
     lineHeight: 19,
   },
   // Frosted blur + dark scrim guarantee text contrast over any map content.
-  panelGlass: { ...StyleSheet.absoluteFillObject },
-  panelScrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(10,8,18,0.78)" },
+  panelGlass: { ...StyleSheet.absoluteFill },
+  panelScrim: { ...StyleSheet.absoluteFill, backgroundColor: "rgba(10,8,18,0.78)" },
   card: {
     backgroundColor: "rgba(255,255,255,0.06)",
     borderRadius: 14,
@@ -821,21 +943,34 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.10)",
   },
+  cardNarrow: { padding: 12 },
   cardRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
   },
+  // Large text: the label and its badge get their own lines.
+  cardRowStacked: {
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: 6,
+  },
+  // Inline badges must not outgrow their share of the row, and must not be the
+  // element that gets squeezed to nothing either.
+  badgeInline: {
+    flexShrink: 0,
+    maxWidth: "55%",
+  },
   sectionIconBox: {
-    width: 26,
-    height: 26,
     borderRadius: 8,
+    flexShrink: 0,
     backgroundColor: "rgba(224,154,247,0.12)",
     justifyContent: "center",
     alignItems: "center",
   },
   cardLabel: {
-    flex: 1,
+    flexShrink: 1,
+    flexGrow: 1,
     fontSize: 14,
     color: C.muted,
   },
@@ -886,13 +1021,18 @@ const styles = StyleSheet.create({
   dangerBtn: {
     backgroundColor: "#ef4444",
     borderRadius: 16,
-    paddingVertical: 18,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    minHeight: 56,
+    justifyContent: "center",
     alignItems: "center",
   },
   primaryBtn: {
     backgroundColor: C.purple,
     borderRadius: 16,
-    paddingVertical: 18,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    minHeight: 56,
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
@@ -903,6 +1043,8 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
   btnText: {
+    flexShrink: 1,
+    textAlign: "center",
     color: "#fff",
     fontWeight: "bold",
     fontSize: 16,
@@ -923,10 +1065,17 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 14,
   },
+  driverNameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flexWrap: "wrap",
+  },
   driverAvatar: {
     width: 44,
     height: 44,
     borderRadius: 22,
+    flexShrink: 0,
   },
   driverAvatarFallback: {
     backgroundColor: "rgba(137,56,213,0.15)",
@@ -934,6 +1083,7 @@ const styles = StyleSheet.create({
     justifyContent: "center" as const,
   },
   driverName: {
+    flexShrink: 1,
     color: "#f3f4f6",
     fontSize: 15,
     fontWeight: "700" as const,
@@ -958,7 +1108,11 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     borderWidth: 1,
     borderColor: "rgba(137,56,213,0.3)",
-    padding: 24,
+    paddingVertical: 24,
+    paddingHorizontal: 20,
+    alignItems: "center" as const,
+  },
+  profileScrollContent: {
     alignItems: "center" as const,
     gap: 12,
   },

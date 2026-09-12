@@ -48,5 +48,3 @@ export const removePaymentMethod = (token: string) =>
 export const getTransactions = (token: string) =>
   walletFetch("/wallet/transactions", token);
 
-export const verifyCanJoin = (token: string) =>
-  walletFetch("/rides/can-join", token, {});

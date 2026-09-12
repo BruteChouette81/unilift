@@ -10,32 +10,35 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useEffect, useRef } from "react";
 import {
   Animated,
-  Dimensions,
   Easing,
   PanResponder,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useResponsive } from "@/hooks/use-responsive";
+import { FONT_CAP } from "@/constants/typography";
+import { P } from "@/constants/palette";
+import { devWarn } from "@/constants/runtime-config";
 
 const C = {
-  bg:          "#080810",
+  bg:          P.bg,
   border:      "rgba(137, 56, 213, 0.30)",
-  purple:      "#8938D5",
-  purpleLight: "#e09af7",
-  text:        "#f3f4f6",
-  muted:       "#9ca3af",
-  dim:         "#4b5563",
-  danger:      "#f87171",
+  purple:      P.accent,
+  purpleLight: P.accentLight,
+  text:        P.text,
+  muted:       P.textMuted,
+  dim:         P.textDim,
+  danger:      P.danger,
 };
-
-const SHEET_MAX_HEIGHT = Dimensions.get("window").height * 0.74;
 
 export default function FindingDriverScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { isNarrow, fontScale, panelMaxHeight } = useResponsive();
   const { t } = useLanguage();
   const { setPendingRequest, clearPendingRequest } = useActiveRide();
   const params = useLocalSearchParams<{
@@ -128,7 +131,7 @@ export default function FindingDriverScreen() {
           router.back();
         }
       },
-      (error) => console.warn("rideRequest listener error", error),
+      (error) => devWarn("rideRequest listener error", error),
     );
     return () => unsubscribe();
   }, [params.requestId, params.originLat, params.originLng, params.destLat, params.destLng, router, clearPendingRequest]);
@@ -160,17 +163,27 @@ export default function FindingDriverScreen() {
       ? t("finding.notifiedDrivers", { count: Number(params.notified) })
       : t("finding.searching");
 
+  // The radar is decoration; on a short screen, or at a large text size, it
+  // should give its space to the words. 190 on the reference device.
+  const radar = Math.round(Math.min(190, panelMaxHeight(0.24)) / Math.min(fontScale, 1.6));
+
   return (
     <View style={styles.overlay}>
       {/* tap outside to cancel */}
       <TouchableOpacity style={StyleSheet.absoluteFill} onPress={handleCancel} activeOpacity={1} />
 
-      <View style={[styles.sheet, { maxHeight: SHEET_MAX_HEIGHT }]}>
+      <View style={[styles.sheet, { maxHeight: panelMaxHeight(0.74) }]}>
         <BlurView
           intensity={80}
           tint="dark"
           experimentalBlurMethod="dimezisBlurView"
-          style={[styles.blur, { paddingBottom: Math.max(insets.bottom, 16) + 16 }]}
+          style={[
+            styles.blur,
+            {
+              paddingBottom: Math.max(insets.bottom, 16) + 16,
+              paddingHorizontal: isNarrow ? 18 : 24,
+            },
+          ]}
         >
 
           {/* Drag handle */}
@@ -178,36 +191,45 @@ export default function FindingDriverScreen() {
             <View style={styles.handle} />
           </View>
 
-          {/* Radar */}
-          <View style={styles.radarWrap}>
-            <Animated.View style={[styles.ring, ringStyle(pulse1)]} />
-            <Animated.View style={[styles.ring, ringStyle(pulse2)]} />
-            <View style={styles.core}>
-              <Ionicons name="car-sport" size={34} color="#2d0015" />
+          {/* Radar, status and hint scroll; Cancel stays pinned so it is always
+              reachable once the sheet hits its maxHeight. */}
+          <ScrollView
+            style={styles.sheetScroll}
+            contentContainerStyle={styles.sheetScrollContent}
+            bounces={false}
+            showsVerticalScrollIndicator={false}
+          >
+            {/* Radar */}
+            <View style={[styles.radarWrap, { width: radar, height: radar }]}>
+              <Animated.View style={[styles.ring, ringStyle(pulse1)]} />
+              <Animated.View style={[styles.ring, ringStyle(pulse2)]} />
+              <View style={styles.core}>
+                <Ionicons name="car-sport" size={34} color="#2d0015" />
+              </View>
             </View>
-          </View>
 
-          {/* Status */}
-          <Text style={styles.title}>{t("finding.title")}</Text>
-          <Text style={styles.subtitle}>{statusText}</Text>
+            {/* Status */}
+            <Text style={styles.title} maxFontSizeMultiplier={FONT_CAP.display}>{t("finding.title")}</Text>
+            <Text style={styles.subtitle} maxFontSizeMultiplier={FONT_CAP.body}>{statusText}</Text>
 
-          {/* Destination chip */}
-          {params.destination ? (
-            <View style={styles.destChip}>
-              <Ionicons name="flag" size={13} color={C.purpleLight} />
-              <Text style={styles.destChipText} numberOfLines={1}>{params.destination}</Text>
+            {/* Destination chip */}
+            {params.destination ? (
+              <View style={styles.destChip}>
+                <Ionicons name="flag" size={13} color={C.purpleLight} />
+                <Text style={styles.destChipText} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.chrome}>{params.destination}</Text>
+              </View>
+            ) : null}
+
+            {/* Hint */}
+            <View style={styles.hintCard}>
+              <Ionicons name="information-circle-outline" size={16} color={C.muted} />
+              <Text style={styles.hintText} maxFontSizeMultiplier={FONT_CAP.body}>{t("finding.hint")}</Text>
             </View>
-          ) : null}
-
-          {/* Hint */}
-          <View style={styles.hintCard}>
-            <Ionicons name="information-circle-outline" size={16} color={C.muted} />
-            <Text style={styles.hintText}>{t("finding.hint")}</Text>
-          </View>
+          </ScrollView>
 
           {/* Cancel */}
           <TouchableOpacity style={styles.cancelBtn} onPress={handleCancel} activeOpacity={0.8}>
-            <Text style={styles.cancelText}>{t("finding.cancel")}</Text>
+            <Text style={styles.cancelText} maxFontSizeMultiplier={FONT_CAP.action}>{t("finding.cancel")}</Text>
           </TouchableOpacity>
 
         </BlurView>
@@ -237,7 +259,15 @@ const styles = StyleSheet.create({
   },
   blur: {
     alignItems: "center",
-    paddingHorizontal: 24,
+    flexShrink: 1,
+  },
+  sheetScroll: {
+    flexGrow: 0,
+    flexShrink: 1,
+    alignSelf: "stretch",
+  },
+  sheetScrollContent: {
+    alignItems: "center",
   },
   dragZone: {
     width: "100%",
@@ -251,8 +281,6 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(137,56,213,0.45)",
   },
   radarWrap: {
-    width: 190,
-    height: 190,
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 28,
@@ -334,13 +362,18 @@ const styles = StyleSheet.create({
   cancelBtn: {
     width: "100%",
     paddingVertical: 15,
+    paddingHorizontal: 12,
+    minHeight: 52,
     borderRadius: 16,
     alignItems: "center",
+    justifyContent: "center",
     borderWidth: 1,
     borderColor: "rgba(248,113,113,0.30)",
     backgroundColor: "rgba(248,113,113,0.08)",
   },
   cancelText: {
+    flexShrink: 1,
+    textAlign: "center",
     color: C.danger,
     fontSize: 15,
     fontWeight: "700",

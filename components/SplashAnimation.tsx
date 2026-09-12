@@ -11,6 +11,18 @@ import Animated, {
 } from 'react-native-reanimated';
 import Svg, { ClipPath, Defs, LinearGradient, Path, Stop } from 'react-native-svg';
 
+import {
+  MARK_ARROW_SECTION_T as ARROW_SECTION_T,
+  MARK_BASE_COLOUR,
+  MARK_GRADIENT_STOPS,
+  MARK_GRADIENT_Y,
+  MARK_STROKE_LENGTH as STROKE_LENGTH,
+  MARK_STROKE_WIDTH as STROKE_WIDTH,
+  MARK_VIEWBOX,
+  U_PATH,
+  U_STROKE_PATH,
+} from '@/constants/brand-mark';
+
 const AnimatedPath = Animated.createAnimatedComponent(Path);
 
 const SIZE = 200;
@@ -18,41 +30,6 @@ const INITIAL_DELAY = 300;
 const STROKE_DURATION = 1800;
 const HOLD_AFTER = 500;
 const FADE_DURATION = 400;
-
-// Path to arrow base = 82+129+53 = 264 of 315 total = 83.8%
-// With inOut(cubic), p=0.838 → t≈0.657. Use 0.66 so wings sync with stroke entering the arrow.
-const ARROW_SECTION_T = 0.66;
-
-// left arm (82) + semi-arc π×41≈129 + right arm+arrow (93) ≈ 304 → 315
-// Left arm top at y=40 (11 units below arrow tip y=29)
-const STROKE_LENGTH = 315;
-const STROKE_WIDTH = 38;
-
-// Arrow side vector AB=(32,-40) len≈51.23, unit≈(0.6247,-0.7809)
-// Wing corner r=6, tip corner r=10
-const U_PATH =
-  'M 40,40 ' +
-  'L 78,40 ' +                                    // flat top on left arm
-  'L 78,122 ' +                                   // down inner-left
-  'A 22,22 0 0,0 122,122 ' +                     // inner arc
-  'L 122,69 ' +                                   // up inner-right to arrow base
-  'L 115,69 ' +                                   // stop 6 before left wing corner
-  'Q 109,69 112.75,64.31 ' +                     // round left wing corner (r=6)
-  'L 134.75,36.81 ' +                             // stop 10 before tip
-  'Q 141,29 147.25,36.81 ' +                     // round tip (r=10)
-  'L 169.25,64.31 ' +                             // stop 6 before right wing corner
-  'Q 173,69 167,69 ' +                            // round right wing corner (r=6)
-  'L 160,69 ' +                                   // back to outer-right arm
-  'L 160,122 ' +                                  // down outer-right
-  'A 60,60 0 0,1 40,122 ' +                      // outer arc
-  'Z';
-
-// Centerline: top of left arm → down → arc → right arm → through arrow tip
-const U_STROKE_PATH =
-  'M 59,40 ' +
-  'L 59,122 ' +
-  'A 41,41 0 0,0 141,122 ' +
-  'L 141,29';   // all the way to arrow tip
 
 interface Props {
   onFinish: () => void;
@@ -104,7 +81,7 @@ export default function SplashAnimation({ onFinish }: Props): React.JSX.Element 
   return (
     <Animated.View style={[styles.screen, screenStyle]}>
       <Animated.View style={[styles.logoWrapper, logoStyle]}>
-        <Svg width={SIZE} height={SIZE} viewBox="0 0 200 200">
+        <Svg width={SIZE} height={SIZE} viewBox={`0 0 ${MARK_VIEWBOX} ${MARK_VIEWBOX}`}>
           <Defs>
             {/* Clip the stroke to the exact U shape so it never overflows the logo */}
             <ClipPath id="uClip">
@@ -112,17 +89,17 @@ export default function SplashAnimation({ onFinish }: Props): React.JSX.Element 
             </ClipPath>
             <LinearGradient
               id="uGrad"
-              x1="100" y1="40" x2="100" y2="163"
+              x1="100" y1={MARK_GRADIENT_Y.from} x2="100" y2={MARK_GRADIENT_Y.to}
               gradientUnits="userSpaceOnUse"
             >
-              <Stop offset="0"   stopColor="#8938D5" stopOpacity={1} />
-              <Stop offset="0.5" stopColor="#C428C0" stopOpacity={1} />
-              <Stop offset="1"   stopColor="#FD165A" stopOpacity={1} />
+              {MARK_GRADIENT_STOPS.map((s) => (
+                <Stop key={s.offset} offset={s.offset} stopColor={s.color} stopOpacity={1} />
+              ))}
             </LinearGradient>
           </Defs>
 
           {/* Gray base — always visible */}
-          <Path d={U_PATH} fill="#383838" />
+          <Path d={U_PATH} fill={MARK_BASE_COLOUR} />
 
           {/* Gradient stroke following centerline from top-left to arrow tip, clipped to U shape */}
           <AnimatedPath
@@ -150,7 +127,7 @@ export default function SplashAnimation({ onFinish }: Props): React.JSX.Element 
 
 const styles = StyleSheet.create({
   screen: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: '#000000',
     justifyContent: 'center',
     alignItems: 'center',

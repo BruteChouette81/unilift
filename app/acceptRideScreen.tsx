@@ -1,8 +1,7 @@
 import { acceptRideRequest } from "@/services/driverSessionService";
 import { fetchRideRequestById } from "@/services/rideRequestService";
-import { fetchUserDocument } from "@/services/userService";
+import { fetchPublicProfile, type PublicProfile } from "@/services/publicProfileService";
 import { getMultiWaypointRoute } from "@/services/routeService";
-import { calculateAgeFromBirthDate } from "@/components/userHelper";
 import CertBadges from "@/components/cert-badges";
 import { DriverRideMapView } from "@/components/mapview";
 import { useLanguage } from "@/context/LanguageContext";
@@ -13,14 +12,14 @@ import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Location from "expo-location";
 import { devAwareCurrentPosition } from "@/utils/dev-location";
+import { isDev } from "@/constants/runtime-config";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { getAuth } from "firebase/auth";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Dimensions,
   Modal,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -28,70 +27,29 @@ import {
 } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useResponsive } from "@/hooks/use-responsive";
+import { FONT_CAP } from "@/constants/typography";
+import { P } from "@/constants/palette";
 
-type PassengerProfile = {
-  uid: string;
-  name: string;
-  xp: number;
-  rating: number;
-  avatar: string | null;
-  ridesCompleted: number;
-  school?: string;
-  age?: number;
-  instagramHandle?: string;
-  certifications: string[];
-};
+// The cross-user view of a person is `users/{uid}/public/profile` — see
+// services/publicProfileService.ts. The local type and decoder that used to live
+// here read `users/{uid}` directly, which is now owner-only: it carried the other
+// person's email and birth date into a screen that only ever rendered their name,
+// avatar, rating and badges.
+type PassengerProfile = PublicProfile;
 
-function extractPassengerProfile(uid: string, doc: { fields?: Record<string, unknown> }): PassengerProfile {
-  const fields = doc?.fields ?? {};
-  const str = (key: string): string => {
-    const v = fields[key] as Record<string, unknown> | undefined;
-    return typeof v?.stringValue === "string" ? v.stringValue : "";
-  };
-  const num = (key: string): number => {
-    const v = fields[key] as Record<string, unknown> | undefined;
-    return Number(v?.integerValue ?? v?.doubleValue ?? 0);
-  };
-  const strArr = (key: string): string[] => {
-    const v = fields[key] as Record<string, unknown> | undefined;
-    const values = (v?.arrayValue as Record<string, unknown> | undefined)?.values;
-    if (!Array.isArray(values)) return [];
-    return values
-      .map((e) => (e as Record<string, unknown>)?.stringValue)
-      .filter((s): s is string => typeof s === "string");
-  };
-  const email = str("email");
-  const name = str("name") || email.split("@")[0] || "Passenger";
-  const birthDate = str("birthDate");
-  const storedAge = num("age");
-  const age = birthDate ? calculateAgeFromBirthDate(birthDate) : (storedAge > 0 ? storedAge : undefined);
-  return {
-    uid,
-    name,
-    xp: num("xp"),
-    rating: num("rating"),
-    avatar: str("avatar") || null,
-    ridesCompleted: num("ridesCompleted"),
-    school: str("school") || undefined,
-    age: typeof age === "number" && age > 0 ? age : undefined,
-    instagramHandle: str("instagramHandle") || undefined,
-    certifications: strArr("certifications"),
-  };
-}
 
 const C = {
-  bg:          "#080810",
+  bg:          P.bg,
   border:      "rgba(137, 56, 213, 0.30)",
-  purple:      "#8938D5",
-  purpleLight: "#e09af7",
-  text:        "#f3f4f6",
-  muted:       "#9ca3af",
-  dim:         "#4b5563",
-  danger:      "#f87171",
-  success:     "#34d399",
+  purple:      P.accent,
+  purpleLight: P.accentLight,
+  text:        P.text,
+  muted:       P.textMuted,
+  dim:         P.textDim,
+  danger:      P.danger,
+  success:     P.success,
 };
-
-const SHEET_MAX_HEIGHT = Dimensions.get("window").height * 0.82;
 
 /** Format cents as fr-CA: 525 → "+5,25 $" */
 function formatFrCA(cents: number): string {
@@ -101,6 +59,7 @@ function formatFrCA(cents: number): string {
 export default function AcceptRideScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { isNarrow, shouldStack, panelMaxHeight } = useResponsive();
   const { t } = useLanguage();
   const params = useLocalSearchParams<{
     requestId: string;
@@ -117,7 +76,6 @@ export default function AcceptRideScreen() {
 
   const [riderName, setRiderName] = useState<string | null>(null);
   const [riderAvatar, setRiderAvatar] = useState<string | null>(null);
-  const [riderHomeAddress, setRiderHomeAddress] = useState<string | null>(null);
   // Full passenger profile for the extended view the driver can open before
   // committing to (or starting) the ride.
   const [profile, setProfile] = useState<PassengerProfile | null>(null);
@@ -137,11 +95,21 @@ export default function AcceptRideScreen() {
   const [routePolyline, setRoutePolyline] = useState<string | undefined>(undefined);
 
   const fareCents = parseInt(params.fare ?? "0", 10);
-  const rawDestination = params.destination ?? "";
-  const origin = params.origin ?? "";
-  // If the passenger requested their home address, show the actual address instead of "Home".
-  const isHomeLabel = /^(home|maison)$/i.test(rawDestination.trim());
-  const destination = isHomeLabel && riderHomeAddress ? riderHomeAddress : rawDestination;
+  // The push carries only COARSE labels — it goes to every eligible user, and a
+  // passenger's street address should not land on 500 lock screens. The precise
+  // labels come from the request document, fetched below: it is readable while
+  // the request is open, so only a driver who actually opens this screen sees
+  // where the passenger is and where they are going.
+  //
+  // The passenger's client also resolves a "Home"/"Maison" label to the real
+  // address when it creates the request, so what arrives here is already the
+  // label to show. Reading their homeAddress from their user document — which is
+  // what this used to do — is now denied by the rules, and was always more of
+  // their PII than a driver needs.
+  const [preciseDestination, setPreciseDestination] = useState<string | null>(null);
+  const [preciseOrigin, setPreciseOrigin] = useState<string | null>(null);
+  const destination = preciseDestination ?? params.destination ?? "";
+  const origin = preciseOrigin ?? params.origin ?? "";
   const seats = parseInt(params.seats ?? "", 10) || 0;
   const driverDest = params.driverDest ?? "";
   const driverDestLat = parseFloat(params.driverDestLat ?? "");
@@ -152,16 +120,12 @@ export default function AcceptRideScreen() {
     if (!params.riderId) return;
     const load = async () => {
       try {
-        const idToken = await getAuth().currentUser?.getIdToken();
-        const doc = await fetchUserDocument(params.riderId, idToken);
-        const fields = doc?.fields as Record<string, any> | undefined;
-        const name = fields?.name?.stringValue ?? fields?.email?.stringValue ?? null;
-        const avatar = fields?.avatar?.stringValue ?? null;
-        const homeAddress = fields?.homeAddress?.stringValue ?? null;
-        setRiderName(name);
-        setRiderAvatar(avatar);
-        setRiderHomeAddress(homeAddress);
-        if (doc) setProfile(extractPassengerProfile(params.riderId, doc));
+        const p = await fetchPublicProfile(params.riderId);
+        if (p) {
+          setRiderName(p.name || null);
+          setRiderAvatar(p.avatar);
+          setProfile(p);
+        }
       } catch { /* show fallback */ }
     };
     void load();
@@ -179,6 +143,8 @@ export default function AcceptRideScreen() {
         if (!r || r.status !== "open") setUnavailable(true);
         if (r?.origin) setPickup(r.origin);
         if (r?.destinationCoords) setDropoff(r.destinationCoords);
+        if (r?.destination) setPreciseDestination(r.destination);
+        if (r?.originLabel) setPreciseOrigin(r.originLabel);
       })
       .catch(() => {});
     return () => { active = false; };
@@ -254,15 +220,35 @@ export default function AcceptRideScreen() {
       // (mutual match). Land in driver mode "planned/waiting" — the Start button
       // on riderScreen is gated on pendingConfirmation and unlocks once the
       // passenger confirms. Auto-starting here would hit the server's 428 gate.
+      // Forward the passenger's own pickup/dropoff (the server returns them) so
+      // the driver map plots the passenger on the first frame. Without this the
+      // driver stares at a map with no passenger on it until the ride-doc
+      // snapshot lands — which is a second or two of "where is my rider?".
+      const paxParams =
+        ride.passengerId && ride.passengerOriginLat != null && ride.passengerOriginLng != null
+          ? `&PaxId=${ride.passengerId}&PaxLat=${ride.passengerOriginLat}&PaxLng=${ride.passengerOriginLng}` +
+            (ride.passengerDestLat != null && ride.passengerDestLng != null
+              ? `&PaxDestLat=${ride.passengerDestLat}&PaxDestLng=${ride.passengerDestLng}`
+              : "")
+          : "";
       router.replace(
-        `/riderScreen?rideId=${ride.rideId}&maxSeat=${ride.maxSeat}&Originlat=${ride.originLat}&OriginLng=${ride.originLng}&Destination=${encodeURIComponent(ride.destination ?? "")}&DestinationLat=${ride.destinationLat}&DestinationLng=${ride.destinationLng}&started=false&autostart=false` as never,
+        `/riderScreen?rideId=${ride.rideId}&maxSeat=${ride.maxSeat}&Originlat=${ride.originLat}&OriginLng=${ride.originLng}&Destination=${encodeURIComponent(ride.destination ?? "")}&DestinationLat=${ride.destinationLat}&DestinationLng=${ride.destinationLng}&started=false${paxParams}` as never,
       );
     } catch (err: any) {
       if (err?.code === "ALREADY_TAKEN") {
         Alert.alert(t("acceptRide.takenTitle"), t("acceptRide.takenMsg"));
         router.back();
       } else {
-        Alert.alert(t("acceptRide.failedTitle"), t("acceptRide.failedMsg"));
+        // throwFetchError embeds the status + response body (which now carries a
+        // `reason`) in the message. Surface it in dev so a failed accept names the
+        // branch that refused instead of the generic "try again"; production keeps
+        // the friendly copy.
+        Alert.alert(
+          t("acceptRide.failedTitle"),
+          isDev && err?.message
+            ? `${t("acceptRide.failedMsg")}\n\n${String(err.message)}`
+            : t("acceptRide.failedMsg"),
+        );
       }
     } finally {
       setAccepting(false);
@@ -297,12 +283,18 @@ export default function AcceptRideScreen() {
 
       {/* Bottom sheet — box-none lets touches fall through to the map above it. */}
       <View style={styles.sheetWrap} pointerEvents="box-none">
-      <View style={[styles.sheet, { maxHeight: SHEET_MAX_HEIGHT }]}>
+      <View style={[styles.sheet, { maxHeight: panelMaxHeight(0.82) }]}>
         <BlurView
           intensity={80}
           tint="dark"
           experimentalBlurMethod="dimezisBlurView"
-          style={[styles.blur, { paddingBottom: Math.max(insets.bottom, 16) + 16 }]}
+          style={[
+            styles.blur,
+            {
+              paddingBottom: Math.max(insets.bottom, 16) + 16,
+              paddingHorizontal: isNarrow ? 16 : 22,
+            },
+          ]}
         >
 
           {/* Drag handle */}
@@ -310,8 +302,17 @@ export default function AcceptRideScreen() {
             <View style={styles.handle} />
           </View>
 
+          {/* Rider + route + stats scroll; the CTAs below stay pinned. Without
+              this the sheet's maxHeight simply clipped the Accept button off. */}
+          <ScrollView
+            style={styles.sheetScroll}
+            contentContainerStyle={styles.sheetScrollContent}
+            bounces={false}
+            showsVerticalScrollIndicator={false}
+          >
+
           {/* Eyebrow */}
-          <Text style={styles.eyebrow}>{t("acceptRide.eyebrow")}</Text>
+          <Text style={styles.eyebrow} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("acceptRide.eyebrow")}</Text>
 
           {/* Rider info — tap to open the extended profile before deciding. */}
           <TouchableOpacity
@@ -334,13 +335,13 @@ export default function AcceptRideScreen() {
               </View>
             )}
             <View style={styles.riderTextGroup}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                <Text style={styles.riderName} numberOfLines={1}>
+              <View style={styles.riderNameRow}>
+                <Text style={styles.riderName} numberOfLines={1} maxFontSizeMultiplier={FONT_CAP.display}>
                   {riderName ?? t("acceptRide.passenger")}
                 </Text>
                 <CertBadges certifications={profile?.certifications} size="compact" hideWhenEmpty />
               </View>
-              <Text style={styles.riderSub}>
+              <Text style={styles.riderSub} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.chrome}>
                 {profile ? t("driverInbox.viewProfile") : t("acceptRide.seeking")}
               </Text>
             </View>
@@ -351,12 +352,12 @@ export default function AcceptRideScreen() {
           <View style={styles.routeCard}>
             <View style={styles.routeRow}>
               <Ionicons name="radio-button-on" size={14} color={C.success} />
-              <Text style={styles.routeText} numberOfLines={1}>{origin || t("acceptRide.passenger")}</Text>
+              <Text style={styles.routeText} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.body}>{origin || t("acceptRide.passenger")}</Text>
             </View>
             <View style={styles.routeDivider} />
             <View style={styles.routeRow}>
               <Ionicons name="location-sharp" size={14} color={C.purpleLight} />
-              <Text style={styles.routeText} numberOfLines={1}>{destination}</Text>
+              <Text style={styles.routeText} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.body}>{destination}</Text>
             </View>
           </View>
 
@@ -366,24 +367,26 @@ export default function AcceptRideScreen() {
               colors={["rgba(137,56,213,0.18)", "rgba(99,102,241,0.10)"]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
-              style={styles.statsGradient}
+              style={[styles.statsGradient, shouldStack && styles.statsGradientStacked]}
             >
-              <View style={styles.statCol}>
-                <Text style={styles.statValue}>{formatFrCA(fareCents)}</Text>
-                <Text style={styles.statLabel}>{t("acceptRide.return")}</Text>
+              <View style={[styles.statCol, shouldStack && styles.statColStacked]}>
+                <Text style={styles.statValue} maxFontSizeMultiplier={FONT_CAP.display}>{formatFrCA(fareCents)}</Text>
+                <Text style={styles.statLabel} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("acceptRide.return")}</Text>
               </View>
-              <View style={styles.statDivider} />
-              <View style={styles.statCol}>
-                <Text style={styles.statValue}>{seats || "—"}</Text>
-                <Text style={styles.statLabel}>{t("acceptRide.capacity")}</Text>
+              <View style={shouldStack ? styles.statDividerH : styles.statDivider} />
+              <View style={[styles.statCol, shouldStack && styles.statColStacked]}>
+                <Text style={styles.statValue} maxFontSizeMultiplier={FONT_CAP.display}>{seats || "—"}</Text>
+                <Text style={styles.statLabel} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("acceptRide.capacity")}</Text>
               </View>
-              <View style={styles.statDivider} />
-              <View style={styles.statCol}>
-                <Text style={styles.statValue}>{totalKm != null ? `${totalKm.toFixed(1)} km` : "—"}</Text>
-                <Text style={styles.statLabel}>{t("acceptRide.totalTrip")}</Text>
+              <View style={shouldStack ? styles.statDividerH : styles.statDivider} />
+              <View style={[styles.statCol, shouldStack && styles.statColStacked]}>
+                <Text style={styles.statValue} maxFontSizeMultiplier={FONT_CAP.display}>{totalKm != null ? `${totalKm.toFixed(1)} km` : "—"}</Text>
+                <Text style={styles.statLabel} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("acceptRide.totalTrip")}</Text>
               </View>
             </LinearGradient>
           </View>
+
+          </ScrollView>
 
           {/* Accept CTA */}
           <TouchableOpacity
@@ -398,7 +401,7 @@ export default function AcceptRideScreen() {
               ) : (
                 <>
                   <Ionicons name="checkmark-circle" size={18} color="#2d0015" />
-                  <Text style={styles.ctaText}>
+                  <Text style={styles.ctaText} maxFontSizeMultiplier={FONT_CAP.action}>
                     {unavailable ? t("acceptRide.expiredTitle") : t("acceptRide.accept")}
                   </Text>
                 </>
@@ -408,7 +411,7 @@ export default function AcceptRideScreen() {
 
           {/* Ignore */}
           <TouchableOpacity style={styles.ignoreBtn} onPress={() => router.back()} activeOpacity={0.7}>
-            <Text style={styles.ignoreText}>{t("acceptRide.ignore")}</Text>
+            <Text style={styles.ignoreText} maxFontSizeMultiplier={FONT_CAP.action}>{t("acceptRide.ignore")}</Text>
           </TouchableOpacity>
 
         </BlurView>
@@ -427,9 +430,13 @@ export default function AcceptRideScreen() {
           activeOpacity={1}
           onPress={() => setShowProfile(false)}
         >
-          <TouchableOpacity activeOpacity={1} style={styles.profileSheet}>
+          <TouchableOpacity activeOpacity={1} style={[styles.profileSheet, { maxHeight: panelMaxHeight(0.85) }]}>
             {profile ? (
-              <>
+              <ScrollView
+                contentContainerStyle={styles.profileScrollContent}
+                bounces={false}
+                showsVerticalScrollIndicator={false}
+              >
                 <View style={styles.profileAvatarWrap}>
                   {profile.avatar ? (
                     <ExpoImage
@@ -445,46 +452,46 @@ export default function AcceptRideScreen() {
                     </View>
                   )}
                 </View>
-                <Text style={styles.profileName}>{profile.name}</Text>
+                <Text style={styles.profileName} maxFontSizeMultiplier={FONT_CAP.display}>{profile.name}</Text>
                 <View style={{ alignItems: "center", marginTop: 8 }}>
                   <CertBadges certifications={profile.certifications} size="full" />
                 </View>
                 <View style={styles.profileXpRow}>
-                  <Text style={styles.profileXpText}>⚡ {profile.xp} XP</Text>
+                  <Text style={styles.profileXpText} maxFontSizeMultiplier={FONT_CAP.chrome}>⚡ {profile.xp} XP</Text>
                   {profile.rating > 0 && (
-                    <Text style={styles.profileRatingText}>⭐ {profile.rating.toFixed(1)}</Text>
+                    <Text style={styles.profileRatingText} maxFontSizeMultiplier={FONT_CAP.chrome}>⭐ {profile.rating.toFixed(1)}</Text>
                   )}
                 </View>
                 <View style={styles.profileStatsRow}>
                   <View style={styles.profileStat}>
-                    <Text style={styles.profileStatVal}>{profile.ridesCompleted}</Text>
-                    <Text style={styles.profileStatLabel}>{t("driverRide.profileRides")}</Text>
+                    <Text style={styles.profileStatVal} maxFontSizeMultiplier={FONT_CAP.display}>{profile.ridesCompleted}</Text>
+                    <Text style={styles.profileStatLabel} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("driverRide.profileRides")}</Text>
                   </View>
                 </View>
                 <View style={styles.profileInfoList}>
                   {profile.school ? (
                     <View style={styles.profileInfoRow}>
-                      <Text style={styles.profileInfoIcon}>🎓</Text>
-                      <Text style={styles.profileInfoText}>{profile.school}</Text>
+                      <Text style={styles.profileInfoIcon} allowFontScaling={false}>🎓</Text>
+                      <Text style={styles.profileInfoText} maxFontSizeMultiplier={FONT_CAP.body}>{profile.school}</Text>
                     </View>
                   ) : null}
                   {profile.age ? (
                     <View style={styles.profileInfoRow}>
-                      <Text style={styles.profileInfoIcon}>🎂</Text>
-                      <Text style={styles.profileInfoText}>{t("driverRide.profileAge", { age: profile.age })}</Text>
+                      <Text style={styles.profileInfoIcon} allowFontScaling={false}>🎂</Text>
+                      <Text style={styles.profileInfoText} maxFontSizeMultiplier={FONT_CAP.body}>{t("driverRide.profileAge", { age: profile.age })}</Text>
                     </View>
                   ) : null}
                   {profile.instagramHandle ? (
                     <View style={styles.profileInfoRow}>
-                      <Text style={styles.profileInfoIcon}>📷</Text>
-                      <Text style={styles.profileInfoText}>@{profile.instagramHandle}</Text>
+                      <Text style={styles.profileInfoIcon} allowFontScaling={false}>📷</Text>
+                      <Text style={styles.profileInfoText} maxFontSizeMultiplier={FONT_CAP.body}>@{profile.instagramHandle}</Text>
                     </View>
                   ) : null}
                 </View>
                 <TouchableOpacity style={styles.profileCloseBtn} onPress={() => setShowProfile(false)}>
-                  <Text style={styles.profileCloseBtnText}>{t("common.close")}</Text>
+                  <Text style={styles.profileCloseBtnText} maxFontSizeMultiplier={FONT_CAP.action}>{t("common.close")}</Text>
                 </TouchableOpacity>
-              </>
+              </ScrollView>
             ) : null}
           </TouchableOpacity>
         </TouchableOpacity>
@@ -499,7 +506,7 @@ const styles = StyleSheet.create({
     backgroundColor: C.bg,
   },
   sheetWrap: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     justifyContent: "flex-end",
   },
   backBtn: {
@@ -529,7 +536,16 @@ const styles = StyleSheet.create({
     elevation: 16,
   },
   blur: {
-    paddingHorizontal: 22,
+    flexShrink: 1,
+  },
+  // flexShrink lets the scroll region yield height to the pinned CTAs once the
+  // sheet hits its maxHeight.
+  sheetScroll: {
+    flexGrow: 0,
+    flexShrink: 1,
+  },
+  sheetScrollContent: {
+    paddingBottom: 4,
   },
   dragZone: {
     width: "100%",
@@ -560,6 +576,7 @@ const styles = StyleSheet.create({
     width: 52,
     height: 52,
     borderRadius: 16,
+    flexShrink: 0,
     borderWidth: 1,
     borderColor: C.border,
   },
@@ -567,6 +584,7 @@ const styles = StyleSheet.create({
     width: 52,
     height: 52,
     borderRadius: 16,
+    flexShrink: 0,
     backgroundColor: "rgba(137,56,213,0.15)",
     borderWidth: 1,
     borderColor: C.border,
@@ -576,11 +594,17 @@ const styles = StyleSheet.create({
   riderTextGroup: {
     flex: 1,
   },
+  riderNameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flexWrap: "wrap",
+  },
   riderName: {
+    flexShrink: 1,
     color: C.text,
     fontSize: 20,
     fontWeight: "800",
-    lineHeight: 24,
   },
   riderSub: {
     color: C.muted,
@@ -633,8 +657,18 @@ const styles = StyleSheet.create({
     paddingVertical: 18,
     paddingHorizontal: 8,
   },
+  // Large text: three narrow columns can't hold "Trajet total" side by side.
+  statsGradientStacked: {
+    flexDirection: "column",
+    alignItems: "stretch",
+    paddingHorizontal: 18,
+    gap: 12,
+  },
   statCol: { flex: 1, alignItems: "center", gap: 3 },
-  statDivider: { width: 1, height: 34, backgroundColor: "rgba(255,255,255,0.10)" },
+  statColStacked: { flex: 0 },
+  // stretch, not a fixed 34pt, so the rule matches however tall the columns get.
+  statDivider: { width: 1, alignSelf: "stretch", minHeight: 34, backgroundColor: "rgba(255,255,255,0.10)" },
+  statDividerH: { height: 1, alignSelf: "stretch", backgroundColor: "rgba(255,255,255,0.10)" },
   statValue: { color: C.text, fontSize: 19, fontWeight: "800" },
   statLabel: { color: C.muted, fontSize: 11, fontWeight: "500", textAlign: "center" },
   earningsIcon: {
@@ -669,11 +703,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     paddingVertical: 16,
+    paddingHorizontal: 12,
     gap: 8,
     minHeight: 54,
     backgroundColor: "#e09af7",
   },
   ctaText: {
+    flexShrink: 1,
+    textAlign: "center",
     color: "#2d0015",
     fontSize: 16,
     fontWeight: "700",
@@ -703,12 +740,13 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     borderWidth: 1,
     borderColor: "rgba(137,56,213,0.3)",
-    padding: 24,
+    paddingVertical: 24,
+    paddingHorizontal: 20,
     alignItems: "center",
-    gap: 12,
   },
   profileAvatarWrap: { marginBottom: 4 },
   profileAvatar: { width: 80, height: 80, borderRadius: 40 },
+  profileScrollContent: { alignItems: "center", gap: 12 },
   profileAvatarFallback: {
     backgroundColor: "rgba(137,56,213,0.15)",
     alignItems: "center",

@@ -13,14 +13,20 @@ type ExtraConfig = {
   EXPO_PUBLIC_API_BASE_URL?: string;
   EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY?: string;
   EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY_TEST?: string;
-  GOOGLE_MAPS_API_KEY?: string;
-  EXPO_PUBLIC_FACEBOOK_APP_ID?: string;
-  EXPO_PUBLIC_INSTAGRAM_APP_ID?: string;
-  EXPO_PUBLIC_TIKTOK_CLIENT_KEY?: string;
-  EXPO_PUBLIC_SPOTIFY_CLIENT_ID?: string;
 };
 
 const extra = (Constants.expoConfig?.extra ?? {}) as ExtraConfig;
+
+// Expo inlines every `EXPO_PUBLIC_*` var into the bundle at build time, so
+// `process.env` is a second, independent source for the same values. Reading it
+// first means a missing or partially-resolved manifest (`Constants.expoConfig`
+// null, an OTA bundle whose manifest didn't carry `extra`) can no longer change
+// which environment the app resolves to.
+const inlined: Record<string, string | undefined> = {
+  EXPO_PUBLIC_APP_ENV: process.env.EXPO_PUBLIC_APP_ENV,
+  EXPO_PUBLIC_API_BASE_URL: process.env.EXPO_PUBLIC_API_BASE_URL,
+  EXPO_PUBLIC_FIRESTORE_DATABASE_ID: process.env.EXPO_PUBLIC_FIRESTORE_DATABASE_ID,
+};
 
 // A blank env var (`EXPO_PUBLIC_API_BASE_URL=` in .env, or an unset key in an
 // eas.json profile) must read as "absent", not as the empty string — every
@@ -28,9 +34,9 @@ const extra = (Constants.expoConfig?.extra ?? {}) as ExtraConfig;
 // Returning "" would silently win over the default and, for apiBaseUrl, turn
 // every Cloud Function call into an unfetchable relative URL.
 const fromEnv = (key: keyof ExtraConfig): string | undefined => {
-  const value = extra[key];
-  const trimmed = typeof value === "string" ? value.trim() : undefined;
-  return trimmed || undefined;
+  const clean = (value: unknown): string | undefined =>
+    (typeof value === "string" ? value.trim() : "") || undefined;
+  return clean(inlined[key]) ?? clean(extra[key]);
 };
 
 const required = (key: keyof ExtraConfig): string => {
@@ -41,7 +47,32 @@ const required = (key: keyof ExtraConfig): string => {
   return value;
 };
 
-export const appEnv = fromEnv("EXPO_PUBLIC_APP_ENV") ?? "production";
+// The environment must be DECLARED, never inferred from absence. This value
+// selects the Firestore database, the API server, and the Stripe key set, so a
+// missing or misspelled value previously meant "silently talk to production with
+// real user data" — the worst possible default. Every eas.json profile and .env
+// now sets it explicitly; anything else is a configuration bug, and throwing at
+// import is strictly safer than starting up pointed at the wrong environment.
+const APP_ENVS = ["dev", "production"] as const;
+type AppEnv = (typeof APP_ENVS)[number];
+
+const resolveAppEnv = (): AppEnv => {
+  const raw = fromEnv("EXPO_PUBLIC_APP_ENV");
+  if (!raw) {
+    throw new Error(
+      "Missing required runtime config: EXPO_PUBLIC_APP_ENV (expected \"dev\" or \"production\"). " +
+        "Set it in .env for local runs, or in the eas.json build profile.",
+    );
+  }
+  if (!(APP_ENVS as readonly string[]).includes(raw)) {
+    throw new Error(
+      `Invalid EXPO_PUBLIC_APP_ENV: "${raw}". Expected "dev" or "production".`,
+    );
+  }
+  return raw as AppEnv;
+};
+
+export const appEnv: AppEnv = resolveAppEnv();
 export const isDev = appEnv === "dev";
 
 export const runtimeConfig = {
@@ -63,7 +94,6 @@ export const runtimeConfig = {
   stripePublishableKey: isDev
     ? (fromEnv("EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY_TEST") ?? "")
     : (fromEnv("EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY") ?? ""),
-  googleMapsApiKey: required("GOOGLE_MAPS_API_KEY"),
 };
 
 export const firestoreBaseUrl = `https://firestore.googleapis.com/v1/projects/${runtimeConfig.firebaseProjectId}/databases/${encodeURIComponent(
@@ -111,18 +141,26 @@ export function apiFetch(url: string, init: RequestInit = {}): Promise<Response>
 
 // Debug logging that is a no-op outside dev. Use for temporary `[RIDE-DEBUG]`
 // style diagnostics so production builds stay silent.
+//
+// Gating is on `isDev` (i.e. EXPO_PUBLIC_APP_ENV), NOT on __DEV__ or NODE_ENV.
+// That distinction matters: the `development` and `testflight` EAS profiles ship
+// release bundles (NODE_ENV=production) while declaring APP_ENV=dev, so keying
+// off the build mode would silence exactly the builds used for testing.
+//
+// These are the only sanctioned console entry points in app code — the
+// `no-console` rule in eslint.config.js enforces that everywhere else.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const devLog = (...args: any[]): void => { if (isDev) console.log(...args); };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const devWarn = (...args: any[]): void => { if (isDev) console.warn(...args); };
-
-export const facebookAppId = fromEnv("EXPO_PUBLIC_FACEBOOK_APP_ID") ?? "";
-
-// Public OAuth client identifiers for the social-connect flows. The matching
-// secrets live only in functions/.env and are used server-side during the
-// code→token exchange. An empty string disables that provider's connect button.
-export const socialClientIds = {
-  instagram: fromEnv("EXPO_PUBLIC_INSTAGRAM_APP_ID") ?? "",
-  tiktok: fromEnv("EXPO_PUBLIC_TIKTOK_CLIENT_KEY") ?? "",
-  spotify: fromEnv("EXPO_PUBLIC_SPOTIFY_CLIENT_ID") ?? "",
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const devError = (...args: any[]): void => {
+  if (isDev) console.error(...args);
+  // FUTURE (crash reporting): there is no Sentry/Bugsnag in this app yet, so a
+  // production error currently goes nowhere — that is deliberate, since several
+  // call sites pass raw Firebase errors and Firestore response bodies that can
+  // carry emails/uids, and device logs are readable via Xcode / adb logcat.
+  // When a reporter is added, capture here instead of dropping: this is the one
+  // chokepoint every app-side error path flows through, so wiring it in this
+  // function covers all call sites at once.
 };

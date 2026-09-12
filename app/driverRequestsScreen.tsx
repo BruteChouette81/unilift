@@ -9,14 +9,12 @@ import { db } from "@/firebaseConfig";
 import { devLog, devWarn } from "@/constants/runtime-config";
 import CertBadges from "@/components/cert-badges";
 import { DriverRideMapView } from "@/components/mapview";
-import { fetchUserDocument } from "@/services/userService";
-import { calculateAgeFromBirthDate } from "@/components/userHelper";
+import { fetchPublicProfile, type PublicProfile } from "@/services/publicProfileService";
 import type { DriverSession, LocationPoint, RideRequest } from "@/types/models";
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { getAuth } from "firebase/auth";
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -25,69 +23,31 @@ import {
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { useResponsive } from "@/hooks/use-responsive";
+import { FONT_CAP } from "@/constants/typography";
+import { P } from "@/constants/palette";
 
 const C = {
-  bg: "#080810", surface: "#0f0f1e", surfaceAlt: "#13132a",
+  bg: P.bg, surface: P.surface, surfaceAlt: P.surfaceRaised,
   border: "rgba(137, 56, 213, 0.30)", borderFaint: "rgba(255,255,255,0.06)",
-  purple: "#8938D5", purpleLight: "#e09af7", pink: "#FD165A", blue: "#60a5fa",
-  gold: "#fbbf24", text: "#f3f4f6", muted: "#9ca3af", dim: "#4b5563", success: "#34d399",
+  purple: P.accent, purpleLight: P.accentLight, pink: P.hype, blue: P.info,
+  gold: P.warning, text: P.text, muted: P.textMuted, dim: P.textDim, success: P.success,
 };
 const AVATAR_FALLBACK = "https://www.macfcu.org/wp-content/uploads/2024/02/Windows_10_Default_Profile_Picture.svg.png";
 
-type PassengerProfile = {
-  uid: string;
-  name: string;
-  xp: number;
-  rating: number;
-  avatar: string | null;
-  ridesCompleted: number;
-  school?: string;
-  age?: number;
-  instagramHandle?: string;
-  certifications: string[];
-};
+// The cross-user view of a person is `users/{uid}/public/profile` — see
+// services/publicProfileService.ts. The local type and decoder that used to live
+// here read `users/{uid}` directly, which is now owner-only: it carried the other
+// person's email and birth date into a screen that only ever rendered their name,
+// avatar, rating and badges.
+type PassengerProfile = PublicProfile;
 
-function extractPassengerProfile(uid: string, doc: { fields?: Record<string, unknown> }): PassengerProfile {
-  const fields = doc?.fields ?? {};
-  const str = (key: string): string => {
-    const v = fields[key] as Record<string, unknown> | undefined;
-    return typeof v?.stringValue === "string" ? v.stringValue : "";
-  };
-  const num = (key: string): number => {
-    const v = fields[key] as Record<string, unknown> | undefined;
-    return Number(v?.integerValue ?? v?.doubleValue ?? 0);
-  };
-  const strArr = (key: string): string[] => {
-    const v = fields[key] as Record<string, unknown> | undefined;
-    const values = (v?.arrayValue as Record<string, unknown> | undefined)?.values;
-    if (!Array.isArray(values)) return [];
-    return values
-      .map((e) => (e as Record<string, unknown>)?.stringValue)
-      .filter((s): s is string => typeof s === "string");
-  };
-  const email = str("email");
-  const name = str("name") || email.split("@")[0] || "Unknown";
-  const birthDate = str("birthDate");
-  const storedAge = num("age");
-  const age = birthDate ? calculateAgeFromBirthDate(birthDate) : (storedAge > 0 ? storedAge : undefined);
-  return {
-    uid,
-    name,
-    xp: num("xp"),
-    rating: num("rating"),
-    avatar: str("avatar") || null,
-    ridesCompleted: num("ridesCompleted"),
-    school: str("school") || undefined,
-    age: typeof age === "number" && age > 0 ? age : undefined,
-    instagramHandle: str("instagramHandle") || undefined,
-    certifications: strArr("certifications"),
-  };
-}
 
 type ScoredRequest = RideRequest & { detourKm: number };
 
@@ -103,6 +63,7 @@ function detourFor(session: DriverSession, r: RideRequest): number {
 }
 
 export default function DriverRequestsScreen() {
+  const { isNarrow, shouldStack, panelMaxHeight } = useResponsive();
   const router = useRouter();
   const { t } = useLanguage();
   const { user } = useAuth();
@@ -166,10 +127,8 @@ export default function DriverRequestsScreen() {
     }
     setProfileLoading(true);
     try {
-      const idToken = await getAuth().currentUser?.getIdToken();
-      const doc = await fetchUserDocument(passengerId, idToken);
-      if (doc) {
-        const profile = extractPassengerProfile(passengerId, doc);
+      const profile = await fetchPublicProfile(passengerId);
+      if (profile) {
         setPassengerProfiles((prev) => ({ ...prev, [passengerId]: profile }));
         setProfileModal(profile);
       } else {
@@ -177,7 +136,7 @@ export default function DriverRequestsScreen() {
         setProfileModal({
           uid: passengerId,
           name: fallbackName ?? "Passenger",
-          xp: 0, rating: 0, avatar: fallbackAvatar ?? null, ridesCompleted: 0,
+          xp: 0, rating: 0, ratingCount: 0, avatar: fallbackAvatar ?? null, ridesCompleted: 0,
           certifications: [],
         });
       }
@@ -185,7 +144,7 @@ export default function DriverRequestsScreen() {
       setProfileModal({
         uid: passengerId,
         name: fallbackName ?? "Passenger",
-        xp: 0, rating: 0, avatar: fallbackAvatar ?? null, ridesCompleted: 0,
+        xp: 0, rating: 0, ratingCount: 0, avatar: fallbackAvatar ?? null, ridesCompleted: 0,
         certifications: [],
       });
     } finally {
@@ -226,7 +185,7 @@ export default function DriverRequestsScreen() {
         setLoading(false);
       },
       (error) => {
-        console.warn("rideRequests listener error", error);
+        devWarn("rideRequests listener error", error);
         setLoading(false);
       },
     );
@@ -301,7 +260,7 @@ export default function DriverRequestsScreen() {
     if (!readyRide || starting) return;
     setStarting(true);
     router.replace(
-      `/riderScreen?rideId=${readyRide.rideId}&maxSeat=${readyRide.maxSeat}&Originlat=${readyRide.originLat}&OriginLng=${readyRide.originLng}&Destination=${encodeURIComponent(readyRide.destination)}&DestinationLat=${readyRide.destinationLat}&DestinationLng=${readyRide.destinationLng}&started=false&autostart=false`,
+      `/riderScreen?rideId=${readyRide.rideId}&maxSeat=${readyRide.maxSeat}&Originlat=${readyRide.originLat}&OriginLng=${readyRide.originLng}&Destination=${encodeURIComponent(readyRide.destination)}&DestinationLat=${readyRide.destinationLat}&DestinationLng=${readyRide.destinationLng}&started=false`,
     );
   };
 
@@ -324,13 +283,17 @@ export default function DriverRequestsScreen() {
         activeOpacity={1}
         onPress={() => setProfileModal(null)}
       >
-        <TouchableOpacity activeOpacity={1} style={styles.profileSheet}>
+        <TouchableOpacity activeOpacity={1} style={[styles.profileSheet, { maxHeight: panelMaxHeight(0.85) }]}>
           {profileLoading ? (
             <View style={styles.profileLoadingWrap}>
               <ActivityIndicator color={C.purpleLight} size="large" />
             </View>
           ) : profileModal ? (
-            <>
+            <ScrollView
+              contentContainerStyle={styles.profileScrollContent}
+              bounces={false}
+              showsVerticalScrollIndicator={false}
+            >
               <View style={styles.profileAvatarWrap}>
                 {profileModal.avatar ? (
                   <Image source={{ uri: profileModal.avatar }} style={styles.profileAvatar} contentFit="cover" cachePolicy="memory-disk" />
@@ -340,46 +303,46 @@ export default function DriverRequestsScreen() {
                   </View>
                 )}
               </View>
-              <Text style={styles.profileName}>{profileModal.name}</Text>
+              <Text style={styles.profileName} maxFontSizeMultiplier={FONT_CAP.display}>{profileModal.name}</Text>
               <View style={{ alignItems: "center", marginTop: 8 }}>
                 <CertBadges certifications={profileModal.certifications} size="full" />
               </View>
               <View style={styles.profileXpRow}>
-                <Text style={styles.profileXpText}>⚡ {profileModal.xp} XP</Text>
+                <Text style={styles.profileXpText} maxFontSizeMultiplier={FONT_CAP.chrome}>⚡ {profileModal.xp} XP</Text>
                 {profileModal.rating > 0 && (
-                  <Text style={styles.profileRatingText}>⭐ {profileModal.rating.toFixed(1)}</Text>
+                  <Text style={styles.profileRatingText} maxFontSizeMultiplier={FONT_CAP.chrome}>⭐ {profileModal.rating.toFixed(1)}</Text>
                 )}
               </View>
               <View style={styles.profileStatsRow}>
                 <View style={styles.profileStat}>
-                  <Text style={styles.profileStatVal}>{profileModal.ridesCompleted}</Text>
-                  <Text style={styles.profileStatLabel}>{t("driverRide.profileRides")}</Text>
+                  <Text style={styles.profileStatVal} maxFontSizeMultiplier={FONT_CAP.display}>{profileModal.ridesCompleted}</Text>
+                  <Text style={styles.profileStatLabel} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("driverRide.profileRides")}</Text>
                 </View>
               </View>
               <View style={styles.profileInfoList}>
                 {profileModal.school ? (
                   <View style={styles.profileInfoRow}>
-                    <Text style={styles.profileInfoIcon}>🎓</Text>
-                    <Text style={styles.profileInfoText}>{profileModal.school}</Text>
+                    <Text style={styles.profileInfoIcon} allowFontScaling={false}>🎓</Text>
+                    <Text style={styles.profileInfoText} maxFontSizeMultiplier={FONT_CAP.body}>{profileModal.school}</Text>
                   </View>
                 ) : null}
                 {profileModal.age ? (
                   <View style={styles.profileInfoRow}>
-                    <Text style={styles.profileInfoIcon}>🎂</Text>
-                    <Text style={styles.profileInfoText}>{t("driverRide.profileAge", { age: profileModal.age })}</Text>
+                    <Text style={styles.profileInfoIcon} allowFontScaling={false}>🎂</Text>
+                    <Text style={styles.profileInfoText} maxFontSizeMultiplier={FONT_CAP.body}>{t("driverRide.profileAge", { age: profileModal.age })}</Text>
                   </View>
                 ) : null}
                 {profileModal.instagramHandle ? (
                   <View style={styles.profileInfoRow}>
-                    <Text style={styles.profileInfoIcon}>📷</Text>
-                    <Text style={styles.profileInfoText}>@{profileModal.instagramHandle}</Text>
+                    <Text style={styles.profileInfoIcon} allowFontScaling={false}>📷</Text>
+                    <Text style={styles.profileInfoText} maxFontSizeMultiplier={FONT_CAP.body}>@{profileModal.instagramHandle}</Text>
                   </View>
                 ) : null}
               </View>
               <TouchableOpacity style={styles.profileCloseBtn} onPress={() => setProfileModal(null)}>
-                <Text style={styles.profileCloseBtnText}>{t("common.close")}</Text>
+                <Text style={styles.profileCloseBtnText} maxFontSizeMultiplier={FONT_CAP.action}>{t("common.close")}</Text>
               </TouchableOpacity>
-            </>
+            </ScrollView>
           ) : null}
         </TouchableOpacity>
       </TouchableOpacity>
@@ -395,7 +358,7 @@ export default function DriverRequestsScreen() {
       <View style={styles.root}>
         <View style={styles.header}>
           <View style={{ width: 38 }} />
-          <Text style={styles.headerTitle}>{t("driverInbox.readyTitle")}</Text>
+          <Text style={styles.headerTitle} numberOfLines={1} maxFontSizeMultiplier={FONT_CAP.body}>{t("driverInbox.readyTitle")}</Text>
           <View style={{ width: 38 }} />
         </View>
         {/* Live map — shows the passenger pickup (green) + drop-off (purple)
@@ -428,11 +391,11 @@ export default function DriverRequestsScreen() {
               cachePolicy="memory-disk"
             />
             <View style={{ flex: 1 }}>
-              <Text style={styles.readyName} numberOfLines={1}>
+              <Text style={styles.readyName} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.display}>
                 {readyRide.passengerName ?? t("driverInbox.acceptedPassenger")}
               </Text>
               {readyRide.passengerId ? (
-                <Text style={styles.viewProfileHint}>{t("driverInbox.viewProfile")}</Text>
+                <Text style={styles.viewProfileHint} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("driverInbox.viewProfile")}</Text>
               ) : null}
             </View>
           </TouchableOpacity>
@@ -440,12 +403,12 @@ export default function DriverRequestsScreen() {
           <View style={styles.readyRouteCard}>
             <View style={styles.routeRow}>
               <View style={styles.dotGreen} />
-              <Text style={styles.routeText} numberOfLines={1}>{t("driverInbox.pickup")}</Text>
+              <Text style={styles.routeText} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.body}>{t("driverInbox.pickup")}</Text>
             </View>
             <View style={styles.routeLine} />
             <View style={styles.routeRow}>
               <View style={styles.dotPink} />
-              <Text style={styles.routeText} numberOfLines={1}>{readyRide.destination}</Text>
+              <Text style={styles.routeText} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.body}>{readyRide.destination}</Text>
             </View>
           </View>
 
@@ -461,7 +424,7 @@ export default function DriverRequestsScreen() {
               ) : (
                 <>
                   <Ionicons name="navigate" size={18} color="#fff" />
-                  <Text style={styles.startBtnText}>{t("driverInbox.startDrive")}</Text>
+                  <Text style={styles.startBtnText} maxFontSizeMultiplier={FONT_CAP.action}>{t("driverInbox.startDrive")}</Text>
                 </>
               )}
             </LinearGradient>
@@ -486,7 +449,7 @@ export default function DriverRequestsScreen() {
               <Ionicons name="arrow-back" size={18} color="#2d0015" />
             </View>
           </Pressable>
-          <Text style={styles.headerTitle}>{t("driverInbox.title")}</Text>
+          <Text style={styles.headerTitle} numberOfLines={1} maxFontSizeMultiplier={FONT_CAP.body}>{t("driverInbox.title")}</Text>
           <View style={{ width: 38 }} />
         </View>
         <View style={styles.offlineWrap}>
@@ -513,35 +476,35 @@ export default function DriverRequestsScreen() {
     );
     const returnCents = calculateDriverEarningCents(rideKm, 1);
     return (
-    <View style={styles.card}>
-      <View style={styles.cardTop}>
+    <View style={[styles.card, isNarrow && styles.cardNarrow]}>
+      <View style={[styles.cardTop, shouldStack && styles.cardTopStacked]}>
         <TouchableOpacity onPress={() => openPassengerProfile(item.passengerId, item.passengerName, item.passengerAvatar)} activeOpacity={0.75}>
           <Image source={{ uri: item.passengerAvatar || AVATAR_FALLBACK }} style={styles.avatar} contentFit="cover" cachePolicy="memory-disk" />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <TouchableOpacity onPress={() => openPassengerProfile(item.passengerId, item.passengerName, item.passengerAvatar)} activeOpacity={0.75}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-              <Text style={styles.passengerName} numberOfLines={1}>{item.passengerName ?? t("rides.unknownDriver")}</Text>
+            <View style={styles.nameRow}>
+              <Text style={styles.passengerName} numberOfLines={1} maxFontSizeMultiplier={FONT_CAP.body}>{item.passengerName ?? t("rides.unknownDriver")}</Text>
               <CertBadges certifications={passengerProfiles[item.passengerId]?.certifications} size="compact" hideWhenEmpty />
             </View>
-            <Text style={styles.viewProfileHint}>{t("driverInbox.viewProfile")}</Text>
+            <Text style={styles.viewProfileHint} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("driverInbox.viewProfile")}</Text>
           </TouchableOpacity>
           <View style={styles.metaRow}>
             <View style={styles.chip}>
               <Ionicons name="people-outline" size={12} color={C.purpleLight} />
-              <Text style={styles.chipText}>{item.seatsRequested}</Text>
+              <Text style={styles.chipText} maxFontSizeMultiplier={FONT_CAP.chrome}>{item.seatsRequested}</Text>
             </View>
             <View style={[styles.chip, { backgroundColor: "rgba(251,191,36,0.12)", borderColor: "rgba(251,191,36,0.3)" }]}>
               <Ionicons name="cash-outline" size={12} color={C.gold} />
-              <Text style={[styles.chipText, { color: C.gold }]}>{formatCentsAsDollars(returnCents)}</Text>
+              <Text style={[styles.chipText, { color: C.gold }]} maxFontSizeMultiplier={FONT_CAP.chrome}>{formatCentsAsDollars(returnCents)}</Text>
             </View>
             <View style={styles.chip}>
               <Ionicons name="navigate-outline" size={12} color={C.purpleLight} />
-              <Text style={styles.chipText}>{rideKm.toFixed(1)} {t("createRide.maxDetourUnit")}</Text>
+              <Text style={styles.chipText} maxFontSizeMultiplier={FONT_CAP.chrome}>{rideKm.toFixed(1)} {t("createRide.maxDetourUnit")}</Text>
             </View>
             <View style={[styles.chip, { backgroundColor: "rgba(52,211,153,0.12)", borderColor: "rgba(52,211,153,0.3)" }]}>
               <Ionicons name="git-branch-outline" size={12} color={C.success} />
-              <Text style={[styles.chipText, { color: C.success }]}>
+              <Text style={[styles.chipText, { color: C.success }]} maxFontSizeMultiplier={FONT_CAP.chrome}>
                 +{item.detourKm.toFixed(1)} {t("createRide.maxDetourUnit")}
               </Text>
             </View>
@@ -553,12 +516,12 @@ export default function DriverRequestsScreen() {
       <View style={styles.routeBlock}>
         <View style={styles.routeRow}>
           <View style={styles.dotGreen} />
-          <Text style={styles.routeText} numberOfLines={1}>{t("driverInbox.pickup")}</Text>
+          <Text style={styles.routeText} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.body}>{t("driverInbox.pickup")}</Text>
         </View>
         <View style={styles.routeLine} />
         <View style={styles.routeRow}>
           <View style={styles.dotPink} />
-          <Text style={styles.routeText} numberOfLines={1}>{item.destination}</Text>
+          <Text style={styles.routeText} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.body}>{item.destination}</Text>
         </View>
       </View>
 
@@ -568,7 +531,7 @@ export default function DriverRequestsScreen() {
           {accepting === item.id ? <ActivityIndicator color="#fff" size="small" /> : (
             <>
               <Ionicons name="checkmark-circle" size={18} color="#fff" />
-              <Text style={styles.acceptText}>{t("driverInbox.accept")}</Text>
+              <Text style={styles.acceptText} maxFontSizeMultiplier={FONT_CAP.action}>{t("driverInbox.accept")}</Text>
             </>
           )}
         </LinearGradient>
@@ -585,16 +548,16 @@ export default function DriverRequestsScreen() {
             <Ionicons name="arrow-back" size={18} color="#2d0015" />
           </View>
         </Pressable>
-        <Text style={styles.headerTitle}>{t("driverInbox.title")}</Text>
+        <Text style={styles.headerTitle} numberOfLines={1} maxFontSizeMultiplier={FONT_CAP.body}>{t("driverInbox.title")}</Text>
         <TouchableOpacity onPress={handleGoOffline} style={styles.offlineBtn}>
-          <Text style={styles.offlineBtnText}>{t("driveOnline.goOffline")}</Text>
+          <Text style={styles.offlineBtnText} maxFontSizeMultiplier={FONT_CAP.chrome}>{t("driveOnline.goOffline")}</Text>
         </TouchableOpacity>
       </View>
 
       {/* Online status strip */}
       <View style={styles.statusStrip}>
         <View style={styles.onlineDot} />
-        <Text style={styles.statusText} numberOfLines={1}>
+        <Text style={styles.statusText} numberOfLines={2} maxFontSizeMultiplier={FONT_CAP.body}>
           {t("driverInbox.headingTo")} {session?.destination ?? ""}
         </Text>
         {loading && <ActivityIndicator size="small" color={C.purpleLight} />}
@@ -610,8 +573,8 @@ export default function DriverRequestsScreen() {
             <View style={styles.emptyIcon}>
               <Ionicons name="search-outline" size={26} color={C.purpleLight} />
             </View>
-            <Text style={styles.emptyTitle}>{t("driverInbox.emptyTitle")}</Text>
-            <Text style={styles.emptySub}>{t("driverInbox.emptySub")}</Text>
+            <Text style={styles.emptyTitle} maxFontSizeMultiplier={FONT_CAP.display}>{t("driverInbox.emptyTitle")}</Text>
+            <Text style={styles.emptySub} maxFontSizeMultiplier={FONT_CAP.body}>{t("driverInbox.emptySub")}</Text>
           </View>
         }
       />
@@ -631,8 +594,9 @@ const styles = StyleSheet.create({
   },
   backBtn: { borderRadius: 10, overflow: "hidden" },
   backBtnGrad: { width: 38, height: 38, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: C.purpleLight },
-  headerTitle: { color: C.text, fontSize: 17, fontWeight: "700" },
+  headerTitle: { color: C.text, fontSize: 17, fontWeight: "700", flexShrink: 1, marginHorizontal: 8, textAlign: "center" },
   offlineBtn: {
+    flexShrink: 0, maxWidth: "40%",
     paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10,
     backgroundColor: "rgba(248,113,113,0.1)", borderWidth: 1, borderColor: "rgba(248,113,113,0.3)",
   },
@@ -642,17 +606,22 @@ const styles = StyleSheet.create({
     flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingVertical: 10,
     backgroundColor: "rgba(52,211,153,0.06)", borderBottomWidth: 1, borderBottomColor: "rgba(52,211,153,0.15)",
   },
-  onlineDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: C.success },
-  statusText: { color: C.muted, fontSize: 13, flex: 1, fontWeight: "600" },
+  onlineDot: { width: 8, height: 8, borderRadius: 4, flexShrink: 0, backgroundColor: C.success },
+  statusText: { color: C.muted, fontSize: 13, flexGrow: 1, flexShrink: 1, fontWeight: "600" },
 
   card: {
     backgroundColor: C.surfaceAlt, borderRadius: 18, borderWidth: 1, borderColor: C.border,
     padding: 14, marginBottom: 12, gap: 12,
   },
+  cardNarrow: { padding: 12 },
   cardTop: { flexDirection: "row", alignItems: "center", gap: 12 },
-  avatar: { width: 46, height: 46, borderRadius: 23, borderWidth: 1, borderColor: C.border },
-  passengerName: { color: C.text, fontSize: 16, fontWeight: "700", marginBottom: 5 },
-  metaRow: { flexDirection: "row", gap: 6 },
+  // Large text: the avatar sits above the details rather than beside them.
+  cardTopStacked: { flexDirection: "column", alignItems: "flex-start", gap: 10 },
+  nameRow: { flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" },
+  avatar: { width: 46, height: 46, borderRadius: 23, flexShrink: 0, borderWidth: 1, borderColor: C.border },
+  passengerName: { color: C.text, fontSize: 16, fontWeight: "700", marginBottom: 5, flexShrink: 1 },
+  // Four chips share this row; wrapping beats crushing them.
+  metaRow: { flexDirection: "row", gap: 6, flexWrap: "wrap", rowGap: 6 },
   chip: {
     flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "rgba(137,56,213,0.12)",
     borderWidth: 1, borderColor: C.border, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3,
@@ -664,13 +633,16 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: C.borderFaint,
   },
   routeRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  routeText: { color: C.text, fontSize: 14, flex: 1 },
+  routeText: { color: C.text, fontSize: 14, flexGrow: 1, flexShrink: 1 },
   routeLine: { width: 2, height: 14, backgroundColor: C.border, marginLeft: 5, marginVertical: 3 },
-  dotGreen: { width: 12, height: 12, borderRadius: 6, backgroundColor: C.success, borderWidth: 2, borderColor: "rgba(52,211,153,0.3)" },
-  dotPink: { width: 12, height: 12, borderRadius: 6, backgroundColor: C.pink, borderWidth: 2, borderColor: "rgba(253,22,90,0.3)" },
+  dotGreen: { width: 12, height: 12, borderRadius: 6, flexShrink: 0, backgroundColor: C.success, borderWidth: 2, borderColor: "rgba(52,211,153,0.3)" },
+  dotPink: { width: 12, height: 12, borderRadius: 6, flexShrink: 0, backgroundColor: C.pink, borderWidth: 2, borderColor: "rgba(253,22,90,0.3)" },
 
-  acceptBtn: { height: 48, borderRadius: 13, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 8 },
-  acceptText: { color: "#fff", fontSize: 15, fontWeight: "800" },
+  acceptBtn: {
+    minHeight: 48, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 13,
+    alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 8,
+  },
+  acceptText: { color: "#fff", fontSize: 15, fontWeight: "800", flexShrink: 1, textAlign: "center" },
 
   emptyWrap: { alignItems: "center", paddingTop: 80, gap: 8 },
   emptyIcon: {
@@ -689,20 +661,21 @@ const styles = StyleSheet.create({
     borderTopWidth: 1, borderColor: C.border, marginTop: -24,
   },
   readyPassengerRow: { flexDirection: "row", alignItems: "center", gap: 12 },
-  readyAvatarSm: { width: 52, height: 52, borderRadius: 26, borderWidth: 2, borderColor: C.border },
+  readyAvatarSm: { width: 52, height: 52, borderRadius: 26, flexShrink: 0, borderWidth: 2, borderColor: C.border },
   readyAvatar: { width: 88, height: 88, borderRadius: 44, borderWidth: 2, borderColor: C.border, marginBottom: 6 },
-  readyName: { color: C.text, fontSize: 20, fontWeight: "800", maxWidth: "100%" },
+  readyName: { color: C.text, fontSize: 20, fontWeight: "800", maxWidth: "100%", flexShrink: 1 },
   readySub: { color: C.muted, fontSize: 14, textAlign: "center", lineHeight: 20, marginBottom: 8 },
   readyRouteCard: {
     width: "100%", backgroundColor: C.surfaceAlt, borderRadius: 16, padding: 16,
     borderWidth: 1, borderColor: C.border, marginBottom: 18,
   },
   startBtn: {
-    height: 56, borderRadius: 16, alignItems: "center", justifyContent: "center",
+    minHeight: 56, paddingVertical: 10, paddingHorizontal: 14,
+    borderRadius: 16, alignItems: "center", justifyContent: "center",
     flexDirection: "row", gap: 8,
     shadowColor: "#34d399", shadowOpacity: 0.5, shadowRadius: 14, shadowOffset: { width: 0, height: 4 }, elevation: 8,
   },
-  startBtnText: { color: "#fff", fontSize: 17, fontWeight: "800" },
+  startBtnText: { color: "#fff", fontSize: 17, fontWeight: "800", flexShrink: 1, textAlign: "center" },
   backLink: { paddingVertical: 14 },
   backLinkText: { color: C.muted, fontSize: 14, fontWeight: "600" },
 
@@ -713,8 +686,11 @@ const styles = StyleSheet.create({
   },
   offlineTitle: { color: C.text, fontSize: 18, fontWeight: "800" },
   offlineSub: { color: C.muted, fontSize: 14, textAlign: "center", marginTop: 6, lineHeight: 20 },
-  goBtn: { height: 52, borderRadius: 15, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 8, paddingHorizontal: 28 },
-  goBtnText: { color: "#fff", fontSize: 16, fontWeight: "800" },
+  goBtn: {
+    minHeight: 52, paddingVertical: 10, borderRadius: 15,
+    alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 8, paddingHorizontal: 28,
+  },
+  goBtnText: { color: "#fff", fontSize: 16, fontWeight: "800", flexShrink: 1, textAlign: "center" },
 
   viewProfileHint: { color: C.purpleLight, fontSize: 11, fontWeight: "500", marginTop: 1 },
 
@@ -725,9 +701,11 @@ const styles = StyleSheet.create({
   },
   profileSheet: {
     width: "100%", backgroundColor: "#13132a", borderRadius: 24,
-    borderWidth: 1, borderColor: "rgba(137,56,213,0.3)", padding: 24,
-    alignItems: "center", gap: 12,
+    borderWidth: 1, borderColor: "rgba(137,56,213,0.3)",
+    paddingVertical: 24, paddingHorizontal: 20,
+    alignItems: "center",
   },
+  profileScrollContent: { alignItems: "center", gap: 12 },
   profileLoadingWrap: { paddingVertical: 40, alignItems: "center" },
   profileAvatarWrap: { marginBottom: 4 },
   profileAvatar: { width: 80, height: 80, borderRadius: 40 },
@@ -747,7 +725,7 @@ const styles = StyleSheet.create({
   },
   profileStat: { alignItems: "center", gap: 2 },
   profileStatVal: { color: C.text, fontSize: 18, fontWeight: "700" },
-  profileStatLabel: { color: C.muted, fontSize: 11 },
+  profileStatLabel: { color: C.muted, fontSize: 11, textAlign: "center" },
   profileInfoList: { width: "100%", gap: 8 },
   profileInfoRow: {
     flexDirection: "row", alignItems: "center", gap: 10,

@@ -1,4 +1,14 @@
-export type RewardCategory = "food" | "gas" | "entertainment" | "transport";
+/**
+ * Master switch for the rewards feature.
+ *
+ * While this is false the profile screen's rewards banner renders inert with a
+ * "Coming Soon" badge instead of routing to `/rewardsScreen` — the catalogue
+ * below is still placeholder/sponsor-demo data and nothing can actually be
+ * redeemed yet. Flip to true once redemption is live.
+ */
+export const REWARDS_ENABLED: boolean = false;
+
+type RewardCategory = "food" | "gas" | "entertainment" | "transport";
 
 export type Reward = {
   id: string;
@@ -16,7 +26,7 @@ export type Reward = {
   sponsorId?: string;
 };
 
-export const REWARDS: Reward[] = [
+const REWARDS: Reward[] = [
   // ── McDonald's (sponsor: mcdonalds-laurier) ──────────────────────────────
   {
     id: "mcd-fries",
@@ -189,7 +199,7 @@ export function getSponsorRewards(sponsorId: string): Reward[] {
   return REWARDS.filter((r) => r.sponsorId === sponsorId).sort((a, b) => a.level - b.level);
 }
 
-export type RewardGroup = { key: string; label: string; logoUrl?: string; rewards: Reward[] };
+type RewardGroup = { key: string; label: string; logoUrl?: string; rewards: Reward[] };
 
 // Demo display metadata for the sponsor reward groups on the profile screen.
 // Kept local so the screen needs no Firestore fetch (dev demo, offline-robust).

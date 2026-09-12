@@ -1,0 +1,65 @@
+{
+  "indexes": [
+    {
+      "//": "Payout sweeper: payouts.where(status in [pending, awaiting_setup]).orderBy(createdAt). Firestore requires a composite index whenever an 'in' filter is combined with an orderBy on a different field. Without this the sweeper throws 'The query requires an index' on its first run and no driver is ever paid.",
+      "collectionGroup": "payouts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "//": "findPendingCashout: payouts.where(uid ==).where(status in [...]). Two equality filters on different fields require a composite index; without it every cashout request 500s.",
+      "collectionGroup": "payouts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "uid",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "//": "Account deletion: rides.where(driverId ==).where(status in [planned, started]). An equality filter plus an 'in' on a different field needs a composite index; without it every delete request 500s.",
+      "collectionGroup": "rides",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "driverId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "//": "Refunds: users/{uid}/transactions.where(rideId ==).where(type ==). Two equality filters on different fields need a composite index; without it /billing/refund 500s.",
+      "collectionGroup": "transactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "rideId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "type",
+          "order": "ASCENDING"
+        }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

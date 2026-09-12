@@ -7,7 +7,10 @@
 > treat the line number as a starting offset. Everything below was derived by
 > reading the code, not from assumptions.
 >
-> Companion docs: `ride-lifecycle-audit.md` (deep behavioural trace of the ride
+> Companion docs: `payments-and-settlement.md` (money: fares, accrual, monthly
+> settlement, the cron), `stripe-dashboard-setup.md` (the Stripe dashboard itself:
+> Connect settings, all five webhook endpoints, key/secret mapping),
+> `ride-lifecycle-audit.md` (deep behavioural trace of the ride
 > flow), `unilift-admin-inventory.md` + `website-handoff.md` (the *separate*
 > `unilift-rides` website repo), `wizards-and-helpers-audit.md`.
 
@@ -38,7 +41,10 @@ began as a copy of `functions/`. Routes 1–31 are identical in both (same order
 
 **Sandbox-only routes** (the 15 that do *not* exist in LIVE):
 `/cert/*` (5 routes), `/stripe/identity-webhook`, `/dev/*` (9 routes).
-Certifications and the dev harness are sandbox features awaiting cutover.
+Certifications and the dev harness are sandbox features awaiting cutover. The
+Stripe Connect payout rail (`/connect/*`, `/payouts/*`, `/billing/run-payouts`,
+`/stripe/connect-webhook`) used to be on this list — it was ported to LIVE and is
+now shared.
 
 Which server the app hits is decided in `constants/runtime-config.ts:95-97`:
 `apiBaseUrl` = `EXPO_PUBLIC_API_BASE_URL` override, else sandbox when
@@ -273,10 +279,9 @@ builds silently ran a different algorithm than production — that divergence is
 what produced "0 drivers available" and missing dispatch pushes in dev. If you
 change one server's dispatch, change both.
 
-One deliberate difference remains: the sandbox `/drivers/available` also requires
-`expoPushToken` before counting a user, so the number the passenger sees equals
-the number `/requests/dispatch` can actually reach. LIVE still over-counts —
-port it at cutover (marked `// PORT AT CUTOVER` in the sandbox).
+The two `/drivers/available` implementations are identical; an earlier note here
+claimed the sandbox carried an extra `expoPushToken` requirement marked
+`// PORT AT CUTOVER`. No such marker exists in either file.
 
 ---
 
@@ -317,13 +322,16 @@ Sandbox adds `grantCertification`, `sendStudentConfirmationEmail`,
 
 ### Exports
 ```
-functions/          api · getAdminMetrics · sweepStaleRides · monthlyBilling
-functions-sandbox/  apiSandbox · getAdminMetricsSandbox · sweepStaleRidesSandbox · monthlyBillingSandbox
+functions/          api · getAdminMetrics · sweepStaleRides · monthlyBilling · payoutPendingEarnings
+functions-sandbox/  apiSandbox · getAdminMetricsSandbox · sweepStaleRidesSandbox · monthlyBillingSandbox · payoutPendingEarningsSandbox
 ```
 
-**Cutover landmine:** `functions/index.js:35-36` pins `TARGET_DB = devDb` and
-`TARGET_STRIPE = stripeTest` for the *scheduled* jobs so they can never touch
-production. Flip to `prodDb`/`stripeLive` at cutover.
+**Cutover done.** `functions/index.js` now pins `TARGET_DB = prodDb` /
+`TARGET_STRIPE = stripeLive` with `SCHEDULED_JOBS_PAUSED = false`, so the LIVE
+scheduled jobs run against production. `functions-sandbox/` stays pinned to
+dev/test permanently — that separation is what stops the two codebases racing
+each other against one database. If LIVE is ever re-pinned to `devDb`, pause its
+jobs again first.
 
 ---
 
@@ -377,11 +385,11 @@ production. Flip to `prodDb`/`stripeLive` at cutover.
    handler bodies, not just the route list.
 2. **`rideScreen` = passenger, `riderScreen` = driver.**
 3. **Call `invalidateRidesCache()`** after mutating a ride.
-4. **`certifications` is server-authoritative — but only enforced on the dev DB.**
-   `firestore.dev.rules:42-53` blocks client writes to the field; production
-   `firestore.rules` has no such clause (the feature is still sandbox-only, and
-   prod's `touchesFinancialFields()` guards Stripe/wallet fields only). Add the
-   clause to `firestore.rules` at cutover.
+4. **`firestore.rules` and `firestore.dev.rules` are now identical** apart from
+   their header comments — the hardened ruleset was promoted to production at
+   cutover. Both block client writes to `certifications` and to every financial
+   field, deny all client writes to `rides/*` except the driver's own
+   `driverLocation`, and scope `rideRequests` reads. Change one, change both.
 5. **Firestore long-polling is mandatory** — `firebaseConfig.js` sets
    `experimentalForceLongPolling`; without it `onSnapshot` silently hangs on
    device. `initializeFirestore` must run before any `getFirestore()`.

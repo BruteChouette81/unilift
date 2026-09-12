@@ -6,6 +6,9 @@ import { getAuth } from "firebase/auth";
 import {
   apiBaseUrl,
   apiFetch,
+  appEnv,
+  devError,
+  devWarn,
   firestoreDocumentUrl,
   withFirebaseApiKey,
 } from "@/constants/runtime-config";
@@ -31,7 +34,7 @@ export function setupNotificationChannel(): void {
  */
 export async function registerForPushNotifications(): Promise<string | null> {
   if (!Device.isDevice) {
-    console.warn("Push notifications require a physical device.");
+    devWarn("Push notifications require a physical device.");
     return null;
   }
 
@@ -44,7 +47,7 @@ export async function registerForPushNotifications(): Promise<string | null> {
   }
 
   if (finalStatus !== "granted") {
-    console.warn("Push notification permission not granted.");
+    devWarn("Push notification permission not granted.");
     return null;
   }
 
@@ -53,7 +56,7 @@ export async function registerForPushNotifications(): Promise<string | null> {
     Constants.easConfig?.projectId;
 
   if (!projectId) {
-    console.error("Missing EAS projectId — cannot get push token.");
+    devError("Missing EAS projectId — cannot get push token.");
     return null;
   }
 
@@ -61,18 +64,33 @@ export async function registerForPushNotifications(): Promise<string | null> {
     const { data: token } = await Notifications.getExpoPushTokenAsync({ projectId });
     return token;
   } catch (err) {
-    console.warn("Could not fetch Expo push token (non-fatal):", err);
+    devWarn("Could not fetch Expo push token (non-fatal):", err);
     return null;
   }
 }
 
 /**
  * Register the Expo push token for this account, via the backend.
- * A push token identifies one physical device, not one account — the server
- * also strips it from any other account that previously registered it on
- * this device, so only the currently signed-in account is ever reachable
- * through it. `uid` is kept for call-site clarity; the server derives the
- * account from `idToken`.
+ *
+ * A push token identifies one physical *device*, not one account and not one
+ * environment, which creates two separate problems the server has to settle:
+ *
+ *   • Two accounts, one phone. If this device registered the token under a
+ *     different account before (signed out, signed in as someone else), that
+ *     account must stop being reachable through it. The endpoint atomically
+ *     moves the token to the caller and strips it from everyone else.
+ *   • Two builds, one EAS project. Dev and production share a project id and a
+ *     bundle id, so nothing else tells the servers that sending to a token
+ *     would ring a phone running the *other* build. Two fields make it
+ *     decidable: `expoPushTokenEnv` (which environment registered it, sent
+ *     below) and `expoPushTokenUpdatedAt` (when — stamped server-side). In dev
+ *     the servers additionally require the timestamp to be recent, so a device
+ *     that ran a dev build once and has since gone back to the store build ages
+ *     out instead of being paged by a dev test.
+ *
+ * This runs on every authenticated launch (use-push-notifications), so both
+ * fields stay current with no migration and no allowlist to maintain. `uid` is
+ * kept for call-site clarity; the server derives the account from `idToken`.
  */
 export async function savePushTokenToFirestore(
   uid: string,
@@ -85,11 +103,11 @@ export async function savePushTokenToFirestore(
       Authorization: `Bearer ${idToken}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ token }),
+    body: JSON.stringify({ token, env: appEnv }),
   });
 
   if (!res.ok) {
-    console.error("Failed to register push token:", res.status);
+    devError("Failed to register push token:", res.status);
   }
 }
 
@@ -98,6 +116,10 @@ export async function savePushTokenToFirestore(
  * Call on sign-out so a device that logs into a different account (or none)
  * stops receiving pushes for the account it just left. Best-effort — a
  * failure here must never block sign-out.
+ *
+ * Clears the env/updatedAt tags alongside the token itself: they describe a
+ * registration that no longer exists, and leaving them behind would strand a
+ * stale "dev" tag on the account.
  */
 export async function clearPushToken(): Promise<void> {
   const user = getAuth().currentUser;
@@ -105,9 +127,12 @@ export async function clearPushToken(): Promise<void> {
 
   const idToken = await user.getIdToken();
   const url = withFirebaseApiKey(
-    `${firestoreDocumentUrl("users", user.uid)}?updateMask.fieldPaths=expoPushToken`,
+    `${firestoreDocumentUrl("users", user.uid)}?updateMask.fieldPaths=expoPushToken` +
+      `&updateMask.fieldPaths=expoPushTokenEnv` +
+      `&updateMask.fieldPaths=expoPushTokenUpdatedAt`,
   );
 
+  // An empty `fields` against that mask deletes exactly those three paths.
   const res = await fetch(url, {
     method: "PATCH",
     headers: {
@@ -118,6 +143,6 @@ export async function clearPushToken(): Promise<void> {
   });
 
   if (!res.ok) {
-    console.error("Failed to clear push token:", res.status);
+    devError("Failed to clear push token:", res.status);
   }
 }

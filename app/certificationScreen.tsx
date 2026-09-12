@@ -1,4 +1,5 @@
 import {
+  CERTIFICATION_ENABLED,
   CERT_META,
   CERT_ORDER,
   UNCERTIFIED,
@@ -7,6 +8,8 @@ import {
   isSchoolEmail,
   type CertTier,
 } from "@/constants/certifications";
+import ComingSoon from "@/components/coming-soon";
+import { normalizeUserData } from "@/components/userHelper";
 import { devLog, devWarn, isDev } from "@/constants/runtime-config";
 import { useLanguage } from "@/context/LanguageContext";
 import { useUserProfile } from "@/context/UserProfileContext";
@@ -15,17 +18,19 @@ import {
   reconcileAdultVerification,
   requestStudentVerification,
 } from "@/services/certificationService";
+import { fetchUserDocument } from "@/services/userService";
 import { Ionicons } from "@expo/vector-icons";
 import { getAuth } from "firebase/auth";
 import * as AuthSession from "expo-auth-session";
 import * as WebBrowser from "expo-web-browser";
 import { LinearGradient } from "expo-linear-gradient";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  BackHandler,
   ScrollView,
   StyleSheet,
   Text,
@@ -34,19 +39,20 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { P } from "@/constants/palette";
 
 const C = {
-  bg: "#080810",
-  surface: "#0f0f1e",
-  surfaceAlt: "#13132a",
+  bg: P.bg,
+  surface: P.surface,
+  surfaceAlt: P.surfaceRaised,
   border: "rgba(137, 56, 213, 0.22)",
   borderFaint: "rgba(255,255,255,0.07)",
-  purple: "#8938D5",
-  purpleLight: "#e09af7",
-  text: "#f3f4f6",
-  muted: "#9ca3af",
-  dim: "#4b5563",
-  success: "#34d399",
+  purple: P.accent,
+  purpleLight: P.accentLight,
+  text: P.text,
+  muted: P.textMuted,
+  dim: P.textDim,
+  success: P.success,
 };
 
 const REQ_KEY: Record<CertTier, string> = {
@@ -54,11 +60,22 @@ const REQ_KEY: Record<CertTier, string> = {
   student: "cert.screen.studentReq",
 };
 
+// Student polling budget: the badge is granted out-of-band (the user opens a
+// magic link in their school inbox), so we watch the user document for ~2min.
+const STUDENT_POLL_INTERVAL_MS = 5000;
+const STUDENT_POLL_ATTEMPTS = 24;
+
 export default function CertificationScreen() {
   const router = useRouter();
   const { t } = useLanguage();
   const { userData, refreshProfile } = useUserProfile();
   const insets = useSafeAreaInsets();
+
+  // Step 4 of account creation routes here with ?mode=signup. The account
+  // already exists at that point (the /cert endpoints need an idToken), so the
+  // flow is identical — only the chrome changes: signup step dots instead of a
+  // back arrow, and a Continue/Skip CTA that hands off to onboarding.
+  const signupMode = useLocalSearchParams<{ mode?: string }>().mode === "signup";
 
   const certifications = userData?.certifications ?? [];
   const earned = earnedTiers(certifications);
@@ -67,9 +84,24 @@ export default function CertificationScreen() {
 
   const [adultLoading, setAdultLoading] = useState(false);
   const [adultPending, setAdultPending] = useState(false);
-  const [studentEmail, setStudentEmail] = useState("");
+  // Most users sign up with their school address — prefill it so the student
+  // tier is a single tap when it already qualifies.
+  const [studentEmail, setStudentEmail] = useState(() => {
+    const signupEmail = getAuth().currentUser?.email ?? "";
+    return isSchoolEmail(signupEmail) ? signupEmail : "";
+  });
   const [studentSending, setStudentSending] = useState(false);
   const [studentSent, setStudentSent] = useState(false);
+
+  // In signup mode there is nothing to go back to — the account is created and
+  // the (auth) stack is already unmounted. Swallow the Android hardware back.
+  useFocusEffect(
+    useCallback(() => {
+      if (!signupMode) return;
+      const subscription = BackHandler.addEventListener("hardwareBackPress", () => true);
+      return () => subscription.remove();
+    }, [signupMode]),
+  );
 
   const getToken = async (): Promise<string | null> => {
     const current = getAuth().currentUser;
@@ -152,6 +184,40 @@ export default function CertificationScreen() {
     }
   };
 
+  // Unlike the adult tier there is no reconcile endpoint to ask — the Cloud
+  // Function writes `certifications` when the emailed link is opened, so watch
+  // the user document directly. A hit refreshes the profile, which flips
+  // has("student") and swaps the row to the green verified pill on its own.
+  const studentEarned = has("student");
+  useEffect(() => {
+    if (!studentSent || studentEarned) return;
+    let cancelled = false;
+    let attempts = 0;
+
+    const timer = setInterval(async () => {
+      if (attempts++ >= STUDENT_POLL_ATTEMPTS) {
+        clearInterval(timer);
+        devWarn("[CERT-DEBUG] student poll: gave up waiting for the grant");
+        return;
+      }
+      const current = getAuth().currentUser;
+      if (!current) return;
+      const token = await current.getIdToken().catch(() => null);
+      if (!token || cancelled) return;
+      const doc = await fetchUserDocument(current.uid, token);
+      if (cancelled) return;
+      if (!normalizeUserData(doc).certifications?.includes("student")) return;
+      clearInterval(timer);
+      devLog("[CERT-DEBUG] student poll: grant landed");
+      await refreshProfile();
+    }, STUDENT_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [studentSent, studentEarned, refreshProfile]);
+
   const handleStudent = async () => {
     if (!guardDev()) return;
     const email = studentEmail.trim().toLowerCase();
@@ -184,6 +250,9 @@ export default function CertificationScreen() {
   // ── Per-tier action UI ──────────────────────────────────────────────────────
   const renderAction = (tier: CertTier) => {
     if (has(tier)) return null;
+    // No production guard needed here any more: this whole tree only renders
+    // when CERTIFICATION_ENABLED, and the /cert routes exist wherever that is
+    // true. The old `signupMode && !isDev` early-return is gone with it.
     const color = CERT_META[tier].color;
 
     if (tier === "adult") {
@@ -281,15 +350,47 @@ export default function CertificationScreen() {
       <StatusBar style="light" />
 
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} activeOpacity={0.7}>
-          <View style={styles.backBtnGrad}>
-            <Ionicons name="arrow-back" size={18} color="#2d0015" />
+        {signupMode ? (
+          // Signup step dots, mirroring the signup screen header — this is
+          // step 4 of 4, and there is no back arrow because the account is
+          // already created.
+          <View style={styles.dotsRow}>
+            <View style={styles.dot} />
+            <View style={styles.dot} />
+            <View style={styles.dot} />
+            <View style={[styles.dot, styles.dotActive]} />
           </View>
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>{t("cert.screen.title")}</Text>
-        <View style={{ width: 38 }} />
+        ) : (
+          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} activeOpacity={0.7}>
+            <View style={styles.backBtnGrad}>
+              <Ionicons name="arrow-back" size={18} color="#2d0015" />
+            </View>
+          </TouchableOpacity>
+        )}
+        <Text style={styles.headerTitle}>
+          {signupMode ? t("cert.signup.title") : t("cert.screen.title")}
+        </Text>
+        {signupMode ? (
+          <Text style={styles.stepIndicator}>{t("cert.signup.stepIndicator")}</Text>
+        ) : (
+          <View style={{ width: 38 }} />
+        )}
       </View>
 
+      {!CERTIFICATION_ENABLED ? (
+        <ComingSoon
+          emoji="🛡️"
+          label={t("cert.comingSoon")}
+          title={t("cert.screen.title")}
+          subtitle={t("cert.comingSoonSub")}
+          features={[
+            { icon: "🪪", label: t("cert.featureAdult") },
+            { icon: "🎓", label: t("cert.featureStudent") },
+            { icon: "🛡️", label: t("cert.featureTrust") },
+            { icon: "⚡", label: t("cert.featurePriority") },
+          ]}
+        />
+      ) : (
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 40 }} showsVerticalScrollIndicator={false}>
         {/* ── Hero: current standing ─────────────────────────────────────────── */}
         <View style={styles.hero}>
@@ -416,7 +517,28 @@ export default function CertificationScreen() {
             );
           })}
         </View>
+
+        {/* ── Signup step footer ─────────────────────────────────────────────── */}
+        {/* Only reachable in dev now: the production signup flow skips this
+            screen entirely (see app/(auth)/signup.tsx). Kept so the flow still
+            works end-to-end when CERTIFICATION_ENABLED is flipped back on. */}
+        {signupMode && (
+          <>
+            <TouchableOpacity
+              style={styles.signupCta}
+              onPress={() => router.replace("/onboardingScreen")}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.signupCtaText}>
+                {/* Both tiers are optional — the CTA always moves the user on,
+                    it only renames itself once something has been earned. */}
+                {earned.length > 0 ? t("cert.signup.continueBtn") : t("cert.signup.skipBtn")}
+              </Text>
+            </TouchableOpacity>
+          </>
+        )}
       </ScrollView>
+      )}
     </View>
   );
 }
@@ -435,6 +557,21 @@ const styles = StyleSheet.create({
   backBtn: { width: 38, height: 38 },
   backBtnGrad: { width: 38, height: 38, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: "#e09af7" },
   headerTitle: { color: C.text, fontSize: 18, fontWeight: "800" },
+
+  // ── Signup mode (step 4 of account creation) ──────────────────────────────
+  dotsRow: { flexDirection: "row", gap: 6, width: 62, alignItems: "center" },
+  dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: "rgba(255,255,255,0.3)" },
+  dotActive: { width: 18, backgroundColor: "#fff" },
+  stepIndicator: { color: C.muted, fontSize: 13, fontWeight: "600", width: 62, textAlign: "right" },
+  signupCta: {
+    height: 52,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: C.purpleLight,
+    marginTop: 6,
+  },
+  signupCtaText: { color: "#2d0015", fontSize: 16, fontWeight: "700" },
 
   // Hero
   hero: {

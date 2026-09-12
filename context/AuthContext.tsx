@@ -5,7 +5,6 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import { AppState } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { type AuthState, type AuthStatus } from "@/types/models";
-import { isDev } from "@/constants/runtime-config";
 import { goOffline } from "@/services/driverSessionService";
 import { clearPushToken } from "@/services/notificationService";
 import {
@@ -165,11 +164,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         try {
           // End any live driver session first — it needs a valid ID token, and
           // nothing server-side expires sessions, so signing out while online
-          // would otherwise leave the driver advertised forever. Dev-gated and
-          // best-effort: it must never be able to block a sign-out.
-          if (isDev) {
-            try { await goOffline(); } catch { /* non-fatal */ }
-          }
+          // leaves the driver advertised forever. This was `isDev`-gated, which
+          // meant the leak existed only in production, where it matters.
+          // Best-effort: it must never be able to block a sign-out.
+          try { await goOffline(); } catch { /* non-fatal */ }
           // Clear this device's push token before it's no longer authenticated
           // to write it — otherwise this account keeps receiving pushes for
           // this device after logging out of it. Best-effort, must never

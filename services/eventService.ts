@@ -2,17 +2,7 @@ import { firestoreBaseUrl, withFirebaseApiKey } from "@/constants/runtime-config
 import { clampHypeScore, type HypeEvent } from "@/constants/events";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getAuth } from "firebase/auth";
-
-const isRecord = (v: unknown): v is Record<string, unknown> =>
-  typeof v === "object" && v !== null;
-
-const readString = (v: unknown, fallback = ""): string =>
-  typeof v === "string" ? v : fallback;
-
-const readNumber = (v: unknown, fallback = 0): number => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-};
+import { isRecord, readNumber, readString } from "@/services/firestore-rest";
 
 // ─── Hype-event cache ────────────────────────────────────────────────────────
 // The Hype map used to render nothing until the network round-trip finished, so

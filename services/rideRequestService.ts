@@ -5,28 +5,10 @@ import {
 } from "@/constants/runtime-config";
 import type { LocationPoint, RideRequest } from "@/types/models";
 import { getAuth } from "firebase/auth";
+import { isRecord, readGeoPoint, readNumber, readString } from "@/services/firestore-rest";
+import { USERS_BASE_URL } from "@/services/firestore-urls";
 
 const BASE_URL = firestoreCollectionUrl("rideRequests");
-const USERS_BASE_URL = firestoreCollectionUrl("users");
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null;
-
-const readString = (value: unknown, fallback = ""): string =>
-  typeof value === "string" ? value : fallback;
-
-const readNumber = (value: unknown, fallback = 0): number => {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-};
-
-const readGeoPoint = (value: unknown): LocationPoint | null => {
-  if (!isRecord(value)) return null;
-  const latitude = readNumber(value.latitude, NaN);
-  const longitude = readNumber(value.longitude, NaN);
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
-  return { latitude, longitude };
-};
 
 async function getAuthHeaders(includeJson = false): Promise<Record<string, string>> {
   const headers: Record<string, string> = {};
@@ -178,54 +160,6 @@ export async function createRideRequest(data: {
   });
   if (!res.ok) await throwFetchError(res, "Failed to create ride request");
   return await res.json();
-}
-
-/** Fetch the current user's ride requests (server-side filtered by passengerId). */
-export async function fetchMyRideRequests(): Promise<RideRequest[]> {
-  const user = getAuth().currentUser;
-  if (!user) return [];
-
-  const res = await fetch(withFirebaseApiKey(`${firestoreBaseUrl}:runQuery`), {
-    method: "POST",
-    headers: await getAuthHeaders(true),
-    body: JSON.stringify({
-      structuredQuery: {
-        from: [{ collectionId: "rideRequests" }],
-        where: {
-          fieldFilter: {
-            field: { fieldPath: "passengerId" },
-            op: "EQUAL",
-            value: { stringValue: user.uid },
-          },
-        },
-      },
-    }),
-  });
-  if (!res.ok) {
-    if (res.status === 401 || res.status === 403 || res.status === 404) return [];
-    await throwFetchError(res, "Failed to fetch ride requests");
-  }
-  const data = (await res.json()) as Array<{ document?: unknown }>;
-  return data
-    .filter((entry) => entry.document != null)
-    .map((entry) => parseRideRequestFromFirestoreDocument(entry.document))
-    .filter((r): r is RideRequest => r !== null);
-}
-
-/** Fetch all currently-open ride requests (for the driver inbox), excluding
- *  the caller's own. Detour-filtering happens client-side in the inbox. */
-export async function fetchOpenRideRequests(): Promise<RideRequest[]> {
-  const user = getAuth().currentUser;
-  if (!user) return [];
-  const res = await fetch(withFirebaseApiKey(BASE_URL), { headers: await getAuthHeaders() });
-  if (!res.ok) {
-    if (res.status === 401 || res.status === 403 || res.status === 404) return [];
-    await throwFetchError(res, "Failed to fetch open ride requests");
-  }
-  const data = (await res.json()) as { documents?: unknown[] };
-  return (data.documents ?? [])
-    .map((doc) => parseRideRequestFromFirestoreDocument(doc))
-    .filter((r): r is RideRequest => r !== null && r.status === "open" && r.passengerId !== user.uid);
 }
 
 /** Cancel (delete) a ride request the user owns. */

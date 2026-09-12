@@ -1,7 +1,9 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const STORAGE_PREFIX = "unilift:wizard:";
+/** Exported so tooling that needs to clear a flag (dev tools) builds the same
+ *  key this hook reads, rather than hardcoding the prefix a second time. */
+export const FIRST_RUN_PREFIX = "unilift:wizard:";
 
 /**
  * Tracks whether a given first-run wizard/coach flow has already been seen.
@@ -16,7 +18,7 @@ const STORAGE_PREFIX = "unilift:wizard:";
  * Each flow gets a stable `key` (e.g. "signup", "wallet-card", "home-search").
  */
 export function useFirstRun(key: string) {
-  const storageKey = STORAGE_PREFIX + key;
+  const storageKey = FIRST_RUN_PREFIX + key;
   const [ready, setReady] = useState(false);
   const [seen, setSeen] = useState(true);
   const [replaying, setReplaying] = useState(false);
@@ -24,6 +26,12 @@ export function useFirstRun(key: string) {
 
   useEffect(() => {
     mounted.current = true;
+    // The key can change while mounted (it is account-scoped for the release
+    // takeover), so drop back to "not ready, assume seen" until the new key has
+    // been read. Without this the previous key's answer leaks through for a few
+    // frames and can flash a flow the user already dismissed.
+    setReady(false);
+    setSeen(true);
     AsyncStorage.getItem(storageKey)
       .then((v) => {
         if (!mounted.current) return;

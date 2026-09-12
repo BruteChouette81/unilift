@@ -7,8 +7,9 @@ import {
   savePushTokenToFirestore,
   setupNotificationChannel,
 } from "@/services/notificationService";
+import { devWarn } from "@/constants/runtime-config";
 
-export type NotificationGate = {
+type NotificationGate = {
   loading: boolean;
   permissionGranted: boolean;
   permissionDenied: boolean;
@@ -81,7 +82,7 @@ export function useNotificationGate(): NotificationGate {
         await savePushTokenToFirestore(user.uid, token, idToken);
       }
     } catch (err) {
-      console.warn("useNotificationGate: requestPermission failed", err);
+      devWarn("useNotificationGate: requestPermission failed", err);
     } finally {
       setRequesting(false);
     }

@@ -22,7 +22,7 @@ import { authColors } from "@/constants/auth-theme";
 import { useAuth } from "@/context/AuthContext";
 import { useLanguage } from "@/context/LanguageContext";
 import { firestoreDocumentUrl } from "@/constants/runtime-config";
-import { normalizeAuthError, resetPassword } from "@/services/authService";
+import { resolveAuthError, resetPassword } from "@/services/authService";
 import LanguageToggle from "@/components/language-toggle";
 
 const MAX_ATTEMPTS      = 5;
@@ -130,7 +130,7 @@ export default function LoginScreen() {
       router.replace("/");
     } catch (err) {
       await recordFailedAttempt();
-      const authError = normalizeAuthError(err, t("auth.login.loginFailed"));
+      const authError = resolveAuthError(err, t, t("auth.login.loginFailed"));
       if (authError.retryable) {
         Alert.alert(authError.title, authError.message, [
           { text: t("common.cancel"), style: "cancel" },
@@ -153,24 +153,31 @@ export default function LoginScreen() {
       // Await the upsert so the home screen doesn't render before the profile
       // doc exists. PATCH with updateMask is upsert on Firestore REST — safe
       // for both first-time Apple logins and returning users.
-      await fetch(
-        firestoreDocumentUrl("users", cred.user.uid) +
-          "?updateMask.fieldPaths=name&updateMask.fieldPaths=email",
-        {
+      //
+      // Only the fields we actually have are masked. This used to mask `name`
+      // and `email` unconditionally, which quietly destroyed data: an
+      // updateMask path with an empty value is a *write* of the empty string,
+      // Apple accounts never get a `displayName` (signup writes the name to
+      // Firestore, not to the auth profile), so `cred.user.displayName` is null
+      // — and every Apple login therefore blanked the user's saved name.
+      const appleFields: Record<string, { stringValue: string }> = {};
+      if (cred.user.displayName) appleFields.name = { stringValue: cred.user.displayName };
+      if (cred.user.email) appleFields.email = { stringValue: cred.user.email };
+
+      if (Object.keys(appleFields).length > 0) {
+        const mask = Object.keys(appleFields)
+          .map((f) => `updateMask.fieldPaths=${f}`)
+          .join("&");
+        await fetch(firestoreDocumentUrl("users", cred.user.uid) + "?" + mask, {
           method: "PATCH",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({
-            fields: {
-              name:  { stringValue: cred.user.displayName ?? "" },
-              email: { stringValue: cred.user.email ?? "" },
-            },
-          }),
-        },
-      ).catch(() => { /* non-fatal: home screen will refetch */ });
+          body: JSON.stringify({ fields: appleFields }),
+        }).catch(() => { /* non-fatal: home screen will refetch */ });
+      }
       await clearRateLimit();
       router.replace("/");
     } catch (err) {
-      const authError = normalizeAuthError(err, t("auth.login.appleLoginFailed"));
+      const authError = resolveAuthError(err, t, t("auth.login.appleLoginFailed"));
       Alert.alert(authError.title, authError.message);
     } finally {
       setSubmitting(false);
@@ -190,7 +197,7 @@ export default function LoginScreen() {
             t("auth.login.resetEmailSentMsg", { email: inputEmail.trim() }),
           );
         } catch (err) {
-          const authError = normalizeAuthError(err, t("auth.login.resetFailed"));
+          const authError = resolveAuthError(err, t, t("auth.login.resetFailed"));
           Alert.alert(authError.title, authError.message);
         }
       },

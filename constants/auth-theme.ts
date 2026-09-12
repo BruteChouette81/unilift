@@ -1,4 +1,3 @@
-import { StyleSheet } from "react-native";
 
 export const authColors = {
   screenBackground: "#080810",
@@ -20,67 +19,3 @@ export const authColors = {
   gradient: ["#2d0015", "#1c0038"] as [string, string],
 } as const;
 
-export const authStyles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: authColors.screenBackground,
-  },
-  card: {
-    backgroundColor: authColors.cardBackground,
-    borderRadius: 16,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: authColors.cardBorder,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: "700",
-    color: authColors.title,
-    marginBottom: 6,
-    textAlign: "left",
-  },
-  subtitle: {
-    color: authColors.subtitle,
-    fontSize: 14,
-    marginBottom: 18,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: authColors.inputBorder,
-    backgroundColor: authColors.inputBackground,
-    color: authColors.inputText,
-    padding: 14,
-    marginBottom: 14,
-    borderRadius: 12,
-  },
-  button: {
-    backgroundColor: authColors.buttonBackground,
-    paddingVertical: 14,
-    borderRadius: 13,
-    alignItems: "center",
-    marginTop: 4,
-    height: 52,
-    justifyContent: "center",
-  },
-  buttonDisabled: {
-    opacity: 0.7,
-  },
-  buttonContent: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  buttonText: {
-    color: authColors.buttonText,
-    fontWeight: "700",
-    fontSize: 16,
-  },
-  loadingText: {
-    marginLeft: 8,
-  },
-  link: {
-    textAlign: "center",
-    color: authColors.link,
-    marginTop: 14,
-    fontWeight: "600",
-  },
-});
